@@ -1,0 +1,170 @@
+{
+  "passed": true,
+  "checks": [
+    {
+      "runtime": "luajit",
+      "suite": "run",
+      "passed": 56
+    },
+    {
+      "runtime": "luajit",
+      "suite": "search_return",
+      "passed": 23
+    },
+    {
+      "runtime": "luajit",
+      "suite": "selection_veto",
+      "passed": 21
+    },
+    {
+      "runtime": "luajit",
+      "suite": "native_observer",
+      "passed": 9
+    },
+    {
+      "runtime": "luajit",
+      "suite": "native_authority",
+      "passed": 10
+    },
+    {
+      "runtime": "luajit",
+      "suite": "native_search_context",
+      "passed": 22
+    },
+    {
+      "runtime": "luajit",
+      "suite": "native_readiness",
+      "passed": 7
+    },
+    {
+      "runtime": "luajit",
+      "suite": "preflight_probe",
+      "passed": 6
+    },
+    {
+      "runtime": "luajit",
+      "suite": "titan_route",
+      "passed": 13
+    },
+    {
+      "runtime": "luajit",
+      "suite": "weakpoint_route",
+      "passed": 8
+    },
+    {
+      "runtime": "luajit",
+      "suite": "charger_route",
+      "passed": 6
+    },
+    {
+      "runtime": "luajit",
+      "suite": "target_allowlist",
+      "passed": 3
+    },
+    {
+      "runtime": "luajit",
+      "suite": "target_reservations",
+      "passed": 6
+    },
+    {
+      "runtime": "luajit",
+      "suite": "structure_route",
+      "passed": 7
+    },
+    {
+      "runtime": "luajit",
+      "suite": "ping_memory",
+      "passed": 8
+    },
+    {
+      "runtime": "luajit",
+      "suite": "arrival_policy",
+      "passed": 7
+    },
+    {
+      "runtime": "lua",
+      "suite": "run",
+      "passed": 56
+    },
+    {
+      "runtime": "lua",
+      "suite": "search_return",
+      "passed": 23
+    },
+    {
+      "runtime": "lua",
+      "suite": "selection_veto",
+      "passed": 21
+    },
+    {
+      "runtime": "lua",
+      "suite": "native_observer",
+      "passed": 9
+    },
+    {
+      "runtime": "lua",
+      "suite": "native_authority",
+      "passed": 10
+    },
+    {
+      "runtime": "lua",
+      "suite": "native_search_context",
+      "passed": 22
+    },
+    {
+      "runtime": "lua",
+      "suite": "native_readiness",
+      "passed": 7
+    },
+    {
+      "runtime": "lua",
+      "suite": "preflight_probe",
+      "passed": 6
+    },
+    {
+      "runtime": "lua",
+      "suite": "titan_route",
+      "passed": 13
+    },
+    {
+      "runtime": "lua",
+      "suite": "weakpoint_route",
+      "passed": 8
+    },
+    {
+      "runtime": "lua",
+      "suite": "charger_route",
+      "passed": 6
+    },
+    {
+      "runtime": "lua",
+      "suite": "target_allowlist",
+      "passed": 3
+    },
+    {
+      "runtime": "lua",
+      "suite": "target_reservations",
+      "passed": 6
+    },
+    {
+      "runtime": "lua",
+      "suite": "structure_route",
+      "passed": 7
+    },
+    {
+      "runtime": "lua",
+      "suite": "ping_memory",
+      "passed": 8
+    },
+    {
+      "runtime": "lua",
+      "suite": "arrival_policy",
+      "passed": 7
+    }
+  ],
+  "total": 424,
+  "matches_tested_payload": true,
+  "entry_sha256": "0d4ef97ce185ef472a89235ae7d9bc3174f7da02806259bc0edbb3f27fb407c0",
+  "game_process_attached": false,
+  "native_lifetime_verified": false
+}

@@ -1,0 +1,11 @@
+{
+  "baseline": "0.5.19",
+  "entry_sha256": "0d4ef97ce185ef472a89235ae7d9bc3174f7da02806259bc0edbb3f27fb407c0",
+  "resource_id": "2b2047688875d10e",
+  "addon_sha256": {
+    "Addon/9ba626afa44a3aa3.patch_0": "6dbbb903bb37dd232c1bd7c5a5f47d93e000967277a84bffb864c50231021031",
+    "Addon/9ba626afa44a3aa3.patch_0.gpu_resources": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "Addon/9ba626afa44a3aa3.patch_0.stream": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "scope": "Retain all deployment bytes from the Windows-tested 0.5.19 baseline; beta changes packaging/docs only."
+}

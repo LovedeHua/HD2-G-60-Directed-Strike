@@ -1,0 +1,22 @@
+{
+  "public_release": "0.1-beta",
+  "runtime_baseline": "0.5.19",
+  "source": "Author feedback during development, 2026-09-27",
+  "confirmed": [
+    "enemy exclusion and heavy reacquisition",
+    "enemy attack-point iterations",
+    "automatic priority and exclusive allocation",
+    "ordinary hole explosions",
+    "large colony hole explosions"
+  ],
+  "pending": [
+    "objective egg gameplay",
+    "Shrieker Nest destruction",
+    "Spore Spewer destruction"
+  ],
+  "not_claimed": [
+    "exhaustive multiplayer matrix",
+    "native lifetime proof",
+    "future game compatibility"
+  ]
+}

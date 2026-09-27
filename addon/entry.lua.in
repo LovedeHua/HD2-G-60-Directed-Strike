@@ -1,0 +1,103 @@
+-- User-authorized experimental native filtering; no executable-memory modifications.
+local existing=rawget(_G,'G60SmartTargeting')
+if existing then return existing end
+local state={version='@@VERSION@@-experimental',filter_enabled=false,designed_targets_only=true,titan_standoff=2.5,
+    mark_priority_enabled=false,exclusive_targets=true,marked_structures=true,
+    titan_arrival_region={radius=1.75,depth=0.8},
+    experimental=true,native_lifetime_verified=false,state='starting'}
+rawset(_G,'G60SmartTargeting',state)
+local log,host
+local function close()
+    local handle=log;log=nil
+    if handle then pcall(function() handle:close() end) end
+end
+local ok,why=pcall(function()
+    local ffi=require('ffi')
+    assert(ffi.os=='Windows' and ffi.abi('64bit'),'Windows x64 required')
+    @@MODULES@@
+    local loader=assert(rawget(_G,'CowboyBingusModLoader'),'loader unavailable')
+    assert(loader.api==1,'loader API unavailable')
+    -- Diagnostics are optional; logging failures must not disable gameplay.
+    if type(loader.open_log)=='function' then
+        local opened,handle=pcall(loader.open_log,'G60SmartTargeting.log')
+        if opened then log=handle end
+    end
+    local written,lines=0,0
+    local last_issues,issue_keys={},0
+    local function emit(line)
+        if not log then return end
+        -- Bounded diagnostic output must not stop filtering during a long mission.
+        line=tostring(line):gsub('[\r\n]',' '):sub(1,900)
+        lines=lines+1
+        local issue=line:match('^skipped;') or line:match('^frame_error;') or line:match('^titan_skipped;')
+            or line:match('^priority_skipped;') or line:match('^ping_unavailable;')
+            or line:match('^arrival_skipped;')
+            or line:match('^structure_unavailable;') or line:match('^structure_ping_unavailable;')
+        local key=issue and (issue..(line:match('entity=(%d+)') or 'global'))
+        local fresh_issue=key and line~=last_issues[key]
+        if key then
+            if not last_issues[key] then issue_keys=issue_keys+1 end
+            if issue_keys>64 then last_issues={};issue_keys=1 end
+            last_issues[key]=line
+        end
+        if lines>60 and lines%120~=0 and not fresh_issue and not line:find('disabled',1,true)
+            and not line:match('^titan_started;') and not line:match('^titan_stage;')
+            and not line:match('^priority_locked;')
+            and not line:match('^structure_mark;') and not line:match('^structure_stalled;')
+            and not line:match('^arrival_detonated;') and not line:match('^arrival_retired;')
+            and not line:match('^titan_released;') then return end
+        if written+#line+1>262144 then close();return end
+        local good=pcall(function() assert(log:write(line..'\n'));assert(log:flush()) end)
+        if not good then close() else written=written+#line+1 end
+    end
+    ffi.cdef[[void *GetModuleHandleA(const char *);void *GetCurrentProcess(void);
+        uint32_t GetCurrentThreadId(void);
+        int ReadProcessMemory(void *,const void *,void *,size_t,size_t *);]]
+    local k=ffi.load('kernel32');local process=k.GetCurrentProcess()
+    local function read(a,n)
+        assert(type(a)=='number' and a>=65536 and a+n<2^47 and n>0 and n<=32768,'read bound')
+        local b,count=ffi.new('uint8_t[?]',n),ffi.new('size_t[1]')
+        assert(k.ReadProcessMemory(process,ffi.cast('const void *',a),b,n,count)~=0
+            and tonumber(count[0])==n,'native memory unreadable')
+        return ffi.string(b,n)
+    end
+    local module=k.GetModuleHandleA('game.dll');assert(module~=nil,'game module unavailable')
+    local base=tonumber(ffi.cast('uintptr_t',module))
+    local exe=tonumber(ffi.cast('uintptr_t',assert(k.GetModuleHandleA(nil))))
+    for _,g in ipairs(@@GAME_GUARDS@@) do
+        local expected=g[2]:gsub('..',function(b) return string.char(tonumber(b,16)) end)
+        assert(read(base+g[1],#expected)==expected,'game layout mismatch')
+    end
+    local main_code=('@@ENGINE_CODE@@'):gsub('..',function(b) return string.char(tonumber(b,16)) end)
+    assert(read(exe+0xa3e50,#main_code)==main_code,'engine layout mismatch')
+    local calls=Binding.bind_experimental(read,base)
+    for _,g in ipairs(TitanProfile.engine_guards) do
+        local expected=g[2]:gsub('..',function(b) return string.char(tonumber(b,16)) end)
+        assert(read(exe+g[1],#expected)==expected,'Titan engine layout mismatch')
+    end
+    calls.target_valid=ffi.cast('bool (*)(void *, uint32_t, const void *)',base+0x8858a0)
+    calls.explode=ffi.cast('void (*)(void *, uint32_t, uint32_t, void *)',base+0x8cdf80)
+    calls.remove=ffi.cast('void (*)(void *, uint32_t)',base+0xfdc310)
+    calls.aim=ffi.cast('void *(*)(void *, void **, const void *)',base+0x4b0c40)
+    host=Runtime.new({read=read,base=base,exe=exe,calls=calls,
+        titan_profile=TitanProfile,weakpoint_profiles=WeakpointProfiles,designed_targets_only=state.designed_targets_only,priority_catalog=PriorityCatalog,fuse_profile=FuseProfile,experimental_event_window=true,
+        mark_priority_enabled=state.mark_priority_enabled,exclusive_targets=state.exclusive_targets,
+        structure_profiles=state.marked_structures and StructureProfiles or nil,
+        titan_standoff=state.titan_standoff,
+        titan_arrival_region=state.titan_arrival_region,
+        thread=function() return tonumber(k.GetCurrentThreadId()) end,
+        engine=assert(rawget(_G,'stingray'),'engine API unavailable'),emit=emit})
+    state.stop=Runtime.install(_G,host,function()
+        state.filter_enabled=false;state.state='disabled';emit('disabled;applied='..host.applied);close()
+    end)
+    state.stats=host;state.filter_enabled=true;state.state='experimental filtering active'
+    emit('version=@@VERSION@@-experimental;filter_enabled=true;designed_targets_only=true;mark_priority_enabled=false;exclusive_targets=true;marked_structures=true;native_lifetime_verified=false;mode=EXPERIMENTAL_NATIVE_CALLS;titan_standoff='..state.titan_standoff
+        ..';titan_arrival_radius='..state.titan_arrival_region.radius..';titan_arrival_depth='..state.titan_arrival_region.depth)
+end)
+if not ok then
+    state.filter_enabled=false;state.state='disabled: '..tostring(why)
+    if log then pcall(function() log:write(state.state..'\n') end) end
+    close()
+end
+print('[G60SmartTargeting] '..state.state)
+return state

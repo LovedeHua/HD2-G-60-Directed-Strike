@@ -1,0 +1,15 @@
+{
+  "public_version": "0.1-beta.1",
+  "runtime_version": "0.5.20",
+  "entry_sha256": "2f5ae433d2fb45c18b49fe99e7367d381a79f7b0e48675b007bb587f631edd6b",
+  "addon_sha256": {
+    "Addon/9ba626afa44a3aa3.patch_0": "a439f41b38d5a5f98bc5b31bcf965e41559f73827cb8623612e0401eb2f5927a",
+    "Addon/9ba626afa44a3aa3.patch_0.stream": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "Addon/9ba626afa44a3aa3.patch_0.gpu_resources": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "baseline": "0.5.19",
+  "scope": "Optional diagnostic logging and runtime version only; native calls and targeting modules unchanged",
+  "windows_fixture_verified": true,
+  "live_gameplay_verified": false,
+  "native_lifetime_verified": false
+}

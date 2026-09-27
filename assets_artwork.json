@@ -1,0 +1,31 @@
+{
+  "generation_mode": "built_in_image_gen",
+  "source_timestamp_seconds": 25.5,
+  "source": "Author-supplied gameplay recording",
+  "ai_assisted": true,
+  "assets": [
+    {
+      "file": "assets/cover-source.png",
+      "width": 1920,
+      "height": 1080,
+      "sha256": "276b8fe406aac0a18cab7f1df0d654d87280a33bd01fce3aa9d0ced7029cfee7"
+    },
+    {
+      "file": "assets/cover-16x9.png",
+      "width": 1672,
+      "height": 941,
+      "sha256": "bb0f41bb547270174c55cb9df264455a5fc4d6024b08c790974c75e417614bde"
+    },
+    {
+      "file": "assets/cover-4x3.png",
+      "width": 1448,
+      "height": 1086,
+      "sha256": "31667c77b55daf4f4f0c6fa179fa9039c8597f683576662ee5a1396b882235af"
+    }
+  ],
+  "prompts": [
+    "assets/cover-prompt-16x9.txt",
+    "assets/cover-prompt-4x3.txt"
+  ],
+  "artwork_revision": 2
+}

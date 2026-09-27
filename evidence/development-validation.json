@@ -1,0 +1,230 @@
+{
+  "baseline": "0.5.19",
+  "checks": [
+    {
+      "runtime": "luajit",
+      "exit_code": 0,
+      "passed": 56,
+      "failed": 0
+    },
+    {
+      "runtime": "lua",
+      "exit_code": 0,
+      "passed": 56,
+      "failed": 0
+    },
+    {
+      "runtime": "python",
+      "exit_code": 0,
+      "passed": 77,
+      "failed": 0
+    },
+    {
+      "runtime": "luajit-callsite-probe",
+      "exit_code": 0,
+      "passed": 5,
+      "failed": 0
+    },
+    {
+      "runtime": "lua-callsite-probe",
+      "exit_code": 0,
+      "passed": 5,
+      "failed": 0
+    },
+    {
+      "runtime": "luajit-search-return",
+      "exit_code": 0,
+      "passed": 23,
+      "failed": 0
+    },
+    {
+      "runtime": "luajit-selection-veto",
+      "exit_code": 0,
+      "passed": 21,
+      "failed": 0
+    },
+    {
+      "runtime": "luajit-native-observer",
+      "exit_code": 0,
+      "passed": 9,
+      "failed": 0
+    },
+    {
+      "runtime": "luajit-native-authority",
+      "exit_code": 0,
+      "passed": 10,
+      "failed": 0
+    },
+    {
+      "runtime": "luajit-native-search-context",
+      "exit_code": 0,
+      "passed": 22,
+      "failed": 0
+    },
+    {
+      "runtime": "luajit-native-readiness",
+      "exit_code": 0,
+      "passed": 7,
+      "failed": 0
+    },
+    {
+      "runtime": "luajit-preflight-probe",
+      "exit_code": 0,
+      "passed": 6,
+      "failed": 0
+    },
+    {
+      "runtime": "luajit-titan-route",
+      "exit_code": 0,
+      "passed": 13,
+      "failed": 0
+    },
+    {
+      "runtime": "luajit-weakpoint-route",
+      "exit_code": 0,
+      "passed": 8,
+      "failed": 0
+    },
+    {
+      "runtime": "luajit-charger-route",
+      "exit_code": 0,
+      "passed": 6,
+      "failed": 0
+    },
+    {
+      "runtime": "luajit-target-allowlist",
+      "exit_code": 0,
+      "passed": 3,
+      "failed": 0
+    },
+    {
+      "runtime": "luajit-target-reservations",
+      "exit_code": 0,
+      "passed": 6,
+      "failed": 0
+    },
+    {
+      "runtime": "luajit-structure-route",
+      "exit_code": 0,
+      "passed": 7,
+      "failed": 0
+    },
+    {
+      "runtime": "luajit-ping-memory",
+      "exit_code": 0,
+      "passed": 8,
+      "failed": 0
+    },
+    {
+      "runtime": "luajit-arrival-policy",
+      "exit_code": 0,
+      "passed": 7,
+      "failed": 0
+    },
+    {
+      "runtime": "lua-search-return",
+      "exit_code": 0,
+      "passed": 23,
+      "failed": 0
+    },
+    {
+      "runtime": "lua-selection-veto",
+      "exit_code": 0,
+      "passed": 21,
+      "failed": 0
+    },
+    {
+      "runtime": "lua-native-observer",
+      "exit_code": 0,
+      "passed": 9,
+      "failed": 0
+    },
+    {
+      "runtime": "lua-native-authority",
+      "exit_code": 0,
+      "passed": 10,
+      "failed": 0
+    },
+    {
+      "runtime": "lua-native-search-context",
+      "exit_code": 0,
+      "passed": 22,
+      "failed": 0
+    },
+    {
+      "runtime": "lua-native-readiness",
+      "exit_code": 0,
+      "passed": 7,
+      "failed": 0
+    },
+    {
+      "runtime": "lua-preflight-probe",
+      "exit_code": 0,
+      "passed": 6,
+      "failed": 0
+    },
+    {
+      "runtime": "lua-titan-route",
+      "exit_code": 0,
+      "passed": 13,
+      "failed": 0
+    },
+    {
+      "runtime": "lua-weakpoint-route",
+      "exit_code": 0,
+      "passed": 8,
+      "failed": 0
+    },
+    {
+      "runtime": "lua-charger-route",
+      "exit_code": 0,
+      "passed": 6,
+      "failed": 0
+    },
+    {
+      "runtime": "lua-target-allowlist",
+      "exit_code": 0,
+      "passed": 3,
+      "failed": 0
+    },
+    {
+      "runtime": "lua-target-reservations",
+      "exit_code": 0,
+      "passed": 6,
+      "failed": 0
+    },
+    {
+      "runtime": "lua-structure-route",
+      "exit_code": 0,
+      "passed": 7,
+      "failed": 0
+    },
+    {
+      "runtime": "lua-ping-memory",
+      "exit_code": 0,
+      "passed": 8,
+      "failed": 0
+    },
+    {
+      "runtime": "lua-arrival-policy",
+      "exit_code": 0,
+      "passed": 7,
+      "failed": 0
+    },
+    {
+      "runtime": "luajit-rollback",
+      "exit_code": 0,
+      "passed": 12,
+      "failed": 0
+    },
+    {
+      "runtime": "lua-rollback",
+      "exit_code": 0,
+      "passed": 12,
+      "failed": 0
+    }
+  ],
+  "passed": 535,
+  "scope": "Historical development suite; public subset is rerun independently.",
+  "native_lifetime_verified": false
+}

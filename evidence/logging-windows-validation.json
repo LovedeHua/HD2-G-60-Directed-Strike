@@ -1,0 +1,27 @@
+{
+  "passed": true,
+  "entry_sha256": "2f5ae433d2fb45c18b49fe99e7367d381a79f7b0e48675b007bb587f631edd6b",
+  "game_process_attached": false,
+  "native_lifetime_verified": false,
+  "scope": "Windows x64 fixture calls, synthetic observations, absent-game entry guard with unavailable logging",
+  "live_gameplay_verified": false,
+  "suite_counts": [
+    13,
+    22,
+    5,
+    13,
+    3,
+    8,
+    7,
+    17,
+    13,
+    19,
+    12,
+    3,
+    8,
+    8,
+    12,
+    15
+  ],
+  "total": 178
+}
