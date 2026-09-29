@@ -12,9 +12,10 @@ local orbit=ffi.typeof('void (*)(void **, float, float, float)')
 local valid=ffi.typeof('bool (*)(void *, uint32_t, const void *)')
 function M.new(env)
     local disabled,busy=false,false
-    -- ★ 净空拒绝的几何画像去重（2026-09-29）
-    -- 同一目标的同一原因只记一次，避免逐帧刷屏把别的信息埋掉。
+    -- ★ 净空诊断的去重集合（2026-09-29）
+    -- 同一目标的同一原因/同一 standoff 只记一次，避免逐帧刷屏把别的信息埋掉。
     local clearance_logged={}
+    local standoff_logged={}
     local api={}
     function api:step(scope,previous)
         if disabled or busy then return nil,'TITAN_OPERATION_DISABLED' end
@@ -116,13 +117,42 @@ function M.new(env)
                 local prior=previous and not previous.cancelled and previous.target.id==target.id
                     and previous.route or nil
                 local planned,value,detail
+                local route_standoff=env.titan_standoff
                 if profile.structure then
                     planned,value,detail=pcall(StructureRoute.step,own_position,target,prior,profile)
                 elseif profile.kind then
                     local now=profile.kind=='charger_front' and ArrivalPolicy.elapsed(c.time_hex,c.flight_start)/1000000 or nil
                     planned,value,detail=pcall(WeakRoute.step,own_position,target,prior,profile,now)
                 else
-                    planned,value,detail=pcall(Route.step,own_position,target,prior,env.titan_standoff,
+                    -- ★★ standoff 自适应 1.5~2.5（2026-09-29，用户明确授权）★★
+                    --
+                    -- titan_route 的净空判定是**硬拒绝**：
+                    --     blast_z(=p_z-standoff) >= floor_z(=origin_z+1.25)
+                    -- ⇒ 要求 p_z >= origin_z + 1.25 + standoff
+                    -- 泰坦站姿/坡度稍变就踩线（实测 4 次接管有 1 次因此放弃 = 25%）。
+                    --
+                    -- 用户授权把 standoff 从 2.5 收到 1.5 ⇒ 在**调用方**算出
+                    -- "刚好能清空地板"的值再传进去。`titan_route.lua` 因此保持
+                    -- 逐字节不变（它是 tests/test_bughole_scope.py 的 `untouched:` 安全层）。
+                    --
+                    -- ⚠️ 与上游意图的取舍（必须记录）：上游有一条测试写明
+                    --   "refuses instead of moving the blast back against the belly"，
+                    --   即宁可放弃也不把爆点往腹部压。这里**由用户明确决定**放宽：
+                    --   1.5 仍是有效 standoff（不会贴到腹部），用它换"不再因几厘米净空差放弃"。
+                    --   max_standoff 连 1.5 都不到时 Route.step 依然拒绝 —— 硬底线保留。
+                    local max_standoff=target.point[3]-(target.origin[3]+1.25)
+                    if route_standoff and route_standoff>0 and max_standoff<route_standoff then
+                        local lo=env.titan_standoff_min or 1.5
+                        route_standoff=math.max(lo,max_standoff)
+                        local tag=tostring(target.id)..'|'..string.format('%.2f',route_standoff)
+                        if env.emit and not standoff_logged[tag] then
+                            standoff_logged[tag]=true
+                            env.emit(string.format(
+                                'titan_standoff_adapted;target=%s;from=%.2f;to=%.2f;min=%.2f;max=%.2f',
+                                tostring(target.id),env.titan_standoff,route_standoff,lo,max_standoff))
+                        end
+                    end
+                    planned,value,detail=pcall(Route.step,own_position,target,prior,route_standoff,
                         env.titan_arrival_region and env.titan_arrival_region.radius)
                 end
                 if planned then route,reason=value,detail else reason=tostring(value) end
@@ -146,7 +176,9 @@ function M.new(env)
                         local tag=tostring(target.id)..'|'..reason
                         if not clearance_logged[tag] then
                             clearance_logged[tag]=true
-                            local standoff=env.titan_standoff or 0
+                            -- 用**实际传入**的 standoff（可能是自适应后的值），
+                            -- 否则日志会显示 2.5 而实际用的是别的 ⇒ 误导。
+                            local standoff=route_standoff or env.titan_standoff or 0
                             local p=target.point
                             local o=target.origin
                             env.emit(string.format(

@@ -15,7 +15,12 @@ if existing then return existing end
 --   而且**虫洞同样不在名单里**，某些时序下虫洞目标也会被清掉（用户实机反馈的两个 bug）。
 --   置 false ⇒ target_allowed=nil ⇒ `not allowed` 恒真 ⇒ 永不 veto ⇒ 敌人侧完全原生，
 --   虫洞则只由 structure_profiles（9 个虫洞）单独决定接管。
-local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets_only=false,titan_standoff=2.5,
+-- ★ titan_standoff = 目标爆点距离（泰坦腹部下方几米引爆），titan_standoff_min = 自适应下限。
+--   2026-09-29 用户授权：净空不足时允许从 2.5 收到 1.5（实测 4 次接管有 1 次因净空放弃）。
+--   自适应在**调用方** native_titan_aim 完成，titan_route.lua 保持逐字节不变
+--   （它是测试里 `untouched:` 安全层）。把 titan_standoff_min 设为与 titan_standoff
+--   相等即可关闭自适应、退回上游的"宁可放弃"行为。
+local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets_only=false,titan_standoff=2.5,titan_standoff_min=1.5,
     mark_priority_enabled=false,exclusive_targets=true,marked_structures=true,
     -- ★ 吐酸泰坦接管开关（2026-09-29）
     --   本 mod 接管的���标只有两类：玩家标记的虫洞 + 吐酸泰坦。其余全部交还引擎原生
@@ -89,7 +94,8 @@ local ok,why=pcall(function()
             and not line:match('^guide_give_up;')
             -- ★ 泰坦净空拒绝的几何画像：这是用来决定"能不能优化"的唯一数据源，
             --   被节流掉就等于没测（同日 arrival_already_exploded 已经栽过一次）。
-            and not line:match('^titan_clearance;') then return end
+            and not line:match('^titan_clearance;')
+            and not line:match('^titan_standoff_adapted;') then return end
         if written+#line+1>262144 then close();return end
         local good=pcall(function() assert(log:write(line..'\n'));assert(log:flush()) end)
         if not good then close() else written=written+#line+1 end
@@ -170,7 +176,7 @@ local ok,why=pcall(function()
         --     ⇒ 早期纯 ballistic 飘向别处
         --   · G-60 在**飞行寿命到期（30s）时自然转入 state 4**，与敌人无关
         allow_state3=false,
-        titan_standoff=state.titan_standoff,
+        titan_standoff=state.titan_standoff,titan_standoff_min=state.titan_standoff_min,
         titan_arrival_region=state.titan_arrival_region,
         thread=function() return tonumber(k.GetCurrentThreadId()) end,
         engine=assert(rawget(_G,'stingray'),'engine API unavailable'),emit=emit})
@@ -188,6 +194,7 @@ local ok,why=pcall(function()
         ..'mark_priority_enabled=false;exclusive_targets=true;marked_structures=true;'
         ..'native_lifetime_verified=false;mode=EXPERIMENTAL_NATIVE_CALLS;titan_standoff='..state.titan_standoff
         ..';titan_arrival_radius='..state.titan_arrival_region.radius..';titan_arrival_depth='..state.titan_arrival_region.depth
+        ..';titan_standoff_min='..tostring(state.titan_standoff_min)
         -- ★ 2026-09-29：接管范围 = 标记虫洞 + 吐酸泰坦，其余交还引擎。
         --   titan_resource 打出实际哈希，方便日志确认是否命中预期目标。
         ..';titan_enabled='..tostring(state.titan_enabled)

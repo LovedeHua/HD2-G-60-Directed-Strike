@@ -1102,6 +1102,81 @@ def test_stuck_grenade_breakers():
           "正常引爆仍然标记 retired（熔断是额外的收尾口，不是替代）")
 
 
+def test_adaptive_standoff():
+    print()
+    print("=== ⑲ ★ standoff 自适应 1.5~2.5（用户授权放宽）===")
+    aim = (ROOT / "src/g60" / "native_titan_aim.lua").read_text(encoding="utf-8")
+    route = (ROOT / "src/g60" / "titan_route.lua").read_text(encoding="utf-8")
+    e = (ROOT / "addon" / "entry.lua.in").read_text(encoding="utf-8")
+
+    # titan_route 的硬判定：blast = p_z - standoff 必须 >= floor = origin_z + 1.25
+    # 自适应（在调用方）：max_standoff = p_z - (origin_z+1.25)
+    #                     若 2.5 > max_standoff 则 standoff = max(1.5, max_standoff)
+    # 这里用一个**独立的规格镜像**验证数学不变量，而不是重述源码字符串。
+    LO, HI, MARGIN = 1.5, 2.5, 1.25
+
+    def adapt(pz, oz, target=HI, lo=LO):
+        max_s = pz - (oz + MARGIN)
+        if max_s < target:
+            return max(lo, max_s)
+        return target
+
+    def route_refuses(pz, oz, standoff):
+        return pz - standoff < oz + MARGIN
+
+    # A) 泰坦正常高度：不触发自适应，standoff 保持 2.5
+    s = adapt(10.0, 0.0)
+    check("adapt_idle_when_clear", s == HI and not route_refuses(10.0, 0.0, s),
+          f"净空充足时不改（standoff={s}）")
+
+    # B) 卡边：2.5 会撞地板，收到"刚好清空"的值并放行
+    #    p_z-origin_z = 3.5 ⇒ max_standoff = 2.25
+    s = adapt(3.5, 0.0)
+    check("adapt_shrinks_to_fit", abs(s - 2.25) < 1e-9 and not route_refuses(3.5, 0.0, s),
+          f"卡边时收到 {s}（应 2.25）且能放行")
+    check("adapt_stays_within_range", LO <= s <= HI, f"落在 [{LO},{HI}] 内")
+
+    # C) 极低：连 1.5 都不够 ⇒ 仍拒绝（硬底线保留，不贴腹部）
+    s = adapt(2.5, 0.0)
+    check("adapt_keeps_hard_floor", s == LO and route_refuses(2.5, 0.0, s),
+          f"连 {LO} 都不够时仍拒绝（standoff={s}）")
+
+    # D) 单调性：净空越差，standoff 越小（或触底）
+    prev = None
+    mono = True
+    for dz in (10.0, 5.0, 4.0, 3.8, 3.75, 3.6, 3.0, 2.5):
+        s = adapt(dz, 0.0)
+        if prev is not None and s > prev + 1e-9: mono = False
+        prev = s
+    check("adapt_monotonic", mono, "净空越差 standoff 越小（单调不增）")
+
+    # E) 绝不超过用户上限 / 绝不低于下限
+    ok = all(LO <= adapt(pz, 0.0) <= HI for pz in (0.0, 1.0, 3.0, 4.0, 9.0, 100.0))
+    check("adapt_bounded", ok, f"任意净空下 standoff 都在 [{LO},{HI}]")
+
+    # ---- 源码侧：实现必须与规格一致，且不能碰守卫文件 ----
+    code = "\n".join(l for l in aim.splitlines() if not l.strip().startswith("--"))
+    check("adapt_impl_formula",
+          "target.point[3]-(target.origin[3]+1.25)" in code
+          and "route_standoff=math.max(lo,max_standoff)" in code,
+          "实现公式与规格镜像一致")
+    check("adapt_upper_bound_is_config",
+          "route_standoff=env.titan_standoff" in code,
+          "上限取 env.titan_standoff（配置值 2.5），不是硬编码")
+    check("adapt_lower_bound_is_config",
+          "env.titan_standoff_min or 1.5" in code and "titan_standoff_min=1.5" in e,
+          "下限取 env.titan_standoff_min（配置值 1.5），可调")
+    check("adapt_does_not_touch_guarded_route",
+          "max_standoff" not in route and "insufficient blast standoff clearance" in route,
+          "★ titan_route 逐字节未动，仍是硬拒绝")
+    check("adapt_uses_actual_standoff_in_diag",
+          "local standoff=route_standoff or env.titan_standoff or 0" in aim,
+          "净空诊断报告**实际使用**的 standoff，不报名义值（防误导）")
+    check("adapt_log_whitelisted",
+          "line:match('^titan_standoff_adapted;')" in e,
+          "自适应日志进节流白名单")
+
+
 def test_clearance_diagnostics_placement():
     print()
     print("=== ⑱ ★ 净空诊断必须放在非守卫文件里，且公式自洽 ===")
@@ -1263,6 +1338,7 @@ def main():
     test_takeover_scope_is_bughole_and_titan_only()
     test_diagnostics_not_throttled()
     test_clearance_diagnostics_placement()
+    test_adaptive_standoff()
     test_stuck_grenade_breakers()
     test_link_diagnostics()
     test_priority_wiring()
