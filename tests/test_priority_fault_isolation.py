@@ -1102,6 +1102,47 @@ def test_stuck_grenade_breakers():
           "正常引爆仍然标记 retired（熔断是额外的收尾口，不是替代）")
 
 
+def test_clearance_diagnostics_placement():
+    print()
+    print("=== ⑱ ★ 净空诊断必须放在非守卫文件里，且公式自洽 ===")
+    aim = (ROOT / "src/g60" / "native_titan_aim.lua").read_text(encoding="utf-8")
+    route = (ROOT / "src/g60" / "titan_route.lua").read_text(encoding="utf-8")
+
+    # ★ 2026-09-29：用户想优化"泰坦贴地就放弃"，但 titan_route.lua 属于
+    #   `untouched:`（安全层逐字节不可变）守卫，上游还有一条测试明令
+    #   "refuses instead of moving the blast back against the belly"
+    #   ⇒ standoff 不能缩、爆点不能往腹部压。
+    #   ⇒ 诊断只能补在**调用方**（native_titan_aim），不能为取证去改守卫文件。
+    check("clearance_diag_in_aim_not_route",
+          "titan_clearance" in aim and "titan_clearance" not in route,
+          "★ 诊断在 native_titan_aim（非守卫），titan_route 保持原样")
+
+    # 公式自洽：floor_z = origin_z + 1.25；blast_z = p_z - standoff；short = max(0, floor-blast)
+    check("clearance_formula_matches_upstream",
+          "o[3]+1.25" in aim and "p[3]-standoff" in aim
+          and "math.max(0,(o[3]+1.25)-(p[3]-standoff))" in aim,
+          "诊断公式与 titan_route 的 floor/blast 定义一致（1.25 余量）")
+    check("clearance_reports_need_p_z",
+          "need_p_z" in aim and "o[3]+1.25+standoff" in aim,
+          "给出还需要多少 p_z 才够，便于直接判断差距")
+
+    # 去重：同一目标同一原因只记一次
+    check("clearance_dedup",
+          "clearance_logged" in aim and "if not clearance_logged[tag] then" in aim,
+          "同一目标同一原因只记一条（防逐帧刷屏埋掉别的信息）")
+    # 只记几何类拒绝，其它拒绝不记（否则是噪音）
+    check("clearance_only_geometry_rejections",
+          "reason:find('clearance',1,true) or reason:find('belly',1,true)" in aim,
+          "只对几何/净空类拒绝记录")
+
+    # titan_route 的安全语义仍必须完整（被守卫覆盖，这里做二重确认）
+    for frag in ("insufficient blast standoff clearance",
+                 "if standoff>0 and blast_z<floor then return nil",
+                 "local floor=target.origin[3]+1.25"):
+        check(f"route_semantics_intact_{frag.split()[0]}",
+              frag in route, f"titan_route 仍保留：{frag[:40]}")
+
+
 def test_diagnostics_not_throttled():
     print()
     print("=== ⑰ ★ 关键诊断不得被日志节流丢掉 ===")
@@ -1114,7 +1155,7 @@ def test_diagnostics_not_throttled():
     #   **诊断被节流掉 = 诊断不存在。**
     #
     #   规则：凡是用来判断"某机制是否生效"的事件，都必须进白名单。
-    for ev in ("arrival_already_exploded", "guide_give_up"):
+    for ev in ("arrival_already_exploded", "guide_give_up", "titan_clearance"):
         check(f"throttle_whitelists_{ev}",
               f"line:match('^{ev};')" in e,
               f"★ {ev} 必须常驻写日志（不得被节流）")
@@ -1221,6 +1262,7 @@ def main():
     test_no_lock_path_bypasses_whitelist()
     test_takeover_scope_is_bughole_and_titan_only()
     test_diagnostics_not_throttled()
+    test_clearance_diagnostics_placement()
     test_stuck_grenade_breakers()
     test_link_diagnostics()
     test_priority_wiring()

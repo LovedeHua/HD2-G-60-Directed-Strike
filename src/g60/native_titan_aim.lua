@@ -12,6 +12,9 @@ local orbit=ffi.typeof('void (*)(void **, float, float, float)')
 local valid=ffi.typeof('bool (*)(void *, uint32_t, const void *)')
 function M.new(env)
     local disabled,busy=false,false
+    -- ★ 净空拒绝的几何画像去重（2026-09-29）
+    -- 同一目标的同一原因只记一次，避免逐帧刷屏把别的信息埋掉。
+    local clearance_logged={}
     local api={}
     function api:step(scope,previous)
         if disabled or busy then return nil,'TITAN_OPERATION_DISABLED' end
@@ -123,7 +126,39 @@ function M.new(env)
                         env.titan_arrival_region and env.titan_arrival_region.radius)
                 end
                 if planned then route,reason=value,detail else reason=tostring(value) end
-                if not route then target=nil end
+                if not route then
+                    -- ★★ 净空不足的几何画像（2026-09-29）★★
+                    --
+                    -- `titan_route` 拒绝时只返回文本，看不出"差多少"。而区分下面两种
+                    -- 情况**决定了完全不同的改法**：
+                    --   · 只差 0.1~0.3m  → 调 floor 余量就能救
+                    --   · 差 2m 以上     → 泰坦站在坑里，任何参数调整都无解
+                    --
+                    -- 数值在这里（调用方）补，**不是**去改 titan_route.lua ——
+                    -- 那个文件属于"安全层逐字节不可变"（tests/test_bughole_scope.py 的
+                    -- `untouched:` 守卫）。上游还有一条测试明令
+                    -- "refuses instead of moving the blast back against the belly"，
+                    -- 所以 `standoff` 不能缩、爆点不能往腹部压，可动的只有判定余量。
+                    --
+                    -- 只对几何/净空类拒绝记录；其它拒绝不是几何问题，记了是噪音。
+                    if env.emit and type(reason)=='string'
+                        and (reason:find('clearance',1,true) or reason:find('belly',1,true)) then
+                        local tag=tostring(target.id)..'|'..reason
+                        if not clearance_logged[tag] then
+                            clearance_logged[tag]=true
+                            local standoff=env.titan_standoff or 0
+                            local p=target.point
+                            local o=target.origin
+                            env.emit(string.format(
+                                'titan_clearance;target=%s;p_z=%.2f;origin_z=%.2f;floor_z=%.2f;'
+                                ..'blast_z=%.2f;short=%.2f;standoff=%.2f;need_p_z=%.2f',
+                                tostring(target.id),p[3],o[3],o[3]+1.25,
+                                p[3]-standoff,math.max(0,(o[3]+1.25)-(p[3]-standoff)),
+                                standoff,o[3]+1.25+standoff))
+                        end
+                    end
+                    target=nil
+                end
             end
             local arrival_progress
             if target and env.arrival then
