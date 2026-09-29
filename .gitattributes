@@ -1,0 +1,19 @@
+# 统一行尾：仓库内一律 LF（Windows 检出时按平台转换）
+* text=auto eol=lf
+
+# 明确文本类型
+*.lua   text
+*.py    text
+*.md    text
+*.json  text
+*.in    text
+
+# 明确二进制（避免被当作文本做行尾转换而损坏）
+*.zip      binary
+*.png      binary
+*.jpg      binary
+*.jpeg     binary
+*.gpu_resources binary
+*.stream   binary
+patch_0    binary
+*.patch_0  binary

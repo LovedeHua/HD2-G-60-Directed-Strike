@@ -307,5 +307,7 @@ G-60 #1116: 锁定567 -> 锁定561 -> 炸561
 
 ## 许可与来源
 
-代码 MIT（见 `LICENSE`）。**派生自 etxp/HD2-G60-Smart-Targeting**，原作者与 AI 辅助开发声明
-保留在 `THIRD_PARTY_NOTICES.md`。游戏数据与美术资源权利另计（见该文件）。
+代码 MIT（见 `LICENSE`）。**派生自 etxp/HD2-G60-Smart-Targeting**，原作者版权声明
+按 MIT 要求原样保留；本衍生作品的版权归 LovedeHua。上游来源与 AI 辅助开发声明见
+`THIRD_PARTY_NOTICES.md`，上游原始 README 保留为 `README.upstream.md` / `README.upstream.zh-TW.md`。
+游戏数据与美术资源权利另计（见该文件）。
