@@ -1018,12 +1018,71 @@ def test_structure_whitelist(rt):
     check("whitelist_only_holes", kinds == {"structure_hole"},
           f"白名单仅含 structure_hole（实际：{sorted(kinds)}）")
     n = len(re.findall(r'profiles\["', prof))
-    check("whitelist_size_known", n == 17, f"白名单 17 项（实际 {n}）")
+    check("whitelist_size_known", n == 16, f"白名单 16 项（实际 {n}）")
 
     # 所有 profile 都必须显式 structure=true —— 这是"结构体"而非"活体"的标记
     n_true = len(re.findall(r"structure=true", prof))
     check("whitelist_all_flagged_structure",
           n_true == n, f"全部标了 structure=true（{n_true}/{n}）")
+
+    # ★★ 2026-09-29：把"尖啸巢穴等绝不接管"从**口号**变成**可验证的事实** ★★
+    #
+    #   这段测试的标题一直写着"非虫洞目标（尖啸巢穴等）绝不接管"，
+    #   但它只检查了 `kind` 字段 —— 而 `kind` 是**我们自己**写的标签。
+    #   尖啸者巢就以 `kind="structure_hole"` 混在表里跑了很久都没被发现。
+    #   ⇒ 改为**点名断言**：具体哈希不得出现。
+    # ⚠️ 必须剥注释后再查：本文件的新注释里就引用了这些哈希来解释历史，
+    #    用原始文本查会把说明文字当成代码（这个坑今天已经踩过好几次）。
+    _nocomment = "\n".join(l for l in prof.splitlines() if not l.strip().startswith("--"))
+    for h, label in (("095686275a113614", "尖啸者巢 Shrieker Nest"),
+                     ("aa28caf964d05500", "孢子菇 Spore Spewer"),
+                     ("e02e6bd34b606a85", "大型孢子菇 Spore Spewer Large"),
+                     ("06d3c4720e642fc1", "任务虫卵 embryo_01")):
+        check(f"non_hole_{h}_excluded", h not in _nocomment,
+              f"★ {label} 不得出现在白名单里（点名，不靠 kind 字段）")
+
+    # ★★★ 独立来源验证：每一条都必须是"虫洞生成器" ★★★
+    #   拿自己写的 kind 验证自己的清单是**循环论证**（上一轮就是这么漏掉尖啸者巢的）。
+    #   这里改用**游戏资源路径**（MurmurHash64A 反查 107,744 条资源名）。
+    hs = ROOT.parent / "hd2-charge-mod" / "offline" / "datalibrary" / "hashes.txt"
+    if not hs.exists():
+        check("whitelist_paths_are_bugholes", True, "跳过：离线 hashes.txt 不在（CI 正常）")
+    else:
+        import struct as _s
+
+        def _murmur64a(name):
+            data = name.encode("utf-8"); mask = (1 << 64) - 1
+            mix = 0xC6A4A7935BD1E995
+            value = len(data) * mix & mask; end = len(data) // 8 * 8
+            for (word,) in _s.iter_unpack("<Q", data[:end]):
+                word = word * mix & mask; word ^= word >> 47
+                value = (value ^ (word * mix & mask)) * mix & mask
+            if data[end:]:
+                value = (value ^ int.from_bytes(data[end:], "little")) * mix & mask
+            value ^= value >> 47; value = value * mix & mask
+            return value ^ (value >> 47)
+
+        rev = {}
+        for _line in hs.read_text(encoding="utf-8", errors="replace").splitlines():
+            _line = _line.strip()
+            if not _line or _line.startswith("//"):
+                continue
+            rev.setdefault(f"{_murmur64a(_line):016x}", _line)
+        _holes = re.findall(r'profiles\["([0-9a-f]{16})"\]', _nocomment)
+        check("whitelist_path_evidence_available", len(_holes) == 16 and len(rev) > 100000,
+              f"复算前提满足（{len(_holes)} 条 profile / {len(rev)} 条资源名）")
+        unknown = [h for h in _holes if h not in rev]
+        check("whitelist_all_paths_resolved", not unknown,
+              f"★ 16 条全部能反查到游戏资源路径（未解析：{unknown}）")
+        not_spawner = [h for h in _holes
+                       if h in rev and "bug_spawner" not in rev[h]
+                       and "mechanical_bughole" not in rev[h]]
+        check("whitelist_paths_are_bugholes", not not_spawner,
+              f"★ 每条都是 bug_spawner / mechanical_bughole（异常：{not_spawner}）")
+        forbidden = [h for h in _holes
+                     if h in rev and any(k in rev[h] for k in ("shrieker", "fog_generator", "embryo"))]
+        check("whitelist_excludes_nests_spewers_eggs", not forbidden,
+              f"★ 不得含巢体/孢子菇/虫卵（命中：{forbidden}）")
 
     # ★ 门控层也必须有同一道白名单（take_gate 是决策入口）
     gate = (ROOT / "src/g60" / "take_gate.lua").read_text(encoding="utf-8")

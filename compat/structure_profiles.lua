@@ -31,10 +31,28 @@ profiles["b6a181adcf547aeb"]={resource="b6a181adcf547aeb",kind="structure_hole",
 profiles["9d8632a79c2d9789"]={resource="9d8632a79c2d9789",kind="structure_hole",nodes=77,structure=true,boss_hash=0x4a182741,belly_hash=0x8ea852c8,aim_hash=0x4a182741,offset={-0.5,3.0999999046325684,0.6000000238418579},forward_local={0.04377192001860948,0.9990415501959288,0.0},getters=common.getters,alive_rva=common.alive_rva}
 -- 复用到 bug_spawner_scavenger（nodes=86）
 profiles["d666aa61d804d311"]={resource="d666aa61d804d311",kind="structure_hole",nodes=86,structure=true,boss_hash=0x4a182741,belly_hash=0x8ea852c8,aim_hash=0x4a182741,offset={-0.4000000059604645,3.0,0.3499999940395355},forward_local={0.013470103975976559,0.9999092740338378,0.0},getters=common.getters,alive_rva=common.alive_rva}
--- ★ bug_spawner_shrieker（尖啸者巢）：上游把它归为 structure_tower(nodes=72, offset z=13.0)，
---   本工程第一版按"只接管虫洞"把它删了。但它同样是可标记的 EnemyMassive 巢体，
---   玩家会期望能炸 ⇒ 按其**上游原始参数**恢复（不是套用 bug_spawner_warrior 的）。
-profiles["095686275a113614"]={resource="095686275a113614",kind="structure_hole",nodes=72,structure=true,boss_hash=0x4a182741,belly_hash=0x4a182741,aim_hash=0x4a182741,offset={0.0,0.0,13.0},forward_local={0.0,1.0,0.0},getters=common.getters,alive_rva=common.alive_rva}
+-- ★★ 095686275a113614（尖啸者巢 Shrieker Nest）已**移除**（2026-09-29）★★
+--
+--   游戏资源路径：content/env_bugs/assets/gameplay/bug_spawner_shrieker
+--   （本工程离线 MurmurHash64A 反查）与社区表《绝地潜兵2资源ID》
+--   「哈希表-整合」标注的"尖啸虫巢穴 | Shrieker Nest"**两个独立来源一致**。
+--
+--   为什么要移除：**用户 2026-09-28 的明确要求**——
+--     "对于有生命值的尖啸巢穴这一类的不要接管，直接使用游戏原生行为"。
+--   它是有生命值的巢体（上游把它归为 structure_tower），不是虫洞（bug hole）。
+--
+--   ⚠️ 历史教训（别再犯）：裁剪 J 当初因为它"可标记(SpottableComponent
+--      markerType=EnemyMassive) + 能被 ping" 就把它当成虫洞恢复了，
+--      **把"可标记"错当成了"是虫洞"**。2026-09-28 我"核实"时又用
+--      自家 `kind="structure_hole"` 标签去证明"它不在表里" —— 循环论证。
+--      而当时的实机日志里 `structure_mark;resource=095686275a113614` 明明是
+--      ACCEPTED，看见了却没对上。
+--   ⇒ 判定"是不是虫洞"必须用**独立来源**（游戏资源路径 / 社区表），
+--     不能用本文件自己写的 kind 字段。
+--
+--   移除后它完全按游戏原生处理：不接管、不引导、不引爆，
+--   也**不**进 small_filter 的排除表（那是"清引擎选择"，同样不是原生行为）。
+--   `tests/test_bughole_scope.py` 有断言钉住"它不得再出现在本文件里"。
 -- ★ mechanical_bughole（机械虫洞，超级地球基地）：不同阵营的机械结构，
 --   **没有同模型基线可复用**。先按最保守的通用爆点（模型原点正上方 3m）登记，
 --   让它至少能被接管与引爆；炸不塌的话再按实机标定 nodes/offset。

@@ -7,8 +7,8 @@
       "nodes": 86,
       "kind": "structure_hole",
       "in_list": true,
-      "marked": true,
-      "detonated": true,
+      "marked": false,
+      "detonated": false,
       "risk": "low(\u4e0a\u6e38\u6807\u5b9a\u503c)"
     },
     {
@@ -27,8 +27,8 @@
       "nodes": 77,
       "kind": "structure_hole",
       "in_list": true,
-      "marked": true,
-      "detonated": true,
+      "marked": false,
+      "detonated": false,
       "risk": "low(\u4e0a\u6e38\u6807\u5b9a\u503c)"
     },
     {
@@ -37,7 +37,7 @@
       "nodes": 77,
       "kind": "structure_hole",
       "in_list": true,
-      "marked": false,
+      "marked": true,
       "detonated": false,
       "risk": "low(\u4e0a\u6e38\u6807\u5b9a\u503c)"
     },
@@ -47,8 +47,8 @@
       "nodes": 77,
       "kind": "structure_hole",
       "in_list": true,
-      "marked": true,
-      "detonated": true,
+      "marked": false,
+      "detonated": false,
       "risk": "low(\u4e0a\u6e38\u6807\u5b9a\u503c)"
     },
     {
@@ -57,7 +57,7 @@
       "nodes": 113,
       "kind": "structure_hole",
       "in_list": true,
-      "marked": false,
+      "marked": true,
       "detonated": false,
       "risk": "low(\u4e0a\u6e38\u6807\u5b9a\u503c)"
     },
@@ -77,7 +77,7 @@
       "nodes": 113,
       "kind": "structure_hole",
       "in_list": true,
-      "marked": true,
+      "marked": false,
       "detonated": false,
       "risk": "low(\u4e0a\u6e38\u6807\u5b9a\u503c)"
     },
@@ -132,16 +132,6 @@
       "risk": "low(\u590d\u7528\u540c\u6a21\u578b\u57fa\u7ebf)"
     },
     {
-      "resource": "095686275a113614",
-      "name": "bug_spawner_shrieker",
-      "nodes": 72,
-      "kind": "structure_hole",
-      "in_list": true,
-      "marked": true,
-      "detonated": true,
-      "risk": "low(\u4e0a\u6e38\u539f\u59cb\u53c2\u6570)"
-    },
-    {
       "resource": "688949109126ece4",
       "name": "mechanical_bughole",
       "nodes": 77,
@@ -172,43 +162,110 @@
       "risk": "low(\u590d\u7528\u540c\u6a21\u578b\u57fa\u7ebf)"
     }
   ],
-  "verified": 4,
-  "unverified": 13,
+  "verified": 0,
+  "unverified": 16,
   "missed": [],
   "rejected_by_class": {
     "projectile": [
       {
         "resource": "16f397ca5f51f271",
         "name": "(\u672a\u6536\u5f55)",
-        "rejected": 8
-      }
-    ],
-    "listed": [
-      {
-        "resource": "8901f188db366b4b",
-        "name": "bug_spawner_scavenger",
-        "rejected": 7
-      },
-      {
-        "resource": "8c31b749759cbd61",
-        "name": "bug_spawner_warrior",
-        "rejected": 8
-      },
-      {
-        "resource": "095686275a113614",
-        "name": "bug_spawner_shrieker",
-        "rejected": 3
+        "rejected": 49
       }
     ],
     "enemy": [
       {
-        "resource": "36aa99cce5e60146",
-        "name": "cha_boomer",
+        "resource": "6b202392f4ab605e",
+        "name": "cha_charger_acid",
         "rejected": 1
       },
       {
-        "resource": "a1f37bf2a40fbde4",
-        "name": "cha_warrior_plus",
+        "resource": "dcf8e74212fbee3b",
+        "name": "cha_impaler",
+        "rejected": 2
+      },
+      {
+        "resource": "32541fc4ec7c9cdc",
+        "name": "cha_warrior_tier_2",
+        "rejected": 1
+      },
+      {
+        "resource": "a05bd1ec67b3ac4c",
+        "name": "cha_charger_tier2",
+        "rejected": 3
+      },
+      {
+        "resource": "137988cea16458f7",
+        "name": "cha_lieutenant_suppressor",
+        "rejected": 4
+      },
+      {
+        "resource": "3e0537d606438fea",
+        "name": "cha_lieutenant_assault",
+        "rejected": 3
+      },
+      {
+        "resource": "9647b00cc3a9d36f",
+        "name": "cha_soldier_rpg",
+        "rejected": 1
+      },
+      {
+        "resource": "b92435fbf60f0748",
+        "name": "cha_soldier_mg",
+        "rejected": 2
+      }
+    ],
+    "unknown": [
+      {
+        "resource": "nil",
+        "name": "(\u672a\u6536\u5f55)",
+        "rejected": 2
+      },
+      {
+        "resource": "ee4c107b941ab7f4",
+        "name": "mine_shark",
+        "rejected": 1
+      },
+      {
+        "resource": "4fb8eb356ac8553e",
+        "name": "cyborg_spawner_factory_conscript_standard",
+        "rejected": 12
+      },
+      {
+        "resource": "53d8919d7b8abd67",
+        "name": "cyborg_tank_heavycannon",
+        "rejected": 2
+      },
+      {
+        "resource": "282eb766c1ffa6a1",
+        "name": "cyborg_gunship",
+        "rejected": 3
+      },
+      {
+        "resource": "a1a7b76b29088843",
+        "name": "cyborg_spawner_factory_conscript_phalanx",
+        "rejected": 3
+      },
+      {
+        "resource": "d37e8d120d2836e3",
+        "name": "cyborg_spawner",
+        "rejected": 3
+      },
+      {
+        "resource": "8e325c933e55bf62",
+        "name": "(\u672a\u6536\u5f55)",
+        "rejected": 1
+      }
+    ],
+    "listed": [
+      {
+        "resource": "f78bf0ff5c62140d",
+        "name": "bug_spawner_boomer",
+        "rejected": 1
+      },
+      {
+        "resource": "36cc8ead2bb18d78",
+        "name": "bug_spawner_hiveguard",
         "rejected": 1
       }
     ]

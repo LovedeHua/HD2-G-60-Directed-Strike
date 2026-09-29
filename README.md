@@ -17,7 +17,7 @@
 
 | 情况 | 行为 |
 |---|---|
-| 你标记了下面 17 个虫洞之一 | **本 mod 接管**：打断 G-60 当前的敌人锁定，改为朝该虫洞飞去，到达后引爆 |
+| 你标记了下面 16 个虫洞之一 | **本 mod 接管**：打断 G-60 当前的敌人锁定，改为朝该虫洞飞去，到达后引爆 |
 | 你标记了**吐酸泰坦**（Bile Titan） | **本 mod 接管**：走为体型标定的航路（around → descend → under → attack），在腹部下方引爆 |
 | 你标记了**蟑龙**（Dragonroach） | **本 mod 接管**：飞到胸腔气囊下方引爆 |
 | 引擎自己选中了吐酸泰坦 / 蟑龙（你没标记） | 同上接管 |
@@ -33,13 +33,34 @@
 `titan_enabled=false` 关闭泰坦接管，`titan_variants_enabled=false` 只关掉变体
 （保留普通泰坦），`dragonroach_enabled=false` 关闭蟑龙接管。全部设 false 即退回"只打虫洞"。
 
-## 支持的 17 个虫巢（9 基线 + 8 变体）
+## 支持的 16 个虫巢（9 基线 + 7 变体）
 
 - **8 种普通虫洞**：scavenger / spitter / warrior / hiveguard / hunter / boomer / prowler / stalker
 - **1 个大型 colony 洞** = `bug_spawner_bile_titan`（**泰坦巢**）使用的模型
 
-已删除（标记它们本 mod 不接管）：Shrieker Nest（尖啸者巢）、普通/大型 Spore Spewer（孢子菇）、
+已删除（标记它们本 mod 不接管）：**Shrieker Nest（尖啸者巢）**、普通/大型 Spore Spewer（孢子菇）、
 `embryo_01`（任务虫卵）。
+
+### ★★ 2026-09-29 移除尖啸者巢（修正一处长期错误）
+
+`095686275a113614` 是**尖啸者巢 Shrieker Nest**，不是虫洞。两个**独立来源**一致：
+
+| 来源 | 内容 |
+|---|---|
+| 游戏资源路径（本工程 MurmurHash64A 反查 107,744 条资源名） | `content/env_bugs/assets/gameplay/bug_spawner_shrieker` |
+| 社区表《绝地潜兵2资源ID》→「哈希表-整合」 | `尖啸虫巢穴 \| Shrieker Nest` |
+
+**它违反用户 2026-09-28 的明确要求**："对于有生命值的尖啸巢穴这一类的不要接管，
+直接使用游戏原生行为"。现已在 `compat/structure_profiles.lua` 中移除 ⇒ 清单 17 → 16。
+
+> ⚠️ **我犯的错，记在这里**：裁剪 J 当初因为它"可标记（`SpottableComponent.markerType=EnemyMassive`）
+> 且能被 ping"就把它当成虫洞恢复了 —— **把"可标记"错当成"是虫洞"**，而上游本来
+> 把它归为 `structure_tower`。更糟的是 2026-09-28 我"核实"时说"它不在表里"，
+> 证据是"17 项全是 `kind=\"structure_hole\"`" —— **循环论证**：`kind` 是我们自己写的标签。
+> 而当时的实机日志里 `structure_mark;resource=095686275a113614` 明明是 `ACCEPTED`。
+> ⇒ **判定"是不是虫洞"必须用独立来源（游戏资源路径 / 社区表），不能用自己的标签。**
+> 现在测试里有两条防线：点名断言（该哈希不得出现）+ 用游戏路径反查验证"每条都是
+> `bug_spawner_*`/`mechanical_bughole`"。
 
 ## 支持的敌人（3 种）
 
@@ -112,7 +133,7 @@ ef04cb84d097a497 → content/fac_bugs/cha_strider/cha_strider_gloom
 | `titan_aim;…;point=…` | 虫洞瞄准点（结构 profile 换算出来的爆点） |
 
 启动时那行会明确打印本包的能力边界：
-`build=BUGHOLE_ONLY;scope=marked_bughole_only;bughole_profiles=17;enemy_priority=REMOVED;weakpoints=REMOVED;shrieker_spewer_egg=REMOVED;unmarked_behavior=VANILLA`
+`build=BUGHOLE_ONLY;scope=marked_bughole_only;bughole_profiles=16;enemy_priority=REMOVED;weakpoints=REMOVED;shrieker_spewer_egg=REMOVED;unmarked_behavior=VANILLA`
 
 ## 已知限制
 
@@ -289,7 +310,9 @@ arrival_detonated;entity=584;target=462;distance=1.61   ← 虫洞被引爆
 
 第五轮实测（274 行）**大成功**：22 个标记 / 21 次引爆，
 `structure_lock_lost` **0 次**（裁剪 I 的 sticky 完全生效），
-清单 17 条里的 `095686275a113614`（尖啸者巢）也炸了 2 次。
+清单里的 `095686275a113614` 也炸了 2 次 —— **这条后来判定为错误**（当时把
+"可标记的尖啸者巢"当成虫洞）。2026-09-29 已用两个独立来源确认它是**有生命值的巢体**，
+并按用户要求从清单移除，见上文"2026-09-29 移除尖啸者巢"。
 被拒的资源反查后确认全是**敌人**（`36aa99cce5e60146`=cha_boomer、
 `a1f37bf2a40fbde4`=cha_warrior_plus、`16f397ca…`=投掷物）—— 正确。
 
@@ -372,7 +395,7 @@ G-60 #1116: 锁定567 -> 锁定561 -> 炸561
 | `b6a181adcf547aeb` | bug_spawner_warrior_ceiling | 复用 **warrior** 基线（组件集完全相同） |
 | `9d8632a79c2d9789` | bug_spawner_warrior_tutorial | 复用 **warrior** 基线（组件集完全相同） |
 | `d666aa61d804d311` | bug_spawner_scavenger_captive | 复用 **scavenger** 基线（组件集完全相同） |
-| `095686275a113614` | **尖啸者巢** Shrieker Nest | 按其**上游原始参数**恢复（`nodes=72` / `offset z=13.0`，上游归为 `structure_tower`） |
+| ~~`095686275a113614`~~ | ~~尖啸者巢 Shrieker Nest~~ | **2026-09-29 移除**（用户要求：有生命值的巢体不接管）。两个独立来源确认它是巢体而非虫洞 |
 | `688949109126ece4` | mechanical_bughole（机械虫洞） | ⚠ 无同模型基线，暂用最保守通用爆点 |
 | `5cf84155e60c6e4d` | mechanical_bughole_scavenger | ⚠ 同上 |
 | `0df874e208040d2f` | bug_spawner_base（基类） | 复用 **scavenger** 基线，防漏网 |
@@ -383,7 +406,8 @@ G-60 #1116: 锁定567 -> 锁定561 -> 炸561
 唯一没有基线可依的是 `mechanical_bughole`（不同阵营的机械结构），
 已明确标注 ⚠ —— 若炸不塌，删掉那一行即可，其余 16 条不受影响。
 
-**清单从 9 → 17**。仍**不接管**：孢子菇 ×2（`bug_fog_generator` / `_large`）、任务虫卵
+**清单从 9 → 16**（2026-09-27 加到 17，2026-09-29 按用户要求移除尖啸者巢）。
+仍**不接管**：**尖啸者巢** `bug_spawner_shrieker`、孢子菇 ×2（`bug_fog_generator` / `_large`）、任务虫卵
 （`embryo_01`）—— 它们不是虫洞。
 
 #### 一个"看起来像 bug 但其实正确"的现象

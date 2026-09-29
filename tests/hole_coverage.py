@@ -146,8 +146,6 @@ def main():
             risk = "★HIGH(无基线，保守假设)"
         elif h in BORROWED:
             risk = "low(复用同模型基线)"
-        elif h == "095686275a113614":
-            risk = "low(上游原始参数)"
         else:
             risk = "low(上游标定值)"
         rows.append({

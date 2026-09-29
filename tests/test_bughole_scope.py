@@ -39,11 +39,18 @@ UPSTREAM_HOLE_IDS = (
     'bc2af8548c6d5e06', 'f78bf0ff5c62140d', '97dd3178e9f0ab70', '4776a1cf3f19a13b',
     '3a2cef12ed32a088',
 )
-# 被裁掉的三条 tower(Shrieker Nest / 2x Spore Spewer) 与一条 egg(embryo_01)
-# 上游 13 条里**永久移除**的：2 个孢子菇(不是虫洞) + 1 个任务虫卵。
-# 尖啸者巢 095686275a113614 原本也在这张表里（上游归为 structure_tower），
-# 但 2026-09-27 裁剪 J 已按其上游原始参数(nodes=72)恢复为虫洞，故移出。
-REMOVED_IDS = ('aa28caf964d05500', 'e02e6bd34b606a85', '06d3c4720e642fc1')
+# 上游 13 条里**永久移除**的 4 条 —— 都不是虫洞(bug hole)：
+#   · 2 个孢子菇 Spore Spewer（aa28caf9… / e02e6bd3…）
+#   · 1 个任务虫卵 embryo_01（06d3c472…）
+#   · ★ 尖啸者巢 Shrieker Nest（095686275a113614）—— 2026-09-29 按**用户要求**移除：
+#       "对于有生命值的尖啸巢穴这一类的不要接管，直接使用游戏原生行为"。
+#       两个独立来源确认它是**巢体**而不是虫洞：
+#         游戏路径 content/env_bugs/assets/gameplay/bug_spawner_shrieker
+#         社区表《绝地潜兵2资源ID》→"尖啸虫巢穴 | Shrieker Nest"
+#       ⚠️ 历史：裁剪 J 曾因它"可标记"就把它当虫洞恢复 —— 把"可标记"错当"是虫洞"，
+#          且上游本来把它归为 structure_tower。可标记 ≠ 是虫洞。
+REMOVED_IDS = ('aa28caf964d05500', 'e02e6bd34b606a85', '06d3c4720e642fc1',
+               '095686275a113614')
 
 # 必须与上游逐字节一致的安全层（改动其中任何一个都要重新论证）
 SAFETY_LAYER = (
@@ -266,11 +273,11 @@ def strip_comments(text):
 
 
 def main():
-    print('=== 1. structure_profiles: 虫洞清单（9 基线 + 8 变体 = 17）===')
+    print('=== 1. structure_profiles: 虫洞清单（9 基线 + 7 变体 = 16）===')
     prof = (ROOT / 'compat/structure_profiles.lua').read_text(encoding='utf-8')
     code = strip_comments(prof)
     holes = re.findall(r'profiles\["([0-9a-f]{16})"\]=\{resource="[0-9a-f]{16}",kind="(structure_\w+)"', code)
-    check('profiles_count_is_17', len(holes) == 17, f'found {len(holes)}')
+    check('profiles_count_is_16', len(holes) == 16, f'found {len(holes)}')
     check('all_kind_is_structure_hole', all(k == 'structure_hole' for _, k in holes),
           ','.join(sorted({k for _, k in holes})))
     # 前 9 条必须与上游**逐条一致、顺序不变**（新增的变体一律追加在后面），
@@ -280,11 +287,14 @@ def main():
           f'前 9 条 = 上游基线；新增 {len(holes) - 9} 条变体追加在后')
     # 上游原有 13 条里，只该删掉"孢子菇 x2 + 任务虫卵 x1"（不是虫洞）
     gone = [i for i in REMOVED_IDS if i in code]
-    check('spore_spewer_and_egg_absent', not gone, f'still present: {gone}')
-    # 尖啸者巢本轮按其上游原始参数恢复（kind 从 structure_tower 归入 structure_hole）
-    check('shrieker_nest_restored',
-          '095686275a113614' in code and 'nodes=72' in code,
-          '尖啸者巢已恢复(用上游 structure_tower 的原始 nodes=72/offset z=13)')
+    check('removed_ids_absent', not gone, f'still present: {gone}')
+    # ★★ 2026-09-29 用户要求：有生命值的尖啸者巢**不接管** ⇒ 必须不在清单里 ★★
+    #   这是本轮的方向反转。旧断言 `shrieker_nest_restored` 要求它**在**表里
+    #   —— 那条需求（裁剪 J）来自"可标记就应该能炸"的推断，与用户后来的要求冲突，
+    #   以用户要求为准。
+    check('shrieker_nest_removed',
+          '095686275a113614' not in code and 'nodes=72' not in code,
+          '尖啸者巢已移除：不接管、不引导、不引爆，完全交还游戏原生')
     # 泰坦巢用的 colony 洞必须还在（3a2cef12… 是唯一带 front_distance 的那条）
     check('titan_colony_hole_kept',
           'front_distance=10.368875714477495' in code and '3a2cef12ed32a088' in code)
@@ -388,7 +398,7 @@ def main():
     #   仍然必须声明 enemy_priority=REMOVED / unmarked_behavior=VANILLA ——
     #   扩展的是"接哪些目标"，不是"接所有目标"。
     check('startup_declares_scope',
-          'build=BUGHOLE_PLUS_TITAN' in entry and 'bughole_profiles=17' in entry
+          'build=BUGHOLE_PLUS_TITAN' in entry and 'bughole_profiles=16' in entry
           and 'enemy_priority=REMOVED' in entry and 'unmarked_behavior=VANILLA' in entry
           and 'scope=marked_bughole_and_bile_titan' in entry
           and 'titan_enabled=' in entry and 'titan_resource=' in entry)
@@ -451,15 +461,16 @@ def main():
           and 'if disposal and m.behavior_id==4' not in rt,
           '不存在无门控的 arrival / disposal 入口')
     # ★★ 裁剪 J：补全"同一模型的摆放变体"（实机"有些虫洞标记后没反应"）★★
-    # 这 8 个实体的 SpottableComponent.markerType 都是 EnemyMassive(3) 且可标记
+    # 这 7 个实体的 SpottableComponent.markerType 都是 EnemyMassive(3) 且可标记
     # ⇒ 玩家能正常 ping 它们，但上游 9 条 profile 没收录 ⇒ mod 报 RESOURCE_NOT_SUPPORTED。
+    # ⚠️ 第 8 个（尖啸者巢 095686275a113614）已于 2026-09-29 按用户要求**移除** ——
+    #    "可标记"不等于"是虫洞"，判定必须看游戏资源路径。
     prof_txt = (ROOT / 'compat/structure_profiles.lua').read_text(encoding='utf-8')
     HOLE_VARIANTS = {
         '7e4c6b45bcc45c3f': 'bug_spawner_warrior_captive',
         'b6a181adcf547aeb': 'bug_spawner_warrior_ceiling',
         '9d8632a79c2d9789': 'bug_spawner_warrior_tutorial',
         'd666aa61d804d311': 'bug_spawner_scavenger_captive',
-        '095686275a113614': 'bug_spawner_shrieker(尖啸者巢)',
         '688949109126ece4': 'mechanical_bughole(机械虫洞)',
         '5cf84155e60c6e4d': 'mechanical_bughole_scavenger',
         '0df874e208040d2f': 'bug_spawner_base',
@@ -468,9 +479,11 @@ def main():
                if f'profiles["{h}"]={{resource="{h}"' not in prof_txt]
     check('J_all_markable_hole_variants_covered', not missing,
           f'未收录: {missing}' if missing else f'{len(HOLE_VARIANTS)} 个变体全部收录')
-    n_hole = prof_txt.count('kind="structure_hole"')
-    check('J_profile_count_matches_declaration', n_hole == 17,
-          f'文件里 {n_hole} 条 structure_hole，启动自述声明 17')
+    # 必须**剥掉注释**再数：注释里也出现了 kind="structure_hole" 这个字符串
+    # （解释历史时引用过），用原始文本数会把说明文字当成代码。
+    n_hole = strip_comments(prof_txt).count('kind="structure_hole"')
+    check('J_profile_count_matches_declaration', n_hole == 16,
+          f'代码里 {n_hole} 条 structure_hole，启动自述声明 16')
     # 变体必须复用**同模型基线**的 nodes/offset，而不是各自编造
     def params(h):
         mm = re.search(r'profiles\["%s"\]=\{[^}]*?nodes=(\d+)[^}]*?offset=\{([^}]*)\}' % h,

@@ -78,7 +78,7 @@ local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets
     --   放宽后（above=1.2, radius=2.0, depth=1.2）**4/5**。
     --   实机成功引爆距离 1.33~2.05m，全部超出旧的 1.75 半径，反证此修复必要。
     --   不配 above 时 arrival_policy 的行为与上游逐字一致（不影响泰坦）。
-    titan_arrival_region={radius=2.0,depth=1.2,above=1.2},bughole_only=true,bughole_profiles=17,
+    titan_arrival_region={radius=2.0,depth=1.2,above=1.2},bughole_only=true,bughole_profiles=16,
     experimental=true,native_lifetime_verified=false,state='starting'}
 rawset(_G,'G60BugholeLock',state)
 local log,host
@@ -233,7 +233,7 @@ local ok,why=pcall(function()
     end)
     state.stats=host;state.filter_enabled=true;state.state='experimental filtering active'
     emit('version=@@VERSION@@-bughole;build=BUGHOLE_PLUS_TITAN;scope=marked_bughole_and_bile_titan;'
-        ..'bughole_profiles=17;enemy_priority=REMOVED;weakpoints=REMOVED;'
+        ..'bughole_profiles=16;enemy_priority=REMOVED;weakpoints=REMOVED;'
         ..'hole_variants=INCLUDED;spore_spewer_egg=REMOVED;target_valid=SOFT_SIGNAL;'
         ..'selection_veto=DISABLED;unmarked_behavior=VANILLA;filter_enabled=true;'
         ..'enemy_tracking=VANILLA_UNTOUCHED;priority_gated=STRUCTURE_ONLY;arrival_gated=HELD_LOCK_ONLY;'
