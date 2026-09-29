@@ -28,8 +28,8 @@
 「按部位弱点瞄准」**已全部移除**——那正是它"只能标记虫族敌人、不能标记机器人/光能族"的原因。
 本 mod 只接管**吐酸泰坦这一种敌人**，且是精确资源哈希匹配，不做任何顺位或自动挑选。
 
-`titan_enabled=false` 关闭泰坦接管，`dragonroach_enabled=false` 关闭蟑龙接管，
-两个都设 false 即退回"只打虫洞"。
+`titan_enabled=false` 关闭泰坦接管，`titan_variants_enabled=false` 只关掉变体
+（保留普通泰坦），`dragonroach_enabled=false` 关闭蟑龙接管。全部设 false 即退回"只打虫洞"。
 
 ## 支持的 17 个虫巢（9 基线 + 8 变体）
 
@@ -39,12 +39,33 @@
 已删除（标记它们本 mod 不接管）：Shrieker Nest（尖啸者巢）、普通/大型 Spore Spewer（孢子菇）、
 `embryo_01`（任务虫卵）。
 
-## 支持的敌人（2 种）
+## 支持的敌人（3 种）
 
-| 敌人 | resource | 航路 |
-|---|---|---|
-| **吐酸泰坦** Bile Titan | `9e2e17f2ccccafdd` | `titan_route`（为体型标定，RADIUS=12 / standoff 2.5） |
-| **蟑龙** Dragonroach | `960b48a421a3faaa` | `weakpoint_route` 的 **thorax** 分支（胸腔气囊下方，standoff 2.5） |
+| 敌人 | resource | 航路 | 几何来源 |
+|---|---|---|---|
+| **吐酸泰坦** Bile Titan | `9e2e17f2ccccafdd` | `titan_route`（RADIUS=12 / standoff 2.5） | 自有 profile |
+| **孢子泰坦** Spore Burst Bile Titan | `ef04cb84d097a497` | 同上（**借用**） | **借用**基线泰坦 |
+| **蟑龙** Dragonroach | `960b48a421a3faaa` | `weakpoint_route` 的 **thorax** 分支（standoff 2.5） | 自有 profile |
+
+### 孢子泰坦为什么能"借用"
+
+它不是猜的 —— 用资源路径哈希反查（`MurmurHash64A`）得到了确凿证据：
+
+```
+ef04cb84d097a497 → content/fac_bugs/cha_strider/cha_strider_gloom
+9e2e17f2ccccafdd → content/fac_bugs/cha_strider/cha_strider
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ 同一个 unit 目录
+```
+
+⇒ 同一单位目录 = 同一模型 ⇒ 借用基线的 `boss_hash` / `belly_hash` / `offset` /
+`alive_rva` / `engine_guards` / `getters`。这与项目既有的
+`warrior_captive -> warrior` 借用模式（见 `tests/hole_coverage.py` 的 `BORROWED`）一致。
+
+**失败是 fail-closed 的**：`titan_context` 在写任何字节之前会校验身份 / 类 / 场景图锚点，
+不符则记 `titan_skipped` 直接放弃 —— **不会写错位置**。
+
+> 变体是**逐个显式登记**的（`compat/titan_variants.lua`），不做"同目录批量借用" ——
+> 那会把未验证的变体一起拉进来。
 
 > **蟑龙的飞行适配是上游自带的**，不是我们新写的：
 > `weakpoint_route` 的 thorax 分支**没有地面净空检查**（只有穿刺者的 underside
@@ -112,6 +133,7 @@
 | 大型 colony 洞 | ✅ 已实机验证 |
 | 吐酸泰坦 | ✅ 已实机验证（引爆距离 2.1–2.3m） |
 | 蟑龙 Dragonroach | ⚠️ **尚未实机验证**（几何与路由是上游自带且已自测，但本 mod 未上机确认） |
+| 孢子泰坦（变体借用） | ⚠️ **尚未实机验证** —— 同目录证据强，但借用几何必须上机确认 |
 | 其余 8 个虫洞变体 | ⚠️ 清单已覆盖，实机样本较少 |
 | 未支持的敌人不被接管 | ✅ 已实机验证（其它敌人不产生接管日志） |
 

@@ -43,7 +43,12 @@ function M.new(env)
             -- 所以现在**逻辑上不可达**；但把泰坦放第一位可以让这个不变量
             -- 由代码本身保证，而不是依赖"调用方一定传对了"——
             -- 跨模块的隐式约定正是 2026-09-29 越权 bug 的成因。
-            local profile=resource and (resource==env.titan_profile.resource and env.titan_profile
+            -- ★ 解析顺序：基线泰坦 → 变体 → 虫洞 → 弱点敌人
+            --   变体必须在基线之后、其它之前：它们的几何是借来的（同 unit 目录），
+            --   与基线同族，不该落到后面的分支。
+            --   用 `~=nil` 判空而非真值判断 —— profile 是表，恒真，但显式更好读。
+            local profile=resource and ((resource==env.titan_profile.resource) and env.titan_profile
+                or (env.titan_variant_profiles or {})[resource]
                 or (env.structure_profiles or {})[resource]
                 or (env.weakpoint_profiles or {})[resource])
             local fresh=profile~=nil and profile~=false

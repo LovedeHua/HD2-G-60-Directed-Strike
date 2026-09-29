@@ -660,7 +660,7 @@ def test_state3_experiment():
     # 2026-09-29：profile 查找顺序已改为"泰坦优先"（原为 weakpoint 第一），
     # 所以这里只钉**真正的不变量** —— profile 为 nil 时必须 fail-closed。
     check("titan_treats_unknown_resource_as_untrusted",
-          "local profile=resource and (resource==env.titan_profile.resource" in t
+          "local profile=resource and ((resource==env.titan_profile.resource)" in t
           and "assert(fresh or (previous and (owned_point or c.selection.cleared))"
           in t,
           "resource=nil → fresh=false → 仍要求 owned_point/cleared 才继续（安全属性不变）")
@@ -1102,6 +1102,102 @@ def test_stuck_grenade_breakers():
           "正常引爆仍然标记 retired（熔断是额外的收尾口，不是替代）")
 
 
+def test_titan_variant_borrow():
+    print()
+    print("=== ㉑ ★ 泰坦变体（孢子泰坦）借用基线几何 ===")
+    r = RUNTIME.read_text(encoding="utf-8")
+    e = (ROOT / "addon" / "entry.lua.in").read_text(encoding="utf-8")
+    aim = (ROOT / "src/g60" / "native_titan_aim.lua").read_text(encoding="utf-8")
+    b = (ROOT / "scripts" / "build.py").read_text(encoding="utf-8")
+    vpath = ROOT / "compat" / "titan_variants.lua"
+
+    check("variant_module_exists", vpath.exists(), "compat/titan_variants.lua 存在")
+    v = vpath.read_text(encoding="utf-8") if vpath.exists() else ""
+    check("variant_registered_exactly",
+          '["ef04cb84d097a497"]="9e2e17f2ccccafdd"' in v,
+          "登记：ef04cb84d097a497（孢子泰坦）借 9e2e17f2ccccafdd（基线）")
+    check("variant_declares_borrowed_from",
+          "borrowed_from=source" in v,
+          "★ 变体 profile 带 borrowed_from 溯源字段")
+    check("variant_no_deep_copy_note",
+          "不深拷贝" in v,
+          "共享 getters 表（1500+ 条，只读）")
+    check("variant_wired_in_build",
+          "('TitanVariants', 'titan_variants.lua', True)" in b,
+          "build.py 以工厂模式注入 TitanVariants")
+    check("variant_passed_to_env",
+          "titan_variant_profiles=(TitanVariants and TitanVariants.profiles)" in e
+          and "titan_variants_enabled=state.titan_variants_enabled" in e,
+          "经 env 传入，并有独立开关")
+    check("variant_admitted_in_claim_profile",
+          "env.titan_variant_profiles" in r and "env.titan_variants_enabled~=false" in r,
+          "claim_profile 放行变体")
+    check("variant_resolved_before_structure_in_aim",
+          "or (env.titan_variant_profiles or {})[resource]" in aim,
+          "titan_aim 在虫洞/弱点之前解析变体")
+    check("variant_version_logged",
+          "titan_variants='..table.concat(" in e,
+          "启动日志列出已登记的变体，便于确认生效")
+
+    # ★★ 重新推导路径证据（而不是只信注释）★★
+    # 资源哈希 = MurmurHash64A(资源路径)。若离线数据在，就**当场复算**两条路径，
+    # 确认它们同属一个 unit 目录 —— 这是"可以借用"的全部依据。
+    hs = ROOT.parent / "hd2-charge-mod" / "offline" / "datalibrary" / "hashes.txt"
+    if not hs.exists():
+        check("variant_path_evidence", True,
+              "跳过实算：离线 hashes.txt 不在（CI 环境正常）")
+    else:
+        import struct as _s
+
+        def murmur64a(name):
+            data = name.encode("utf-8"); mask = (1 << 64) - 1
+            mix = 0xC6A4A7935BD1E995
+            value = len(data) * mix & mask; end = len(data) // 8 * 8
+            for (word,) in _s.iter_unpack("<Q", data[:end]):
+                word = word * mix & mask; word ^= word >> 47
+                value = (value ^ (word * mix & mask)) * mix & mask
+            if data[end:]:
+                value = (value ^ int.from_bytes(data[end:], "little")) * mix & mask
+            value ^= value >> 47; value = value * mix & mask
+            return value ^ (value >> 47)
+
+        want = {"ef04cb84d097a497": "cha_strider_gloom",
+                "9e2e17f2ccccafdd": "cha_strider"}
+        got = {}
+        for line in hs.read_text(encoding="utf-8", errors="replace").splitlines():
+            s = line.strip()
+            if not s or s.startswith("//") or "cha_strider" not in s:
+                continue
+            h = f"{murmur64a(s):016x}"
+            if h in want and h not in got:
+                got[h] = s
+        check("variant_path_evidence_recomputed",
+              len(got) == 2, f"复算出两条路径（实际 {len(got)}）")
+        if len(got) == 2:
+            a, bb = got["ef04cb84d097a497"], got["9e2e17f2ccccafdd"]
+            check("variant_same_unit_directory",
+                  a.rsplit("/", 1)[0] == bb.rsplit("/", 1)[0],
+                  f"★ 同 unit 目录：{a.rsplit('/',1)[0]}")
+            check("variant_leaf_names",
+                  a.endswith("/" + want["ef04cb84d097a497"])
+                  and bb.endswith("/" + want["9e2e17f2ccccafdd"]),
+                  "叶子名分别是 cha_strider_gloom / cha_strider")
+
+    # 安全边界：借用必须 fail-closed
+    check("variant_failclosed_documented",
+          "fail-closed" in v and "一个字节都不写" in v,
+          "★ 文档写明：校验不过则 titan_skipped、不写内存")
+    check("variant_no_prefix_bulk_borrow",
+          "content/fac_bugs" not in v.split("M.BORROWED")[1].split("}")[0].replace(
+              "content/fac_bugs/cha_strider/cha_strider_gloom", ""),
+          "逐个显式登记变体，不做同目录批量借用")
+
+    # 回归防护：其它未验证变体仍不接管
+    check("other_variants_still_excluded",
+          "d522fd4748d443a5" not in r and "672f7da17f3ba34a" not in r,
+          "其它未知变体仍未放行")
+
+
 def test_dragonroach_takeover():
     print()
     print("=== ⑳ ★ 蟑龙 Dragonroach 接管（飞行单位）===")
@@ -1349,11 +1445,14 @@ def test_takeover_scope_is_bughole_and_titan_only():
     n_weak = len(re.findall(r'profiles\["[0-9a-f]+"\]', weak))
     check("weakpoint_targets_exist_but_unused", n_weak == 7,
           f"weakpoint_profiles 登记了 {n_weak} 个敌人，但接管范围不含它们")
+    # ★ 2026-09-29：解析顺序改为 基线泰坦 → **变体** → 虫洞 → 弱点敌人。
+    #   变体必须排在虫洞/弱点之前（它借的是泰坦几何，与基线同族）。
+    _aim = r + (ROOT / "src/g60" / "native_titan_aim.lua").read_text(encoding="utf-8")
     check("titan_aim_prefers_titan_profile",
-          re.search(r"resource==env\.titan_profile\.resource and env\.titan_profile\s*\n"
-                    r"\s*or \(env\.structure_profiles", r + (ROOT / "src/g60" / "native_titan_aim.lua").read_text(encoding="utf-8"))
-          is not None,
-          "★ titan_aim 的 profile 查找把泰坦放第一位（不依赖调用方传对）")
+          re.search(r"\(resource==env\.titan_profile\.resource\) and env\.titan_profile\s*\n"
+                    r"\s*or \(env\.titan_variant_profiles or \{\}\)\[resource\]\s*\n"
+                    r"\s*or \(env\.structure_profiles", _aim) is not None,
+          "★ 解析顺序：基线泰坦 → 变体 → 虫洞 → 弱点敌人（不依赖调用方传对）")
     check("designed_targets_only_off",
           "designed_targets_only=false" in e,
           "不按 rank 自动挑敌人（交还引擎）")
@@ -1406,6 +1505,7 @@ def main():
     test_clearance_diagnostics_placement()
     test_adaptive_standoff()
     test_dragonroach_takeover()
+    test_titan_variant_borrow()
     test_stuck_grenade_breakers()
     test_link_diagnostics()
     test_priority_wiring()

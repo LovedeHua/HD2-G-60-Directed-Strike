@@ -124,6 +124,15 @@ function M.new(env)
             and resource==env.dragonroach_resource then
             return env.weakpoint_profiles[resource]
         end
+        -- ★★ 泰坦变体（2026-09-29）★★
+        -- 变体没有自己的几何 profile，**借用基线**（同 unit 目录 ⇒ 同模型）。
+        -- 目前一个：cha_strider_gloom（孢子泰坦）= ef04cb84d097a497，
+        -- 与基线 cha_strider 同属 content/fac_bugs/cha_strider/。
+        -- 证据与安全边界见 compat/titan_variants.lua 的文件头注释。
+        if env.titan_variants_enabled~=false and env.titan_variant_profiles then
+            local variant=env.titan_variant_profiles[resource]
+            if variant then return variant end
+        end
         return nil
     end
     local function has_weakpoint(resource) return claim_profile(resource)~=nil end

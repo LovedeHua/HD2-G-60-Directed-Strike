@@ -111,6 +111,9 @@ def assemble():
         ('TitanProfile', 'titan_profile.lua', False),
         ('WeakpointProfiles', 'weakpoint_profiles.lua', True),
         ('StructureProfiles', 'structure_profiles.lua', True),
+        # ★ 变体 profile（2026-09-29）：工厂函数，拿 TitanProfile 作为基线。
+        #   与 structure_profiles 复用 common.getters 是同一机制。
+        ('TitanVariants', 'titan_variants.lua', True),
         ('PriorityCatalog', 'priority_catalog.lua', False),
         ('FuseProfile', 'fuse_profile.lua', False),
     ]:

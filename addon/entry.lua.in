@@ -45,6 +45,14 @@ local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets
     --   注意：用**精确哈希**匹配，不按 kind 推断 —— 按 kind 会把其它
     --   同 kind 敌人（Spore Charger 也是 head）一起放进来。
     dragonroach_enabled=true,dragonroach_resource='960b48a421a3faaa',
+    -- ★ 泰坦变体开关（2026-09-29）
+    --   目前登记一个：cha_strider_gloom（孢子泰坦 / Spore Burst Bile Titan）
+    --     = ef04cb84d097a497，与基线 cha_strider 同属 content/fac_bugs/cha_strider/
+    --   ⇒ 几何借用基线，**未经实机验证**。设为 false 可单独关掉变体、
+    --     保留普通泰坦（更保守的选择）。
+    --   失败是 fail-closed：titan_context 在写任何字节之前会校验身份/类/锚点，
+    --   不符则记 titan_skipped，不写内存。
+    titan_variants_enabled=true,
     -- ★ 到达区域按**虫洞**重新标定（2026-09-28 实机几何反推）
     --   上游的 {radius=1.75,depth=0.8} 是给**泰坦**（20m 高）标定的，
     --   arrival_policy 的 `dz<=0` 要求"必须在目标点下方才算到达"。
@@ -145,7 +153,10 @@ local ok,why=pcall(function()
     calls.remove=ffi.cast('void (*)(void *, uint32_t)',base+0xfdc310)
     calls.aim=ffi.cast('void *(*)(void *, void **, const void *)',base+0x4b0c40)
     host=Runtime.new({read=read,base=base,exe=exe,calls=calls,
-        titan_profile=TitanProfile,weakpoint_profiles=WeakpointProfiles,designed_targets_only=state.designed_targets_only,priority_catalog=PriorityCatalog,fuse_profile=FuseProfile,experimental_event_window=true,
+        titan_profile=TitanProfile,weakpoint_profiles=WeakpointProfiles,
+        -- ★ 泰坦变体（借用基线几何）。见 compat/titan_variants.lua 的证据注释。
+        titan_variant_profiles=(TitanVariants and TitanVariants.profiles) or nil,
+        titan_variants_enabled=state.titan_variants_enabled,designed_targets_only=state.designed_targets_only,priority_catalog=PriorityCatalog,fuse_profile=FuseProfile,experimental_event_window=true,
         -- ★ 泰坦接管开关（2026-09-29）。false = 退回"只打虫洞"。
         titan_enabled=state.titan_enabled,
         mark_priority_enabled=state.mark_priority_enabled,exclusive_targets=state.exclusive_targets,
@@ -213,6 +224,8 @@ local ok,why=pcall(function()
         ..';titan_standoff_min='..tostring(state.titan_standoff_min)
         ..';dragonroach_enabled='..tostring(state.dragonroach_enabled)
         ..';dragonroach_resource='..tostring(state.dragonroach_resource)
+        ..';titan_variants_enabled='..tostring(state.titan_variants_enabled)
+        ..';titan_variants='..table.concat(TitanVariants and TitanVariants.resources() or {},',')
         -- ★ 2026-09-29：接管范围 = 标记虫洞 + 吐酸泰坦，其余交还引擎。
         --   titan_resource 打出实际哈希，方便日志确认是否命中预期目标。
         ..';titan_enabled='..tostring(state.titan_enabled)
