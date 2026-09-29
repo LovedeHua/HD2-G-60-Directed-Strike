@@ -329,6 +329,28 @@ frame_error / disabled / guide_give_up / arrival_retired   ← 0（除启动期�
 | 改 retarget（指向真实敌人）| 唯一根治 | ❌ `native_minimal` 只接受 `search`（守卫文件不能改）；`search_return.lua` 的 retarget 是死代码且需 `scores_current` 由已验证适配器提供；还会重开已移除的"自动挑敌人" |
 | **不改** | — | ✅ **当前选择**（收益 ~1%，其余都是负收益或代价远超收益）|
 
+#### 还有一条被排除的路：调"追踪参数"
+
+有人会想到"把 G-60 的追踪数值调一下，让它干脆不锁运输船"。**这条路在数据上不成立** ——
+G-60 的追踪数值**没有可调项**（2026-09-30 用游戏离线数据核实）：
+
+| 游戏数据表 | 行数 | G-60 是否在内 |
+|---|---|---|
+| `SeekingMissileComponentData`（制导飞行：速度/转向/寿命/PID，共 14 个可调字段）| 29 | ❌ |
+| `GuidanceTargetComponentData`（制导目标）| 6 | ❌ |
+| `TargetingComponentData`（瞄准）| 295 | ❌ |
+| `ThrowableComponentData`（投掷物）| 46（其它手雷在，如 `antitank_grenade`）| ❌ |
+| `DetectorComponentData`（探测）| 319 | ❌ |
+
+> 那 14 个可调字段属于 **5 把玩家导弹武器**（P-33 / P-92 / FAF-14 / WASP / MLS-4X），
+> 见另一项目的 `SEEKING_MISSILE.md`。G-60 不在其中。
+
+而且更彻底：G-60 的资源哈希 `62bf553e935c328e` 在 46 MB 的 `generated_entities.dl_bin`
+里**以任何字节形式出现 0 次**（同法检索其它手雷/实体哈希都能命中）⇒ 该哈希不是实体资源哈希，
+**连"它的组件"都无法在数据里定位**。
+
+⇒ 结论：**"调追踪数值"不是一条可用杠杆。** 与上面"不改"的结论一致。
+
 > ⚠️ **第一版过滤错了哈希 —— 已修正**（2026-09-29 当晚实机）
 >
 > 第一版只排除了 `98152772a72f7838`（社区表「哈希表-整合」第 112 行标"运输船 | Dropship"，
