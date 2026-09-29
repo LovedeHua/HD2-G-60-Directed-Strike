@@ -428,9 +428,17 @@ def main():
     sf = strip_comments((ROOT / 'src/g60' / 'small_filter.lua').read_text(encoding='utf-8'))
     body = sf[sf.index('local excluded = {'):sf.index('}', sf.index('local excluded = {')) + 1]
     entries = re.findall(r"\[?'?([0-9a-f]{16})'?\]?\s*=\s*true", body)
-    check('small_filter_excludes_only_dropship',
-          entries == ['98152772a72f7838'],
-          f'恰好排除运输船一项（实际 {entries}）')
+    # ★ 2026-09-29 晚修正：第一版只放了 98152772a72f7838 —— **过滤错了哈希**。
+    #   实机日志给出直接证据：`enemy_selection;entity=933;resource=db90077e76faa025`
+    #   ⇒ 引擎真正分配给 G-60 的运输船是 db90077e76faa025（cyborg_dropship）。
+    #   ⇒ 断言从"恰好一项"改为"恰好这两项"，逐条点名。
+    check('small_filter_excludes_dropship_family',
+          sorted(entries) == sorted(['db90077e76faa025', '98152772a72f7838']),
+          f'恰好排除这两个运输船哈希（实际 {sorted(entries)}）')
+    # ★ 安全属性：**绝不能**把玩家自己的撤离机（鹈鹕 shuttle_dropship）也否决掉
+    check('small_filter_excludes_no_friendly_pelican',
+          '7b0f8449ca9d2da0' not in entries and 'e556fd38edafb3c0' not in entries,
+          '★ 不得排除玩家撤离机 / 相关 shuttle 资源')
     check('small_filter_upstream_never_restored',
           not any(u in body for u in UPSTREAM_EXCLUDED),
           '★ 上游 9 项一个都不得恢复（那会重演"打不了中小型敌人"）')

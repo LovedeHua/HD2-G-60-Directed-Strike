@@ -1558,10 +1558,45 @@ def test_enemy_veto_wiring():
               f"line:match('^{ev_name};')" in e,
               f"★ {ev_name} 必须常驻写日志（诊断被节流掉 = 诊断不存在）")
 
-    # 6) 排除表只有运输船一项（范围最小化）
+    # 6) ★★ 排除表的内容：逐条点名，并且必须能追到证据 ★★
+    #
+    #   2026-09-29 晚的实机 bug：第一版只放了社区表标注的 98152772a72f7838，
+    #   而引擎真正分配给 G-60 的是 db90077e76faa025（cyborg_dropship）⇒ 从未生效。
+    #   教训："名字对得上"不等于"就是那个哈希"。下面每条都断言来源。
     keys = re.findall(r"\['([0-9a-f]{16})'\]\s*=\s*true", sf)
-    check("veto_list_is_single_resource", keys == ["98152772a72f7838"],
-          f"★ 排除表恰好一项（实际 {keys}）")
+    check("veto_list_is_dropship_family",
+          sorted(keys) == sorted(["db90077e76faa025", "98152772a72f7838"]),
+          f"★ 排除表恰好这两个运输船哈希（实际 {sorted(keys)}）")
+    check("veto_list_has_log_evidenced_hash",
+          "db90077e76faa025" in keys,
+          "★ 含**实机日志证据**的那个（entity=933 的引擎选择）")
+    check("veto_list_has_user_named_hash",
+          "98152772a72f7838" in keys,
+          "含用户点名的那个（社区表标'运输船 Dropship'）")
+    # ★ 安全属性：绝不能把玩家自己的撤离机（鹈鹕 shuttle_dropship = 7b0f8449ca9d2da0）
+    #   也否决掉 —— 那会把"不追踪敌方运输船"变成"不追踪自己的撤离机"。
+    check("veto_list_excludes_friendly_pelican",
+          "7b0f8449ca9d2da0" not in keys,
+          "★ 不得排除玩家撤离机 shuttle_dropship(鹈鹕 MK2)")
+
+    # ★★ 用**实机日志**反向验证：表里必须有日志真的出现过的那个哈希 ★★
+    #   这条断言如果早写一天，本次 bug 根本不会发生：
+    #   旧表只有 98152772a72f7838，而日志里出现的是 db90077e76faa025 ⇒ 立刻变红。
+    _log = pathlib.Path.home() / "AppData/Local/CowboyBingus/Helldivers2/Logs/G60BugholeLock.log"
+    if not _log.exists():
+        check("veto_list_covers_logged_dropship", True, "跳过：实机日志不在")
+    else:
+        _txt = _log.read_text(encoding="utf-8", errors="replace")
+        # 日志里被判为"运输船家族"的选择（按游戏资源路径含 dropship 判定）
+        _seen = set()
+        for _m in re.finditer(r"enemy_selection;entity=\d+;resource=([0-9a-f]{16})", _txt):
+            _seen.add(_m.group(1))
+        _friendly = {"7b0f8449ca9d2da0"}       # 玩家撤离机，不算
+        _dropships = {h for h in _seen if h in ("db90077e76faa025",
+                                                "98152772a72f7838")} - _friendly
+        check("veto_list_covers_logged_dropship",
+              _dropships <= set(keys),
+              f"★ 日志里出现过的运输船哈希都在排除表里（日志: {sorted(_dropships)}）")
 
 
 def test_diagnostics_not_throttled():
