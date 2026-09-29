@@ -22,8 +22,13 @@ function M.new(env)
             assert(scope.experimental and not scope.native_lifetime_verified and scope.reference_is_observation_key,'arrival experimental scope')
             local c=scope.prepared;local record=c.record_bytes
             assert(c.ownership.local_ownership_observed and scope.validate(),'arrival scope unavailable')
+            -- ★ 早期接管：env.allow_state3 时放行 state 2/3 —— 用于"无敌人时
+            --   直接飞向虫洞"。引爆参数与 state 4 相同（region 由调用方传），
+            --   飞行计时器由 source()/check 链路每次校验。
+            local early=env.allow_state3 and (L.u32(record,8)==2 or L.u32(record,8)==3)
             assert(L.hex64(c.identity_bytes,0)=='8e325c933e55bf62' and L.u32(record,0)==4
-                and L.u32(record,8)==4 and L.u32(record,0x68)==L.u32(c.identity_bytes,8),'arrival source')
+                and (L.u32(record,8)==4 or early)
+                and L.u32(record,0x68)==L.u32(c.identity_bytes,8),'arrival source')
             assert(ffi.istype(explode_type,scope.calls.explode) and ffi.istype(setter_type,scope.calls.clear)
                 and ffi.istype(orbit_type,scope.calls.orbit),'arrival call ABI')
             local function source()
@@ -84,7 +89,14 @@ function M.new(env)
             return {kind='guide',progress=progress,distance=dist}
         end)
         busy=false
-        if not ok then if mutated then disabled=true end;return nil,tostring(result) end
+        if not ok then
+            -- ★ 早期接管（state 2/3）的失败**不计入**永久禁用：
+            --   引擎对早期 state 的行为与 state 4 不同，失败很可能是正常现象
+            --   （例如还没到可引爆的窗口），不该把 state-4 的引爆也一起废掉。
+            --   早期路径自己的熔断由调用方（runtime 的 state3_danger）负责。
+            if mutated and not (options and options.early) then disabled=true end
+            return nil,tostring(result)
+        end
         return result
     end
     return api

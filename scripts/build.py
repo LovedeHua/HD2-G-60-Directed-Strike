@@ -2,6 +2,9 @@
 import hashlib
 import json
 from pathlib import Path
+import re
+import subprocess
+import sys
 import struct
 from zipfile import ZipFile, ZipInfo, ZIP_DEFLATED
 
@@ -38,8 +41,65 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def assert_alias_order(aliases):
+    """★ 校验每个模块的依赖都排在自己之前。
+
+    build.py 把每个模块包成 (function() ... end)()，并把 require('g60.X')
+    替换成对应的 chunk 别名。别名在使用者**之后**定义时，模块顶层
+    `local Y=require('g60.y')` 替换后就是 `local Y=Y` —— 右值取外层 nil，
+    于是整条依赖链在运行期静默失效。
+
+    真实事故（2026-09-28 11:08）：
+        link;mark=531;matched=1;...;entered=0;locked=0
+        structure_unavailable;...: attempt to index upvalue 'Geometry' (a nil value)
+    新加的 geometry 被我排在 native_priority **之后**，而 native_priority
+    顶层就 require 它 ⇒ Geometry 恒 nil ⇒ 标记读到了却永远锁不上。
+
+    这类错误肉眼极难发现（构建通过、语法通过、单测通过），只能自动校验。
+    """
+    order = {name: i for i, name in enumerate(aliases)}
+    for name in aliases:
+        source = (ROOT / 'src/g60' / (name + '.lua')).read_text()
+        for dep in re.findall(r"require\('g60\.([a-z_0-9]+)'\)", source):
+            if dep not in order:
+                raise AssertionError(
+                    f"module '{name}' requires unknown module 'g60.{dep}'")
+            if order[dep] >= order[name]:
+                raise AssertionError(
+                    f"module order: 'g60.{name}' (pos {order[name]}) requires "
+                    f"'g60.{dep}' (pos {order[dep]}) but is defined LATER. "
+                    f"build.py inlines modules as local chunk aliases, so the "
+                    f"dependency would be nil at run time. Move 'geometry'/etc "
+                    f"before its users in compat/build.json aliases.")
+
+
+def assert_field_refs():
+    """★ 校验跨模块字段引用真实存在（2026-09-28 11:40 实机事故的直接修复）。
+
+    事故：native_priority.lua 的 takeover_probe 里写
+        local life=math.max(0,1-spent/Policy.lifetime_ticks)
+    而该文件的 `Policy` 是 g60.target_policy（第 6 行），
+    `lifetime_ticks` 属于 g60.arrival_policy（第 8 行才 require）。
+    Lua 对 nil 做算术 ⇒
+        attempt to perform arithmetic on field 'lifetime_ticks' (a nil value)
+    **每一帧**都抛错，被 runtime 的 pcall 吞成 structure_unavailable，
+    于是「标记读到、G-60 到 state 4，却一次都锁不上」。
+
+    与 assert_alias_order 同类：这类错误 luac 通过、单测通过、只有实机炸。
+    两者一起构成"构建期必须拦住的语义错误"关卡。
+    """
+    proc = subprocess.run(
+        [sys.executable, '-B', 'tests/check_field_refs.py'],
+        cwd=ROOT, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise AssertionError(
+            'cross-module field check failed:\n' + proc.stdout + proc.stderr)
+
+
 def assemble():
     aliases = CONFIG['aliases']
+    assert_alias_order(aliases)
+    assert_field_refs()
     modules = []
     for name, alias in aliases.items():
         source = (ROOT / 'src/g60' / (name + '.lua')).read_text()

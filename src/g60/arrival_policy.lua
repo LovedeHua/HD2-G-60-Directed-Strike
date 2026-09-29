@@ -34,7 +34,16 @@ function M.step(now,own,goal,terminal,key,previous,region)
         assert(type(region.radius)=='number' and region.radius>0 and region.radius<=3
             and type(region.depth)=='number' and region.depth>0 and region.depth<=2,'arrival region')
         local dx,dy,dz=own[1]-goal[1],own[2]-goal[2],own[3]-goal[3]
-        arrived=dx*dx+dy*dy<=region.radius^2 and dz<=0 and dz>=-region.depth
+        -- ★ `above`（2026-09-28）：原来的判定是 `dz<=0`，即**必须在目标点下方**才算到达。
+        --   那是给泰坦标定的：泰坦是高目标，seeker 会俯冲到它身下再攻击。
+        --   虫洞在地上，G-60 绕着它飞时**一直在洞口上方** ——
+        --   实机 5 个采样点里，水平距离够近的(1.39/1.45)全部 dz=+1.0~+1.1（在上方），
+        --   高度够低的(dz=-0.03/-0.48)水平距离又是 1.79/2.22（超出 1.75）。
+        --   **两个条件互斥 ⇒ G-60 在洞口绕圈 250 帧也从不引爆**（structure_stalled）。
+        --   现在允许在洞口**上方** above 米以内引爆；不配 above 时行为与上游一致。
+        local above=region.above or 0
+        assert(type(above)=='number' and above>=0 and above<=2,'arrival region above')
+        arrived=dx*dx+dy*dy<=region.radius^2 and dz<=above and dz>=-region.depth
     end
     if terminal and arrived then return 'detonate',nil,dist end
     local p=previous

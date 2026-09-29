@@ -17,7 +17,23 @@ if existing then return existing end
 --   虫洞则只由 structure_profiles（9 个虫洞）单独决定接管。
 local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets_only=false,titan_standoff=2.5,
     mark_priority_enabled=false,exclusive_targets=true,marked_structures=true,
-    titan_arrival_region={radius=1.75,depth=0.8},bughole_only=true,bughole_profiles=17,
+    -- ★ 吐酸泰坦接管开关（2026-09-29）
+    --   本 mod 接管的���标只有两类：玩家标记的虫洞 + 吐酸泰坦。其余全部交还引擎原生
+    --   （small_filter 空表 / weakpoint_profiles 空表 / designed_targets_only=false）。
+    --   设为 false 可立即退回"只打虫洞"，无需回滚重装。
+    --   改动点：experimental_runtime 的 has_weakpoint —— 它在 2026-09-27 的
+    --   "裁剪 C"里被收窄成只认 structure_profiles，导致泰坦永远进不了接管路径
+    --   （titan_route / titan_aim / titan_profile 全套代码其实一直都在）。
+    titan_enabled=true,
+    -- ★ 到达区域按**虫洞**重新标定（2026-09-28 实机几何反推）
+    --   上游的 {radius=1.75,depth=0.8} 是给**泰坦**（20m 高）标定的，
+    --   arrival_policy 的 `dz<=0` 要求"必须在目标点下方才算到达"。
+    --   虫洞在地上，G-60 绕飞时始终在洞口**上方** ⇒ 该条件恒不成立。
+    --   实机 target=529 的 5 个采样点：原判定 **0/5** 可引爆；
+    --   放宽后（above=1.2, radius=2.0, depth=1.2）**4/5**。
+    --   实机成功引爆距离 1.33~2.05m，全部超出旧的 1.75 半径，反证此修复必要。
+    --   不配 above 时 arrival_policy 的行为与上游逐字一致（不影响泰坦）。
+    titan_arrival_region={radius=2.0,depth=1.2,above=1.2},bughole_only=true,bughole_profiles=17,
     experimental=true,native_lifetime_verified=false,state='starting'}
 rawset(_G,'G60BugholeLock',state)
 local log,host
@@ -54,12 +70,23 @@ local ok,why=pcall(function()
             if issue_keys>64 then last_issues={};issue_keys=1 end
             last_issues[key]=line
         end
+        -- ★ 日志节流白名单（2026-09-29 修）★
+        --   超过 60 行后只写"关键行"，其余静默丢弃。原来的白名单**漏了两类**：
+        --     arrival_already_exploded —— 我新加的收尾事件
+        --     guide_give_up            —— 引导熔断事件
+        --   后果：实机 `arrival_skipped;...explosion already requested` 出现了，
+        --   但对应的 `arrival_already_exploded` 一条都没有 ⇒ 我据此误判
+        --   "收尾逻辑没生效"，又白查一轮。
+        --   **诊断被节流掉 = 诊断不存在。** 凡是我会用来判断成败的事件，
+        --   都必须进白名单。
         if lines>60 and lines%120~=0 and not fresh_issue and not line:find('disabled',1,true)
             and not line:match('^titan_started;') and not line:match('^titan_stage;')
             and not line:match('^priority_locked;')
             and not line:match('^structure_mark;') and not line:match('^structure_stalled;')
             and not line:match('^arrival_detonated;') and not line:match('^arrival_retired;')
-            and not line:match('^titan_released;') then return end
+            and not line:match('^titan_released;')
+            and not line:match('^arrival_already_exploded;')
+            and not line:match('^guide_give_up;') then return end
         if written+#line+1>262144 then close();return end
         local good=pcall(function() assert(log:write(line..'\n'));assert(log:flush()) end)
         if not good then close() else written=written+#line+1 end
@@ -95,8 +122,51 @@ local ok,why=pcall(function()
     calls.aim=ffi.cast('void *(*)(void *, void **, const void *)',base+0x4b0c40)
     host=Runtime.new({read=read,base=base,exe=exe,calls=calls,
         titan_profile=TitanProfile,weakpoint_profiles=WeakpointProfiles,designed_targets_only=state.designed_targets_only,priority_catalog=PriorityCatalog,fuse_profile=FuseProfile,experimental_event_window=true,
+        -- ★ 泰坦接管开关（2026-09-29）。false = 退回"只打虫洞"。
+        titan_enabled=state.titan_enabled,
         mark_priority_enabled=state.mark_priority_enabled,exclusive_targets=state.exclusive_targets,
         structure_profiles=state.marked_structures and StructureProfiles or nil,
+        -- ★ 早期接管（state 2/3）—— 开启
+        --
+        --   【血泪教训】2026-09-28 10:0x 之前的包里这个开关是 false，
+        --   导致整条早期路径（含探测与引爆）**从未执行** —— 日志 `entered=0`
+        --   就是证据。改了逻辑却忘开开关，等于交付死代码给用户测。
+        --   ⇒ 交付前必须从**构建产物**里 grep 出开关值再发包。
+        --
+        --   两轮实验结论（引擎在 state 2/3 的导航不读目标数据）：
+        --     v1 实体模式：引擎接受写入但不采纳（虫洞不是合法敌人）
+        --     v2 点目标模式：写入回读完全一致，但 G-60 依然停在 state 3 上千帧
+        --   实测 early_probe 距离 76.5m / 18.5m / 14.5m ⇒ 早期它纯 ballistic
+        --   飘向别处，"站虫洞旁扔就能进 3.2m 圈"这个推断已被数据否掉。
+        --   保留本开关是因为：一旦引擎行为变化（如某天 state 3 读 selection），
+        --   这里能立刻用；关闭只需改成 false，不影响 state-4 主链路。
+        --
+        --   保护链（任一触发即自动退回 state-4-only，不牵连全局）：
+        --     · EARLY_MIN_AGE=15：刚出膛 15 帧内不碰
+        --     · check()：每次调用校验 identity + 飞行计时器
+        --     · 连续 3 次 state3_danger → state3_blocked
+        -- ★ 早期接管 —— **关闭**（2026-09-28 11:00 实机回归）★
+        --
+        -- 打开它的实测后果：日志第 2 行就出现
+        --     frame_error;detail=...: pointer bound
+        -- 之后 `entered=1; locked=0` 持续 300+ 帧，`priority_locked` 与
+        -- `takeover_probe` **一次都没出现** —— 即完全无法接管。
+        --
+        -- 原因：早期路径在 state 2/3 就调用 Context.capture 取虫洞位姿，
+        -- 而该路径对早期 state 未经实机验证，capture 内部指针解引用失败
+        -- (`pointer bound`)。每帧 pcall 失败 ⇒ 锁定永远拿不到。
+        --
+        -- ⇒ **放宽断言 ≠ 整条链路可用。** 我三轮前只放宽了 state 断言就以为
+        --   路径打通了，实际 capture/到达/引爆三个环节都需要各自验证。
+        --   记录在此以免重蹈覆辙。
+        --
+        -- 两轮实验的既得结论（都不依赖本开关，保留备查）：
+        --   · state 2/3 的导航**不读任何目标数据**（v1 实体模式、v2 点目标模式
+        --     写入回读均一致，但 G-60 依然停在 state 3 上千帧）
+        --   · 实测 early_probe 距离 76.5m / 18.5m / 14.5m
+        --     ⇒ 早期纯 ballistic 飘向别处
+        --   · G-60 在**飞行寿命到期（30s）时自然转入 state 4**，与敌人无关
+        allow_state3=false,
         titan_standoff=state.titan_standoff,
         titan_arrival_region=state.titan_arrival_region,
         thread=function() return tonumber(k.GetCurrentThreadId()) end,
@@ -105,7 +175,7 @@ local ok,why=pcall(function()
         state.filter_enabled=false;state.state='disabled';emit('disabled;applied='..host.applied);close()
     end)
     state.stats=host;state.filter_enabled=true;state.state='experimental filtering active'
-    emit('version=@@VERSION@@-bughole;build=BUGHOLE_ONLY;scope=marked_bughole_only;'
+    emit('version=@@VERSION@@-bughole;build=BUGHOLE_PLUS_TITAN;scope=marked_bughole_and_bile_titan;'
         ..'bughole_profiles=17;enemy_priority=REMOVED;weakpoints=REMOVED;'
         ..'hole_variants=INCLUDED;spore_spewer_egg=REMOVED;target_valid=SOFT_SIGNAL;'
         ..'selection_veto=DISABLED;unmarked_behavior=VANILLA;filter_enabled=true;'
@@ -114,7 +184,11 @@ local ok,why=pcall(function()
         ..'designed_targets_only='..tostring(state.designed_targets_only)..';'
         ..'mark_priority_enabled=false;exclusive_targets=true;marked_structures=true;'
         ..'native_lifetime_verified=false;mode=EXPERIMENTAL_NATIVE_CALLS;titan_standoff='..state.titan_standoff
-        ..';titan_arrival_radius='..state.titan_arrival_region.radius..';titan_arrival_depth='..state.titan_arrival_region.depth)
+        ..';titan_arrival_radius='..state.titan_arrival_region.radius..';titan_arrival_depth='..state.titan_arrival_region.depth
+        -- ★ 2026-09-29：接管范围 = 标记虫洞 + 吐酸泰坦，其余交还引擎。
+        --   titan_resource 打出实际哈希，方便日志确认是否命中预期目标。
+        ..';titan_enabled='..tostring(state.titan_enabled)
+        ..';titan_resource='..tostring(TitanProfile and TitanProfile.resource))
 end)
 if not ok then
     state.filter_enabled=false;state.state='disabled: '..tostring(why)

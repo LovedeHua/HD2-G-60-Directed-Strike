@@ -22,16 +22,12 @@ end)
 
 
 def main():
-    files = sys.argv[1:] or [
-        "src/g60/experimental_runtime.lua",
-        "src/g60/native_minimal.lua",
-        "src/g60/native_priority.lua",
-        "src/g60/native_arrival.lua",
-        "src/g60/small_filter.lua",
-        "src/g60/native_ping.lua",
-        "src/g60/ping_memory.lua",
-        "src/g60/selection_veto.lua",
-    ]
+    # 默认覆盖 src/g60 下**全部**模块（曾经是硬编码 8 个，
+    # 新加的 priority_faults 一度没进检查范围）。
+    files = sys.argv[1:] or sorted(
+        str(p.relative_to(ROOT)).replace("\\", "/")
+        for p in (ROOT / "src/g60").glob("*.lua")
+    )
     import os
     os.chdir(ROOT)
     bad = 0

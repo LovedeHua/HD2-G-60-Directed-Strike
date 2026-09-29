@@ -8,9 +8,17 @@ local Reservations=require('g60.target_reservations')
 local Minimal=require('g60.native_minimal')
 local Titan=require('g60.native_titan_aim')
 local Priority=require('g60.native_priority')
+-- 竞争态熔断阈值（见 g60.priority_faults）。不写 `local Faults=require(...)`：
+-- build.py 会把 require 替换成同一个 chunk 别名，同名 local 会变成 `local Faults=Faults`。
+local CONTENTION_LIMIT=require('g60.priority_faults').CONTENTION_LIMIT
 local Ping=require('g60.native_ping')
 local Arrival=require('g60.native_arrival')
 local Disposal=require('g60.native_disposal')
+-- ★ 只读几何诊断（2026-09-28）。不参与决策、不写内存，仅用于把"接管/失败时
+--   G-60 离虫洞多远"打进日志 —— 此前只能靠猜，已连续三次猜错。
+local Geometry=require('g60.geometry')
+-- 接管门控的**纯函数**判定（见 g60.take_gate 文件头：为什么必须抽出来）
+local TakeGate=require('g60.take_gate')
 local ArrivalPolicy=require('g60.arrival_policy')
 local TargetData=require('g60.native_target_data')
 local TargetContext=require('g60.titan_context')
@@ -22,6 +30,19 @@ function M.new(env)
         env.target_allowed=Allowlist.new(env.titan_profile,env.weakpoint_profiles)
     end
     local tracked,serial,frame={},0,0
+    local frame_errors={}
+    local structure_issue_counts={}
+    local last_structure_issue
+    -- ★ 竞争态熔断（配合 native_priority 的故障域隔离，见 g60.priority_faults）
+    -- 单颗 G-60 的一次 setter 竞争不该杀死整局；但如果同一帧里**多颗** G-60 全部
+    -- 竞争态失败，说明是我们对引擎状态的理解出了问题（而不是单点时序），
+    -- 这时停手才是对的。
+    local contention_frame,contention_count=-1,0
+    local function note_contention()
+        if contention_frame~=frame then contention_frame,contention_count=frame,0 end
+        contention_count=contention_count+1
+        return contention_count>=CONTENTION_LIMIT
+    end
     local reservations=env.exclusive_targets and Reservations.new()
     assert(not reservations or (env.priority_catalog and env.fuse_profile),'exclusive allocation requires priority and search cleanup')
     local current,runner
@@ -29,20 +50,68 @@ function M.new(env)
     env.arrival=arrival
     local disposal=env.fuse_profile and Disposal.new(env)
     local retired={}
-    local titan=env.titan_profile and Titan.new(env)
-    local function has_weakpoint(resource)
-        -- ★ 裁剪 C：原上游把 titan_profile / weakpoint_profiles / structure_profiles
-        --   三类都算作"有自定义瞄准点"。本工程只用第三类(9 个虫洞)，所以收窄成
-        --   只认 structure_profiles —— 否则敌人仍会被 arrival 阶段当成弱点目标而跳过
-        --   实体到达判定(下方 `if has_weakpoint(...) then target=nil end`)。
-        return env.structure_profiles and env.structure_profiles[resource]~=nil
+    -- ★ 结束持有（2026-09-27 实机事故的治本点）
+    -- `retired[m.id]` 只挡住了后续帧的入口，却把 tracked 里的 lock/titan **留在原地**。
+    -- 虫洞被引爆/回收之后，引擎会很快复用那个 entity id；残留锁会让下一帧的
+    -- priority / titan 把选择写到**另一个实体**上，写后回读必然不符 ——
+    -- 实机日志第 131–132 行就是这个时序（引爆 520 之后紧跟 setter target mismatch）。
+    -- 所以凡是写 retired 的地方，都必须同时把"持有"清干净。
+    local function release_hold(id)
+        local t=tracked[id]
+        if t then t.lock=nil;t.titan=nil;t.force_search=nil;t.blocked=nil end
     end
+    local titan=env.titan_profile and Titan.new(env)
+    -- ★ 本 mod 接管的目标 = 玩家标记的虫洞 + 吐酸泰坦，其余全交还引擎 ★
+    --
+    -- 历史（2026-09-27）：这里曾经是"裁剪 C"，把上游的三类
+    -- （titan_profile / weakpoint_profiles / structure_profiles）收窄成
+    -- **只认 structure_profiles**，理由是"只用 9 个虫洞"。
+    -- ⇒ 泰坦 profile 虽在 compat/titan_profile.lua 里、titan_route/titan_aim
+    --   全套代码都在，却因为这一行**永远进不了接管路径**。
+    --
+    -- 2026-09-29 用户要求接管吐酸泰坦。恢复 titan_profile 一项：
+    --   · titan_route.lua 的 RADIUS=12 / standoff 是**作者为泰坦标定的**，
+    --     与虫洞无关 —— 所以泰坦段有自己的几何，不需要重标。
+    --   · 仍然不认 weakpoint_profiles：那里面是穿刺者/龙蟑螂等其它敌人，
+    --     用户明确要求"其他交还原生"。`weakpoint_profiles.lua` 保持空表。
+    --
+    -- 连带影响已逐处核对（2026-09-29）：
+    --   · 第 524 行 titan_selected —— 这正是我们要的入口。
+    --   · 第 630 行 `if has_weakpoint(...) then target=nil end` ——
+    --     泰坦成功建立航点后会在上一行 `if titan_point then return {kind='guide'}`
+    --     提前返回，走不到这里 ⇒ 对泰坦是死代码，无需额外处理。
+    -- ★★ 本 mod 认领的资源 → profile（**唯一判定点**）★★
+    --
+    -- 2026-09-29：原来 `has_weakpoint` 与 `structure_ping.allowed` **各写一份**判断，
+    -- 我上一轮只改了 has_weakpoint ⇒ **标记入口仍然拒绝泰坦**，实机日志：
+    --     structure_mark;target=..;resource=9e2e17f2ccccafdd;reason=RESOURCE_NOT_SUPPORTED
+    -- 共 4 次（4194911 / 4195449 / 4195864 / 8388841）。
+    -- ⇒ 用户报"标记吐酸泰坦接管又出问题了"就是这个 —— 标记被拒，引擎只能靠自己选中，
+    --   于是时灵时不灵。**同一个判断出现两处，是我这两天反复踩的坑** ⇒ 收敛成一个函数。
+    --
+    -- 认领范围：9 个虫洞 + 吐酸泰坦。其余（weakpoint_profiles 里的 7 个敌人：
+    -- head/rear/thorax/underside）返回 nil ⇒ 完全交还引擎。
+    local function claim_profile(resource)
+        if not resource then return nil end
+        if env.structure_profiles and env.structure_profiles[resource] then
+            return env.structure_profiles[resource]
+        end
+        -- 泰坦：resource 精确匹配，不做任何模糊判定。匹配不上就交还引擎
+        -- （fail-open 到"原生"，不 fail 到"接管"）。
+        if env.titan_enabled~=false and env.titan_profile
+            and resource==env.titan_profile.resource then
+            return env.titan_profile
+        end
+        return nil
+    end
+    local function has_weakpoint(resource) return claim_profile(resource)~=nil end
     local ping=env.priority_catalog and env.mark_priority_enabled~=false and Ping.new(env)
     local structure_ping=env.structure_profiles and Ping.new(env,{
         diagnostic=function(detail) env.emit('structure_mark;'..detail) end,
-        allowed=function(resource) return env.structure_profiles[resource]~=nil end,
+        -- ★ 与 has_weakpoint 共用 claim_profile（虫洞 + 泰坦）★
+        allowed=function(resource) return claim_profile(resource)~=nil end,
         position=function(e)
-            local pose=TargetContext.capture(read,base,env.exe,e.id,env.structure_profiles[e.resource])
+            local pose=TargetContext.capture(read,base,env.exe,e.id,claim_profile(e.resource))
             assert(pose.validate(),'structure Ping pose changed');return pose.point
         end})
     if ping or structure_ping then env.forget_mark=function(identity)
@@ -50,7 +119,31 @@ function M.new(env)
         if structure_ping then structure_ping:forget(identity) end
     end end
     local priority=env.priority_catalog and Priority.new(env)
-    local world,last_time,last_ping_issue,last_ping_queue
+    local world,last_time,last_ping_issue,last_ping_queue,last_link_status
+    -- G-60 的 state 停留追踪（见下面的链路诊断）
+    local state_key,state_age,saw_state4={},{},false
+    local state3_blocked=false
+    local state3_driven={}          -- 被 state-3 路径设过目标的 G-60
+    -- 自毁保护要**连续**几次危险信号才退回：单次抖动（例如刚好撞上引擎自己的
+    -- 状态切换）不该把这条实验路径永久关掉。
+    local STATE3_DANGER_LIMIT=3
+    local state3_danger=0
+    -- priority_skipped 的去重集合（同一 G-60 + 同一 reason 只打首条）
+    local skipped_probe={}
+    -- 观测失败计数（见下面 with_observation 调用处的 ★ 注释）
+    local OBSERVE_FAIL_LIMIT=8
+    local observe_fail={}
+    -- ★ 引导失败计数（2026-09-29）：与 OBSERVE_FAIL_LIMIT 同一思路，但管的是
+    -- **引导本身反复失败**（titan:step / runner:step 返回 nil），而不是观测拿不到窗口。
+    -- 实机 entity=1257 的 titan:step 持续抛 `Titan selection changed`，失败后
+    -- old.titan 保留 ⇒ 下一帧再试 ⇒ 无限循环 ⇒ G-60 挂在泰坦底下不动直到寿命耗尽。
+    -- 阈值取 30 帧（约 0.5 秒）：足够容忍偶发竞争，又能及时收手。
+    -- 只放弃该实体，不做全局禁用（2026-09-28 的教训）。
+    local GUIDE_FAIL_LIMIT=30
+    local guide_fail={}
+    -- selection_resource 缺失只提示一次（它可能连续很多帧发生）
+    local selection_resource_warned=false
+    local EARLY_MIN_AGE=15       -- 至少飞够这么多帧才在早期 state 设目标
     local host={applied=0,aimed=0,skipped=0,disabled=false,native_lifetime_verified=false}
     local function pointer(a) return Layout.pointer(read(a,8),0) end
     local function jobs_ready()
@@ -70,8 +163,13 @@ function M.new(env)
         assert(current and U.key(ref)==U.key(current.ref),'expired observation key')
         assert(jobs_ready(),'thread or jobs not ready')
         local track=tracked[current.match.id]
-        local c=Search.capture(read,base,current.match,env.engine,
-            env.experimental_event_window and {experimental_event_window=true,target_id=track and track.lock and track.lock.id})
+        local opts
+        if env.experimental_event_window then
+            opts={experimental_event_window=true,target_id=track and track.lock and track.lock.id}
+            -- 早期接管：state 2/3 也允许观测（写入端的门控各自独立判断）
+            if env.allow_state3 then opts.allow_early_state=true end
+        end
+        local c=Search.capture(read,base,current.match,env.engine,opts)
         assert(c.ownership.local_ownership_observed,'projectile not locally owned')
         local root,clock,manager=pointer(base+0x346bf98),pointer(base+0x3326348),pointer(base+0x3326740)
         local header=read(manager,0x70)
@@ -83,9 +181,36 @@ function M.new(env)
         scope.snapshot={ref=ref,resource='8e325c933e55bf62',behavior_id=4,state=4,
             active=true,expired=false,selection_complete=true,selection_cleared=c.selection.cleared}
         if c.selection.has_target then
-            assert(current.match.selection_resource,'selected resource unavailable')
+            -- ★ 上游这里是 `assert(current.match.selection_resource,
+            --   'selected resource unavailable')`，实机把整条接管链打死了。
+            --
+            --   entity_resource() 读不到目标实体的资源哈希时返回 nil
+            --   （observer:110 才会去读）。常见于 G-60 刚被引擎分配目标、
+            --   目标实体尚未完全可读的那几帧。
+            --
+            --   问题在于语义错位：**引擎给 G-60 选了什么是引擎的事**，
+            --   与"我们要不要接管、改飞去哪"无关。用 assert 把两者绑定，
+            --   等于让一个只读元数据的失败阻断整个接管。
+            --
+            --   实机证据（2026-09-28 11:08）：
+            --     priority_skipped;...;detail=selected resource unavailable;state=4
+            --   11 次，全部 state=4（G-60 已到可接管状态）却一次都锁不上，
+            --   而同期 structure_mark ACCEPTED 有 3 个。
+            --
+            --   处置：降级为"资源未知"快照，不抛错。
+            --   仍然保守：resource=nil 时 native_titan_aim 的 profile 查表
+            --   会得到 nil（fresh=false），于是回落到 previous.titan 的 profile
+            --   或 env.titan_profile —— 与"目标变了"同等保守，不会误判为可信。
+            local sel_res=current.match.selection_resource
             scope.snapshot.selected={ref={id=tostring(c.selection.id),scene=ref.scene,
-                generation='observed-target-only'},resource=current.match.selection_resource}
+                generation='observed-target-only'},resource=sel_res,
+                resource_unknown=sel_res==nil}
+            if sel_res==nil and not selection_resource_warned then
+                selection_resource_warned=true
+                env.emit('selection_resource_unknown;entity='..current.match.id
+                    ..';selected='..tostring(c.selection.id)
+                    ..';detail=treated_as_untrusted_target')
+            end
         end
         scope.validate=function()
             -- This only checks observed state. It never reports lifetime_verified=true.
@@ -135,7 +260,16 @@ function M.new(env)
             local structure_mark,structure_issue
             if structure_ping then
                 structure_mark,structure_issue=structure_ping:observe()
-                if structure_issue then env.emit('structure_ping_unavailable;detail='..tostring(structure_issue)) end
+                -- ★ 与 ping_issue 同款去重：这类"Ping creator 暂时读不到"是**逐帧**发生的
+                -- （实机日志里几百条），逐条 emit 会把 structure_mark / priority_locked
+                -- 这些真正有用的行彻底埋掉。只在**原因变化**时打一条，并在停机时汇总次数。
+                if structure_issue then
+                    structure_issue_counts[structure_issue]=(structure_issue_counts[structure_issue] or 0)+1
+                    if structure_issue~=last_structure_issue then
+                        env.emit('structure_ping_unavailable;detail='..tostring(structure_issue))
+                    end
+                end
+                last_structure_issue=structure_issue
             end
             if ping then
                 mark,ping_issue=ping:observe()
@@ -147,8 +281,62 @@ function M.new(env)
                 if queue~=last_ping_queue then env.emit('ping_queue;targets='..queue..';count='..#ids);last_ping_queue=queue end
             end
             local seen={}
+            -- ★ 链路诊断（2026-09-27 连续两轮"静默失败"才加的）
+            -- 前两轮的事故都有一个共同点：**日志里看不出卡在哪一步**。
+            -- 标记读到了却没接管时，日志只有 structure_mark ACCEPTED，
+            -- 之后一片空白 —— 既不知道有没有 G-60、也不知道 priority 段进没进。
+            -- 这里把一帧的关键计数攒起来，状态**变化**时才打一行（不逐帧刷屏）。
+            -- ⚠ 凡下面写 `diag.X=diag.X+1` 的字段，**必须**在这里初始化为 0。
+            --   2026-09-28 我加了 `diag.state3` 的累加却漏了初始化 ⇒
+            --   `attempt to perform arithmetic on field 'state3' (a nil value)`
+            --   每帧崩在 tick 开头，整帧作废（测试是静态断言，抓不到运行时 nil）。
+            --   tests/test_priority_fault_isolation.py 会比对两侧，漏一个就红。
+            local diag={state4=0,state3=0,eligible=0,entered=0,locked=0,held=0,blocked=0}
+            -- ★ 光看 state4 不够：它分不清"manager 里根本没有 G-60"、
+            -- "有 G-60 但身份哈希没匹配上"、和"有 G-60 但停在别的 state"。
+            -- 所以把 manager 的总数、matches 条数、每条的 behavior/state 都打出来。
+            local sigs={}
+            for _,m in ipairs(observed.matches) do
+                -- 带上"在当前 state 停留了多少帧"：区分"刚扔出去还在起飞"
+                -- 和"长期卡在 state-3 永远进不了可接管状态"。
+                local fp=m.identity_bytes..m.flight_start
+                local st=tostring(m.behavior_id)..'/'..tostring(m.state)
+                    ..(m.native_update_eligible and 'e' or '-')
+                if state_key[fp]~=st then state_key[fp]=st;state_age[fp]=0 end
+                state_age[fp]=(state_age[fp] or 0)+1
+                if m.state==4 then saw_state4=true end
+                sigs[#sigs+1]=st..'@'..tostring(state_age[fp])
+            end
+            diag.total=#observed.matches
+            diag.manager=observed.behavior_count
+            diag.sig=table.concat(sigs,',')
             for _,m in ipairs(observed.matches) do
                 local retired_key=m.identity_bytes..m.flight_start
+                -- ★★ 爆炸已触发 ⇒ 视为"完成"（2026-09-29）★★
+                --
+                -- explosive_context.lua 的两条 assert：
+                --   'explosion already requested' / 'secondary explosion pending'
+                -- 语义**不是出错**，而是"这颗 G-60 的爆炸已经触发了" ——
+                -- 实体还没被引擎移除，但爆炸已发生。旧代码当错误处理 ⇒
+                -- 永不标记 retired ⇒ 实体留在 tracked 里被逐帧重试 ⇒
+                -- 玩家看到"G-60 长时间盘旋"，直到寿命耗尽。
+                --
+                -- 抽成 helper 是因为 `arrival_skipped` 有**两个**发射点
+                -- （disposal 段 328 行 / arrival 段 727 行）。我第一版只改了后者，
+                -- 实机 entity=1205 走的正是前者 ⇒ 修复没生效（arrival_already_exploded=0）。
+                -- **同一个判断出现两处，就是我今天反复踩的那类坑。**
+                local function note_already_exploded(why)
+                    local s=tostring(why)
+                    if not (s:find('explosion already requested',1,true)
+                            or s:find('secondary explosion pending',1,true)) then
+                        return false
+                    end
+                    retired[m.id]=retired_key
+                    release_hold(m.id)
+                    env.emit('arrival_already_exploded;entity='..m.id
+                        ..';detail=EXPLOSIVE_ALREADY_TRIGGERED')
+                    return true
+                end
                 if retired[m.id] and retired[m.id]~=retired_key then retired[m.id]=nil end
                 -- ★ 裁剪 H：上游此处只判 `disposal and m.behavior_id==4 and state in {3,4,5}`
                 --   且到期 —— 对**所有** G-60 生效，包括引擎原生锁定敌人的那些。
@@ -162,26 +350,85 @@ function M.new(env)
                     local result,reason=disposal:step(m,jobs_ready)
                     if result then
                         retired[m.id]=retired_key
-                        env.emit('arrival_retired;entity='..m.id..';delivery='..result.delivery)
-                    else env.emit('arrival_skipped;entity='..m.id..';detail='..tostring(reason)) end
+                        -- ★ 必须同步清持有（2026-09-27 实机事故的直接修复）
+                        --   只写 retired 却把 tracked[id].lock/titan 留在原地：
+                        --   虫洞实体 id 被引擎复用后，残留锁会把选择写到**另一个**
+                        --   实体上，写后回读必然不符 —— 正是 131→132 那次
+                        --   "priority setter target mismatch" 的直接时序。
+                        release_hold(m.id)
+                        -- ★ 失败终点（2026-09-28）：这是**失败样本**唯一的数据来源。
+                        -- native_disposal 只 remove 不 explode（见该文件第 1 行），
+                        -- 所以每一条 arrival_retired 都是一次**真失败**。
+                        -- probe 是 priority 锁定那帧记下的接管时机画像
+                        -- （见 native_priority 的 takeover_probe）—— 失败实体也可能
+                        -- 锁定过，把那份距离带过来，就能和成功样本直接对比。
+                        local probe=Priority.probe_by_entity[m.id]
+                        env.emit('arrival_retired;entity='..m.id..';delivery='..result.delivery
+                            ..';target='..tostring(held and held.id or (structure_mark and structure_mark.id) or '-')
+                            ..';held='..tostring(held and (held.marked_structure and 'mark' or 'sticky') or '-')
+                            ..';state='..tostring(m.state)
+                            ..';at_lock='..tostring(probe or 'no_lock'))
+                    else
+                        local why=tostring(reason)
+                        env.emit('arrival_skipped;entity='..m.id..';detail='..why)
+                        note_already_exploded(why)
+                    end
                     if disposal:disabled() then self.disabled=true;error('disposal operation disabled') end
                 end
                 if tracked[m.id] and m.behavior_id==4 and m.state==4 and not m.native_update_eligible
                     and tracked[m.id].fingerprint==m.identity_bytes..m.flight_start then seen[m.id]=true end
-                if m.behavior_id==4 and m.state==4 and m.native_update_eligible and not retired[m.id] then
+                if m.behavior_id==4 and m.state==4 then diag.state4=diag.state4+1 end
+                if m.behavior_id==4 and m.state==4 and m.native_update_eligible then diag.eligible=diag.eligible+1 end
+                -- ★ state-3 接管实验：state 3 也放行，但只走 priority（设置目标），
+                --   后面的 titan 航点 / arrival 引爆仍要求 state 4（见下方两处门控）。
+                --   一旦观测到 flight timer 被动，state3_blocked 永久置起（见失败分支）。
+                -- ★ 早期接管：state 2/3 也驱动（只设目标）。
+                --   之前只认 state==3，而实机日志里 G-60 是 1→2→4 一闪而过、
+                --   采不到 state 3 ⇒ 实验压根没机会跑（用户"仍需敌人在附近"）。
+                --   门槛：至少飞够 EARLY_MIN_AGE 帧才碰它 —— 刚出膛那几帧
+                --   movement 还没建立，此时写入风险最高（游戏崩过一次）。
+                --   state 5 是过期/待回收，也不碰。
+                local early_fp=m.identity_bytes..m.flight_start
+                local drive3=env.allow_state3 and not state3_blocked
+                    and (m.state==2 or m.state==3)
+                    and (state_age[early_fp] or 0)>=EARLY_MIN_AGE
+                if drive3 then diag.state3=diag.state3+1;state3_driven[m.id]=true end
+                -- ★ 关键证据：我们只在 state 3 设目标，**从不直接改 state**。
+                --   所以如果之后这颗 G-60 出现在 state 4，就证明"设置 selection
+                --   能让引擎自己推进到 state 4" —— 这正是"无敌人可锁也能直飞虫洞"
+                --   能否成立的分水岭。没有这条日志就说明引擎不理我们的 selection。
+                if m.state==4 and state3_driven[m.id] then
+                    state3_driven[m.id]=nil
+                    env.emit('early_promoted;entity='..m.id..';from='..tostring(m.state)
+                        ..';frames='..tostring(state_age[early_fp] or 0))
+                end
+                if m.behavior_id==4 and (m.state==4 or drive3)
+                    and m.native_update_eligible and not retired[m.id] then
                     local old=tracked[m.id]
                     local fingerprint=m.identity_bytes..m.flight_start
                     if old and old.fingerprint~=fingerprint then runner:release(old.ref);old=nil;tracked[m.id]=nil end
-                    -- ★ 裁剪 F（同上，入口侧）★
-                    -- priority 段会做 with_observation → Search.capture（预算上限
-                    -- 65536 B / 2048 次读），对**没有虫洞锁**的敌人 G-60 是纯浪费，
-                    -- 而且它返回 {kind='keep'} 后下面的 `elseif result.released or
-                    -- reservations` 会把 old.force_search 置 true —— 正是这个标志
-                    -- 让 arrival 块进入 'search' 分支去 clear 引擎目标。
-                    --
-                    -- 所以只在"有虫洞标记"或"本 mod 已持有锁定/航点"时才进入。
-                    -- 无标记的敌人 G-60：本 mod 不建 tracked、不读 Search、不写任何内存。
-                    if priority and (structure_mark or (old and (old.lock or old.titan))) then
+                    -- ★ 门控判定已抽到 g60.take_gate（纯函数，可真跑测试）★
+                    -- 详见那里的说明：重构前这些判断内联在 tick 里，
+                    -- 仓库 195 个测试一行都跑不到，于是四轮实机事故
+                    -- （nil 索引 / diag 未初始化 / upvalue nil / assert 阻断）
+                    -- 全部从测试缝隙溜过去。现在它们进入测试覆盖。
+                    local gate=TakeGate.decide{
+                        behavior_id=m.behavior_id,state=m.state,
+                        native_update_eligible=m.native_update_eligible,
+                        retired=retired[m.id]~=nil,old=old,
+                        structure_mark=structure_mark,allow_early=drive3,
+                        state_age=state_age[early_fp] or 0,
+                        early_min_age=EARLY_MIN_AGE}
+                    if not gate.drive and structure_mark and old then
+                        if gate.why=='holding_nothing' or gate.why=='no_mark_no_hold'
+                            then diag.held=diag.held+1
+                        elseif gate.why=='quarantined' then diag.blocked=diag.blocked+1
+                        end
+                    end
+                    local abandoned=false
+                    local enters=priority~=nil and gate.drive
+                    if enters then
+                        diag.entered=diag.entered+1
                         if not old then
                             serial=serial+1
                             old={fingerprint=fingerprint,ref={id=tostring(m.id),
@@ -195,9 +442,90 @@ function M.new(env)
                             return priority:step(scope,old.lock,mark,old.blocked,available,structure_mark)
                         end)
                         current=nil
-                        if priority:disabled() then self.disabled=true;error('priority native operation disabled: '..tostring(reason)) end
+                        -- ★ 观测/接管失败熔断（2026-09-28 11:00 实机回归的直接修复）
+                        --
+                        -- 事故：allow_state3 打开后，日志第 2 行就
+                        --     frame_error;pointer bound
+                        -- 随后 300+ 帧 `entered=1; locked=0`，priority_locked 一次都没有。
+                        -- 原因：with_observation → Search.capture 每帧都失败，
+                        -- 而失败只被外层 pcall 吞掉记成 frame_error ——
+                        -- **单个 G-60 的观测失败不影响其他实体，所以 mod 不会停手，
+                        -- 于是每一帧都重试同一个必然失败的路径，表现为"完全无法接管"**。
+                        --
+                        -- 处置：同一实体连续失败 OBSERVE_FAIL_LIMIT 次 ⇒
+                        -- 放弃它的 tracked 记录并打一行醒目日志。
+                        -- 不做全局禁用：其他 G-60 可能观测正常（identity 不同）。
+                        if not good then
+                            local key=m.id
+                            observe_fail[key]=(observe_fail[key] or 0)+1
+                            if observe_fail[key]==1 then
+                                env.emit('observe_failed;entity='..m.id
+                                    ..';detail='..tostring(result))
+                            end
+                            if observe_fail[key]>=OBSERVE_FAIL_LIMIT then
+                                env.emit('observe_give_up;entity='..m.id
+                                    ..';after='..observe_fail[key]
+                                    ..';detail='..tostring(result))
+                                if tracked[m.id] then runner:release(tracked[m.id].ref) end
+                                tracked[m.id]=nil
+                                observe_fail[key]=nil
+                            end
+                        else
+                            observe_fail[m.id]=nil
+                        end
+                        -- ★ 早期接管失败（v2 点目标模式）：priority 返回 kind='state3_fail'，
+                        --   计入 danger 熔断（连续 STATE3_DANGER_LIMIT 次退回 state-4-only），
+                        --   不牵连全局。
+                        if good and type(result)=='table' and result.kind=='state3_fail' then
+                            state3_danger=state3_danger+1
+                            env.emit('state3_danger;entity='..m.id..';count='..state3_danger
+                                ..';detail='..tostring(result.detail))
+                            if state3_danger>=STATE3_DANGER_LIMIT then
+                                state3_blocked=true
+                                env.emit('state3_takeover_disabled;entity='..m.id
+                                    ..';detail='..tostring(result.detail))
+                            end
+                            old.lock=nil;old.titan=nil;old.force_search=nil
+                            result,good=nil,true
+                        end
+                        -- ★ state-3 自毁保护：如果这一帧是 state 3 驱动，而失败原因是
+                        --   flight timer / behavior / source 变化，说明 state-3 调用真的
+                        --   破坏了引擎状态（安全层警告过的那件事）。
+                        --   此时**永久退回 state-4-only**，不牵连其余功能。
+                        if drive3 and not good and Faults.STATE3_DANGER[tostring(result)] then
+                            state3_danger=state3_danger+1
+                            env.emit('state3_danger;entity='..m.id..';count='..state3_danger
+                                ..';detail='..tostring(result))
+                            if state3_danger>=STATE3_DANGER_LIMIT then
+                                state3_blocked=true
+                                env.emit('state3_takeover_disabled;entity='..m.id
+                                    ..';detail='..tostring(result))
+                            end
+                            if reservations then reservations:release_owner(owner) end
+                            old.lock=nil;old.titan=nil;old.force_search=nil
+                        end
+                        -- 只有**结构性**失败才全局停手；竞争态由 priority 返回
+                        -- kind='quarantine' 走下面的分支，只放弃这一颗 G-60。
+                        if priority:disabled() and not (good and type(result)=='table'
+                            and result.kind=='quarantine') then
+                            self.disabled=true;error('priority native operation disabled: '..tostring(reason))
+                        end
                         if good and result then
-                            if result.kind=='lock' then
+                            if result.kind=='quarantine' then
+                                -- ★ 一颗 G-60 放弃：清掉它的锁/航点/预约，本局不再写它。
+                                --   其余 G-60 与本局剩余的标记照常接管 —— 上游在这里是
+                                --   整个 mod 一起死，实机日志第 132–133 行就是那个后果。
+                                old.quarantined=true;old.lock=nil;old.titan=nil;old.force_search=nil
+                                old.blocked=nil
+                                if reservations then reservations:release_owner(owner) end
+                                abandoned=true
+                                env.emit('priority_quarantined;entity='..m.id..';detail='..tostring(result.contended))
+                                if note_contention() then
+                                    self.disabled=true
+                                    error('priority contention limit reached: '..tostring(result.contended))
+                                end
+                            elseif result.kind=='lock' then
+                                diag.locked=diag.locked+1
                                 if reservations then reservations:claim(owner,result.track.identity) end
                                 if not old.lock or old.lock.identity~=result.track.identity then
                                     env.emit('priority_locked;entity='..m.id..';target='..result.track.id..';reason='..result.reason
@@ -215,6 +543,14 @@ function M.new(env)
                                 m.selection_id=Layout.u32(result.record,0x18)
                                 m.selection_flag=result.record:byte(0x79)
                                 m.selection_resource=result.resource
+                            elseif result.kind=='detonate' and result.early then
+                                -- ★ 早期引爆成功（点目标模式 + 到达检测）：
+                                --   "无敌人也能炸虫洞"的核心证据。
+                                retired[m.id]=retired_key
+                                release_hold(m.id)
+                                self.applied=self.applied+1
+                                env.emit('early_detonated;entity='..m.id..';target='..result.target
+                                    ..';distance='..result.distance)
                             -- ★ 裁剪 G（实机"标记虫洞时灵时不灵"的另一半）★
                             -- 上游原文是 `elseif result.released or reservations then`，那个
                             -- `or reservations` 建立在"keep == 候选全被否掉"的前提上，所以要
@@ -226,22 +562,63 @@ function M.new(env)
                             -- 现在只在**真的释放了已有锁定**时才强制重搜。
                             elseif result.released then old.lock=nil;old.force_search=true end
                         else
-                            env.emit('priority_skipped;entity='..m.id..';detail='..tostring(good and reason or result))
+                            -- ★ 补上"为什么没锁上"的几何信息（2026-09-28）★
+                            -- 过去这行只有 detail 文本，看不出 G-60 当时在哪。
+                            -- 实机里 12 次锁定有 8 次没进 titan，必须能区分
+                            -- "离虫洞太远来不及" 与 "被门控/预约挡住"，
+                            -- 否则只能靠猜。现在附带 state 与剩余寿命。
+                            -- 去重：同一颗 G-60 的同一 reason 只打首条
+                            -- （逐帧刷屏曾导致过两次误诊）。
+                            local sk_reason=tostring(good and reason or result)
+                            local sk_key=m.id..'|'..sk_reason
+                            if skipped_probe[sk_key]==nil then
+                                skipped_probe[sk_key]=true
+                                local spent=time>=m.flight_start
+                                    and ArrivalPolicy.elapsed(time,m.flight_start) or 0
+                                env.emit('priority_skipped;entity='..m.id
+                                    ..';detail='..sk_reason
+                                    ..';state='..tostring(m.state)
+                                    ..';life_left='..tostring(math.max(0,1-spent/ArrivalPolicy.lifetime_ticks)))
+                            end
                             if reservations then old.lock=nil;old.force_search=true end
                         end
                     end
                     local selected=m.selection_flag~=0 and m.selection_id~=Layout.u32(read(base+0x3483c20,4),0)
                     -- ★ 裁剪 A：原上游在此判 excluded —— 被 small_filter 列入的小怪、或不在
                     --   allowlist(泰坦+弱点) 里的敌人，都会触发"清掉引擎选择 + 强制搜索"。
-                    --   那是 mod 的"只打指定敌人"行为。恒置 false 后，没有虫洞标记时
-                    --   G-60 的敌人选择完全交给引擎原生 TargetLock，本 mod 不再插手。
-                    --   (下方 titan_selected 走 has_weakpoint，而它已被裁剪成只认
-                    --    structure_profiles，所以只有 9 个虫洞会进入接管路径。)
+                    --   那是 mod 的"只打指定敌人"行为。恒置 false 后，没有本 mod 认领的
+                    --   目标时，G-60 的敌人选择完全交给引擎原生 TargetLock。
+                    --   ★ 2026-09-29：认领范围扩到 虫洞 + 吐酸泰坦（见 has_weakpoint）。
+                    --     其它敌人（weakpoint_profiles 里那 7 个 head/rear/thorax/
+                    --     underside）仍然完全交还引擎。
                     local excluded=false
                     local retry_search=arrival and old and (old.force_search or (old.blocked and not old.lock))
                     if retry_search then old.titan=nil end
-                    local titan_selected=titan and selected and not retry_search and has_weakpoint(m.selection_resource)
-                    if excluded or titan_selected or (old and not selected) then
+                    -- 已放弃(quarantine)的实体本帧不再走任何写入段：本帧 priority 刚写过
+                    -- 一次原生 setter，交回引擎时不能又被后面的 titan 段重新写进去。
+                    -- ★ 泰坦接管（2026-09-29）
+                    --   has_weakpoint 现在也认 titan_profile，所以引擎一旦选中了吐酸泰坦，
+                    --   泰坦段就会接管它，把 G-60 引到腹部下方引爆（titan_route RADIUS=12
+                    --   与 standoff 都是作者为**泰坦**标定的，与虫洞无关）。
+                    --
+                    --   `not structure_mark` = 虫洞优先：玩家标记了虫洞时，
+                    --   即使引擎选中了泰坦也**不去抢**。
+                    --   理由是用户明确的"虫洞优先"，而且虫洞是本 mod 的主要功能；
+                    --   泰坦是后来加的附加能力，不该反过来抢主目标。
+                    -- ★ 虫洞标记优先于泰坦；但**泰坦标记本身不应阻止泰坦接管** ★
+                    -- 原为 `not structure_mark`。一旦标记入口放行泰坦（见 claim_profile），
+                    -- 玩家标记泰坦时 structure_mark 就非 nil ⇒ 该条件变 false
+                    -- ⇒ 泰坦段永不运行，比"标记被拒"更糟（连引擎自选的机会都没了）。
+                    -- 改成只对**虫洞**标记让位。
+                    local mark_is_wormhole=structure_mark~=nil and env.structure_profiles~=nil
+                        and env.structure_profiles[structure_mark.resource]~=nil
+                    local titan_selected=not abandoned and titan and selected
+                        and not retry_search and not mark_is_wormhole
+                        and has_weakpoint(m.selection_resource)
+                    -- titan 航点要写 movement 结构；state 3 时它可能还没初始化，
+                    -- 所以 state-3 驱动的这一帧不进 titan 段（只让 priority 设目标）。
+                    if (not abandoned) and m.state==4
+                        and (excluded or titan_selected or (old and not selected)) then
                         if not old then
                             serial=serial+1
                             old={fingerprint=fingerprint,ref={id=tostring(m.id),
@@ -279,6 +656,7 @@ function M.new(env)
                                 end
                                 if result.kind=='detonate' then
                                     retired[m.id]=retired_key
+                                    release_hold(m.id)
                                     env.emit('arrival_detonated;entity='..m.id..';target='..result.target..';distance='..result.distance)
                                 end
                             end
@@ -291,9 +669,35 @@ function M.new(env)
                             self.applied=self.applied+1
                             env.emit('search_applied;entity='..m.id..';selected='..m.selection_id
                                 ..';resource='..tostring(m.selection_resource)..';frame='..frame)
-                        elseif not result then
+                        end
+                        -- ★★ 引导失败熔断（2026-09-29）★★
+                        --
+                        -- 实机：entity=1257 的 titan:step 持续抛 `Titan selection changed`，
+                        -- 但失败后 `old.titan` **保留**，下一帧仍满足
+                        -- `(old and not selected)` ⇒ 再试 ⇒ 再失败，**无限循环**。
+                        -- 期间不写任何 movement 目标，G-60 就挂在泰坦底下不动，
+                        -- 直到 30 秒寿命耗尽 —— 用户报的"长时间盘旋"。
+                        --
+                        -- 与已有的 OBSERVE_FAIL_LIMIT（观测失败熔断）同一思路，
+                        -- 但那条只管 with_observation 拿不到窗口；这条管**引导本身失败**。
+                        -- 同一实体连续失败 GUIDE_FAIL_LIMIT 次 ⇒ 放弃它：
+                        -- 标记 retired + 清持有，停止逐帧重试。
+                        -- 不做全局禁用：别的 G-60 可能一切正常（2026-09-28 的教训）。
+                        if result then
+                            guide_fail[m.id]=nil
+                        else
                             self.skipped=self.skipped+1
-                            env.emit('skipped;entity='..m.id..';reason='..tostring(status)..';detail='..tostring(detail))
+                            local n=(guide_fail[m.id] or 0)+1
+                            guide_fail[m.id]=n
+                            env.emit('skipped;entity='..m.id..';reason='..tostring(status)
+                                ..';detail='..tostring(detail)..';fail_count='..n)
+                            if n>=GUIDE_FAIL_LIMIT then
+                                guide_fail[m.id]=nil
+                                retired[m.id]=retired_key
+                                release_hold(m.id)
+                                env.emit('guide_give_up;entity='..m.id..';after='..n
+                                    ..';detail='..tostring((detail~=nil and detail) or status))
+                            end
                         end
                         if runner:disabled() or (titan and titan:disabled()) then self.disabled=true;error('native operation disabled after partial failure') end
                     end
@@ -310,7 +714,17 @@ function M.new(env)
                     --   · old.lock      —— 玩家标记的虫洞（priority 的 PLAYER_MARK_STRUCTURE）
                     --   · old.titan     —— 已建立的虫洞航点
                     -- 两者皆无 ⇒ 敌人侧完全交还引擎原生逻辑，本 mod 一个字节都不写。
-                    if arrival and old and (old.lock or old.titan) and not retired[m.id] then
+                    --
+                    -- state 3 传 region（与 titan 段同一套）：vanilla 的 M.radius=0.8
+                    -- 对虫洞太小，实机引爆距离 1.3~2.05。
+                    --
+                    -- 判定同样走 TakeGate.decide_guidance（纯函数、可测），
+                    -- 它同时守住"必须真正持有"和"只允许 state 4 做 aim/explode"。
+                    local early_drive=m.state~=4 and drive3
+                    local guide=TakeGate.decide_guidance{
+                        drive=true,old=old,retired=retired[m.id]~=nil,
+                        can_guide=(m.state==4 or early_drive),early=early_drive}
+                    if arrival and guide.run then
                         -- Recapture after preceding setters, including the Titan waypoint.
                         local manager=pointer(base+0x3326740)
                         local records=Layout.pointer(read(manager+0x60,8),0)
@@ -334,19 +748,42 @@ function M.new(env)
                             if titan_point then return {kind='guide'} end
                             if has_weakpoint(m.selection_resource) then target=nil end
                             local blocked_selected=old.blocked and old.lock==nil and m.selection_flag==1
+                            -- 早期驱动：传 titan 同款到达区域 + early 标记
+                            -- （early 让 arrival 内部失败不永久禁用，熔断由 state3_danger 管）
+                            local arr_opts=early_drive
+                                and {region=env.titan_arrival_region,early=true} or nil
                             return arrival:step(scope,target,nil,'vanilla',true,old.arrival_progress,
-                                (old.force_search or blocked_selected) and 'search' or not target)
+                                (old.force_search or blocked_selected) and 'search' or not target,
+                                arr_opts)
                         end)
                         current=nil
+                        if not ok_arr and early_drive then
+                            state3_danger=state3_danger+1
+                            env.emit('state3_danger;entity='..m.id..';count='..state3_danger
+                                ..';stage=arrival;detail='..tostring(ok_arr and reason or result))
+                            if state3_danger>=STATE3_DANGER_LIMIT then
+                                state3_blocked=true
+                                env.emit('state3_takeover_disabled;entity='..m.id
+                                    ..';detail=arrival early-state repeated failure')
+                            end
+                        end
                         if ok_arr and result then
                             old.arrival_progress=result.progress;old.force_search=nil
                             if result.blocked then old.blocked=result.blocked end
                             if result.kind=='search' then old.lock=nil;old.titan=nil end
                             if result.kind=='detonate' then
                                 retired[m.id]=retired_key
+                                release_hold(m.id)
                                 env.emit('arrival_detonated;entity='..m.id..';target='..result.target..';distance='..result.distance)
                             end
-                        else env.emit('arrival_skipped;entity='..m.id..';detail='..tostring(ok_arr and reason or result)) end
+                        else
+                            local why=tostring(ok_arr and reason or result)
+                            env.emit('arrival_skipped;entity='..m.id..';detail='..why)
+                            -- 爆炸已触发 ⇒ 视为完成（说明见 note_already_exploded 定义处）
+                            -- 注意这里与 disposal 段共用同一 helper —— 我第一版只改了这一处，
+                            -- 实机 entity=1205 走的却是 disposal 段，修复没生效。
+                            note_already_exploded(why)
+                        end
                     end
                     if arrival and arrival:disabled() then self.disabled=true;error('arrival operation disabled') end
                 end
@@ -356,10 +793,57 @@ function M.new(env)
             end
             local present={};for _,m in ipairs(observed.matches) do present[m.id]=true end
             for id in pairs(retired) do if not present[id] then retired[id]=nil end end
+            -- state 停留表只按 fingerprint 增长，做个上限清理避免无限膨胀
+            local live={}
+            for _,m in ipairs(observed.matches) do live[m.identity_bytes..m.flight_start]=true end
+            for fp in pairs(state_key) do
+                if not live[fp] then state_key[fp]=nil;state_age[fp]=nil end
+            end
+            -- ★ 链路诊断：只在**状态变化**时打一行。
+            --   一眼能看出"标记读到了却没接管"卡在哪一环：
+            --     mark=0                  → ping 侧没读到标记（看 structure_ping_unavailable）
+            --     g60=0                   → 场上没有可驱动的 G-60（不该 happen，但仍要能看见）
+            --     mark>0 且 entered=0     → 门控没放行（held/blocked 会说原因）
+            --     entered>0 且 locked=0   → priority 段进了但没锁上（看 priority_skipped 的 detail）
+            local status='link;mark='..(structure_mark and tostring(structure_mark.id) or '-')
+                ..';mgr='..tostring(diag.manager)..';matched='..diag.total
+                ..';saw4='..(saw_state4 and '1' or '0')
+                ..';sig=['..diag.sig..']'
+                ..';g60='..diag.state4..';eligible='..diag.eligible
+                ..';e3='..diag.state3..';blocked3='..(state3_blocked and 1 or 0)
+                ..';entered='..diag.entered..';locked='..diag.locked
+                ..';held='..diag.held..';quarantined='..diag.blocked
+            if status~=last_link_status then
+                last_link_status=status
+                env.emit(status)
+            end
         end)
-        if not ok then current=nil;env.emit('frame_error;detail='..tostring(why)) end
+        if not ok then
+            current=nil
+            -- ★ 逐条刷屏会把真正的一次性错误埋掉（2026-09-27 实机日志：连续 60 条
+            --   `frame_error;detail=…:236: pointer bound` 之后，才跟着那条真正致命的
+            --   `priority setter target mismatch`）。启动期 root 指针未初始化会让观测段
+            --   连续几十帧失败，那是"还没准备好"，不是"坏了"。
+            -- 改成：每种 detail 只打第一条，重复的计入计数，停机时汇总一次。
+            local detail=tostring(why)
+            local seen_before=frame_errors[detail] or 0
+            frame_errors[detail]=seen_before+1
+            self.frame_error_total=(self.frame_error_total or 0)+1
+            if seen_before==0 then env.emit('frame_error;detail='..detail) end
+        end
     end
     function host:stop() self.disabled=true;release_all() end
+    -- 停机时给出 frame_error 汇总：每种 detail 打了几次。
+    -- 逐条去重是为了可读性，这里把被折叠掉的次数补回来，信息不丢。
+    function host:error_summary()
+        local parts={}
+        for detail,n in pairs(frame_errors) do parts[#parts+1]=tostring(n)..'x '..detail end
+        local ping={}
+        for detail,n in pairs(structure_issue_counts) do ping[#ping+1]=tostring(n)..'x '..detail end
+        table.sort(parts);table.sort(ping)
+        return {kinds=#parts,total=self.frame_error_total or 0,details=table.concat(parts,' | '),
+            ping_kinds=#ping,ping_total=#ping>0 and table.concat(ping,' | ') or ''}
+    end
     return host
 end
 -- Runs once after the existing Lua update, before the reviewed native game update.

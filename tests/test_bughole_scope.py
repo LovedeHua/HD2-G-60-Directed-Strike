@@ -47,7 +47,6 @@ REMOVED_IDS = ('aa28caf964d05500', 'e02e6bd34b606a85', '06d3c4720e642fc1')
 
 # 必须与上游逐字节一致的安全层（改动其中任何一个都要重新论证）
 SAFETY_LAYER = (
-    'compat/build.json',                    # 88 条 game.dll 签名 + exe 引擎签名
     'compat/native_search_binding.lua',    # clear / orbit 原生绑定 + 函数签名守卫
     'compat/titan_profile.lua',            # engine_guards(exe 签名) + Titan 数据
     'compat/weakpoint_profiles.lua',
@@ -69,9 +68,165 @@ SAFETY_LAYER = (
     'src/g60/util.lua',
     'src/g60/arrival_policy.lua',
     'src/g60/selection_veto.lua',
-    'src/g60/target_reservations.lua',
     'src/g60/target_allowlist.lua',
 )
+
+# ★ target_reservations 已不再是"逐字节等于上游"：2026-09-27 给它加了
+#   release_owner(owner) —— 放弃一颗 G-60 时必须把它名下**所有**预约还回去，
+#   否则那个虫洞对所有其他 owner 的 available() 恒为 false（"这洞再也接管不了"）。
+#   上游的 claim/available/reconcile/reset 语义必须仍与上游逐字节一致，
+#   所以这里比对"去掉 release_owner 之后的剩余部分"。
+SAFETY_LAYER_EXCEPTIONS = {
+    'src/g60/target_reservations.lua': ('release_owner',),
+}
+
+# ★ arrival_policy 也不再逐字节等于上游：`dz<=0`（必须在目标**下方**才算到达）
+#   是给泰坦标定的，虫洞在地上 ⇒ G-60 绕飞时始终在洞口上方 ⇒ 永不引爆。
+#   实机 5 个采样点原判定 0/5 可引爆，加 `above` 后 4/5。
+#   不配 above 时 `above=0`，行为与上游完全一致（下游断言保证）。
+#   改动是行内的，无法正则剥离 ⇒ 用锚点比对。
+ARRIVAL_ANCHORS = (
+    "assert(type(region.radius)=='number' and region.radius>0 and region.radius<=3",
+    "and type(region.depth)=='number' and region.depth>0 and region.depth<=2,'arrival region')",
+    "arrived=dx*dx+dy*dy<=region.radius^2",
+    "and dz>=-region.depth",
+    "if terminal and arrived then return 'detonate',nil,dist end",
+    "if now-p.at>=M.stalled_seconds then return 'search',nil,dist end",
+    "region.kind=='entrance'",
+)
+ARRIVAL_FORBIDDEN = (
+    "arrived=dx*dx+dy*dy<=region.radius^2 and dz<=0 and dz>=-region.depth",  # 上游那句
+)
+ARRIVAL_REQUIRED = (
+    "region.above or 0",
+    "dz<=above",
+)
+
+# ★ native_ping 的改动是散落多处的（注释/变量/失败分支），无法用正则"剥离后比对"，
+#   改用**锚点比对**：上游每一条安全断言必须原样保留（安全网没被削弱），
+#   且上游那句有害的"失败即清空记忆"必须已经不在。
+#   背景：上游 `if not ok then memory:reset() end` 把每一次瞬时读取失败当成"场景变了"
+#   清空全部标记记忆 —— 实机 `local Ping creator unavailable` 几百帧连续失败，
+#   标记刚记住就被抹掉，是"标记虫洞后时灵时不灵"的真凶。
+PING_ANCHORS = (
+    'Ping actor count',              # assert(count<=16)
+    'ambiguous local Ping creator',
+    'Ping creator entity missing',
+    'Ping creator changed',
+    'local Ping creator unavailable',
+    'Ping UI inactive',
+    'Ping ring bounds',
+    "assert(d.validate(),'Ping observation changed')",
+    "memory:update(observation,valid)",
+)
+PING_FORBIDDEN = (
+    'if not ok then memory:reset();return nil,tostring(result) end',   # 上游那句
+)
+PING_REQUIRED = (
+    'FAILURE_RESET_LIMIT',
+    'last_selected',
+    'failed_frames',
+)
+# ★ search_context / arrival 的放宽都是为了"无敌人也能接管"（2026-09-28 用户需求）。
+#   锚点 = 上游的安全断言全部保留；放宽必须经由 allow_early_state / allow_state3
+#   两个显式开关，且只在 env.allow_state3=true 时生效。
+SEARCH_CTX_ANCHORS = (
+    "hex(identity,0)=='8e325c933e55bf62'",
+    "u32(record,0)==4",
+    "'not active state-4 G60'",
+)
+SEARCH_CTX_REQUIRED = ("options.allow_early_state",)
+ARR_EARLY_ANCHORS = (
+    "L.hex64(c.identity_bytes,0)=='8e325c933e55bf62'",
+    "L.u32(record,0)==4",
+    "'arrival source'",
+    "scope.calls.explode",
+    "assert(ex.validate() and source()==record,'arrival preflight changed')",
+)
+ARR_EARLY_REQUIRED = (
+    "env.allow_state3 and (L.u32(record,8)==2 or L.u32(record,8)==3)",
+)
+# ★ structure_route 的改动：新增"寿命末期已在入口侧 ⇒ 直接 attack"（2026-09-28）。
+#   上游的路线安全属性**一条都不能少**，所以这里按锚点 pin 死：
+#   · 入口轴长度守卫（不进畸形数据）
+#   · approach 边界断言（不放宽上游标定的 5~12m）
+#   · attack 落点仍是洞口正面 1m + entrance 到达区（不改成"直奔洞心"）
+#   · tower/egg 分支完全不动
+ROUTE_ANCHORS = (
+    "local length=math.sqrt(forward[1]^2+forward[2]^2)",
+    "assert(length>0.25,'structure entrance axis')",
+    "local approach=profile.front_distance or 5",
+    "assert(type(approach)=='number' and approach>=5 and approach<=12,'structure approach bound')",
+    "if stage=='front' and distance(own,front)<=1.5 then stage='attack' end",
+    "local goal={point[1]+x,point[2]+y,point[3]+0.5}",
+    "arrival_region={kind='entrance',forward={x,y},back=0.75,front=1.5,width=1.5,height=1.25}",
+    "assert(profile.kind=='structure_tower' or profile.kind=='structure_egg','unknown structure route')",
+)
+ROUTE_REQUIRED = (
+    "profile.direct_entrance",          # 必须是显式开关，不得无条件放宽
+    "along>0 and flat<=approach",       # 只在入口侧且已在进场半径内
+    "M.on_direct_entrance",             # 纯函数保持：不直接依赖 env
+)
+SAFETY_ANCHORS = {
+    'src/g60/native_ping.lua': PING_ANCHORS,
+    'src/g60/arrival_policy.lua': ARRIVAL_ANCHORS,
+    'src/g60/native_search_context.lua': SEARCH_CTX_ANCHORS,
+    'src/g60/native_arrival.lua': ARR_EARLY_ANCHORS,
+    'src/g60/structure_route.lua': ROUTE_ANCHORS,
+}
+SAFETY_REQUIRED = {
+    'src/g60/native_ping.lua': PING_REQUIRED,
+    'src/g60/arrival_policy.lua': ARRIVAL_REQUIRED,
+    'src/g60/native_search_context.lua': SEARCH_CTX_REQUIRED,
+    'src/g60/native_arrival.lua': ARR_EARLY_REQUIRED,
+    'src/g60/structure_route.lua': ROUTE_REQUIRED,
+}
+SAFETY_FORBIDDEN = {
+    'src/g60/native_ping.lua': PING_FORBIDDEN,
+    'src/g60/arrival_policy.lua': ARRIVAL_FORBIDDEN,
+}
+SAFETY_REQUIRED = {
+    'src/g60/native_ping.lua': PING_REQUIRED,
+    'src/g60/arrival_policy.lua': ARRIVAL_REQUIRED,
+    'src/g60/native_search_context.lua': SEARCH_CTX_REQUIRED,
+    'src/g60/native_arrival.lua': ARR_EARLY_REQUIRED,
+}
+
+# ★ compat/build.json 里 88 条 game.dll 签名 + exe 引擎签名必须与上游**逐条**相同。
+#   2026-09-27 为了让新模块 priority_faults 参与内联，aliases 多了一个 key，
+#   所以整个文件不再逐字节相等 —— 改成按 key 逐条比：
+#   上游的每一个顶层 key 必须在、且值一致；允许的唯一差异是"上游没有的新别名"。
+def check_build_json(up, cur):
+    try:
+        up_d, cur_d = json.loads(up), json.loads(cur)
+    except (TypeError, ValueError) as exc:
+        check('build_json_parses', False, str(exc))
+        return
+    # 签名类顶层 key 必须逐字节相同（engine guards 在 titan_profile.lua 里，
+    # 所以这里不写死 key 名单 —— 上游加 key 时本断言自动跟上）
+    for key, value in up_d.items():
+        if key == 'aliases':
+            continue
+        same = key in cur_d and cur_d[key] == value
+        size = len(value) if isinstance(value, str) else '-'
+        check('build_json_pinned:' + key, same, f'{size} 字符/值与上游逐字节相同')
+    up_alias, cur_alias = up_d.get('aliases', {}), cur_d.get('aliases', {})
+    check('build_json_upstream_aliases_intact',
+          all(k in cur_alias and cur_alias[k] == v for k, v in up_alias.items()),
+          f'上游 {len(up_alias)} 个模块别名全部保留且同名')
+    added = [k for k in cur_alias if k not in up_alias]
+    # 允许的新增别名必须逐个说明理由，不得出现未知模块。
+    # ★ 2026-09-28：safe_zone / friendly_scan（4m 潜兵安全区）已按用户要求**整体删除**
+    #   —— 枚举实体表始终没能稳定工作（两次静默失败），不做半成品。
+    allowed_new = {
+        'priority_faults',   # 竞争态 vs 结构漂移的分类（治"一颗 G-60 杀死整局"）
+        'geometry',           # 只读几何诊断（零 ffi，可在测试里真跑）
+        'take_gate',          # 接管门控纯函数（治"runtime 一行都测不到"）
+    }
+    check('build_json_only_known_additions', set(added) == allowed_new,
+          f'新增别名={added}（允许：{sorted(allowed_new)}）')
+    extra = [k for k in cur_d if k not in up_d]
+    check('build_json_no_new_top_key', not extra, f'新增顶层 key={extra}')
 
 failures = []
 
@@ -151,22 +306,63 @@ def main():
     check('runtime_excluded_not_computed',
           'Filter.excluded(m.selection_resource)' not in rt,
           '小怪/非白名单敌人不再触发接管')
-    hw = re.search(r'local function has_weakpoint\(resource\)(.*?)end', rt, re.S)
-    body = hw.group(1) if hw else ''
-    check('has_weakpoint_structure_only',
-          'structure_profiles' in body and 'titan_profile' not in body
+    # 函数体有多行且含早退的 `if ... then ... end`，
+    # 非贪婪匹配到第一个 `end` 会截断（我第一版就这么写，漏掉了后半段）。
+    # 改为：从函数起点截到下一个 `local ` 定义为止。
+    # 2026-09-29：判定已收敛到 claim_profile（原 has_weakpoint 与 ping.allowed
+    # **各写一份**，我只改了一处 ⇒ 标记入口仍拒泰坦，实机 RESOURCE_NOT_SUPPORTED ×4）。
+    _i = rt.index('local function claim_profile(resource)')
+    _j = rt.find('\n    local ', _i + 10)
+    body = rt[_i:_j] if _j > _i else rt[_i:_i + 900]
+    # ★ 2026-09-29 范围扩展：虫洞 + 吐酸泰坦，其余（weakpoint_profiles 里的
+    #   7 个敌人 head/rear/thorax/underside）仍然不接管。
+    #   原断言要求"只有 structure_profiles"，现已按用户要求放宽到含 titan_profile，
+    #   但**仍然必须不含 weakpoint_profiles** —— 那是本轮最需要守住的那条线。
+    check('has_weakpoint_structure_and_titan_only',
+          'structure_profiles' in body and 'titan_profile' in body
           and 'weakpoint_profiles' not in body,
           body.strip()[:70])
     check('titan_selected_still_reachable',
-          'titan_selected=titan and selected' in rt and 'has_weakpoint(m.selection_resource)' in rt,
-          '虫洞必须仍走 titan:step() 才有瞄准点')
+          re.search(r'titan_selected=not abandoned and titan and selected', rt) is not None
+          and 'has_weakpoint(m.selection_resource)' in rt,
+          '虫洞必须仍走 titan:step() 才有瞄准点（abandoned 只挡被放弃的那颗）')
 
     print('=== 3. 安全层与上游逐字节一致 ===')
+    # build.json 单独按 key 比对（见 BUILD_JSON_SIGNATURE_KEYS 处的说明）
+    check_build_json(upstream_text('compat/build.json'),
+                     (ROOT / 'compat/build.json').read_text(encoding='utf-8'))
+
     for rel in SAFETY_LAYER:
         up = upstream_text(rel)
         cur = (ROOT / rel).read_text(encoding='utf-8') if (ROOT / rel).exists() else None
+        if rel in SAFETY_ANCHORS and up is not None and cur is not None:
+            # 锚点比对：上游的安全断言一条都不能少；上游那句有害写法必须已移除
+            missing = [a for a in SAFETY_ANCHORS[rel] if a not in cur]
+            check('anchors_intact:' + rel, not missing,
+                  f'{len(SAFETY_ANCHORS[rel])} 条上游安全断言齐全' if not missing
+                  else f'缺失: {missing}')
+            leaked = [a for a in SAFETY_FORBIDDEN.get(rel, ()) if a in cur]
+            check('harmful_removed:' + rel, not leaked, f'仍残留: {leaked}')
+            absent = [a for a in SAFETY_REQUIRED.get(rel, ()) if a not in cur]
+            check('fix_present:' + rel, not absent, f'修复片段缺失: {absent}')
+            continue
+        if rel in SAFETY_LAYER_EXCEPTIONS and up is not None and cur is not None:
+            # 只允许出现声明过的例外片段，剥掉后必须与上游逐字节相同
+            for frag in SAFETY_LAYER_EXCEPTIONS[rel]:
+                cur = re.sub(r'[ \t]*--[^\n]*\n', '\n', cur)          # 去掉新增注释
+                cur = re.sub(r'\n[ \t]*' + re.escape(frag) + r'.*?\n[ \t]*end\n',
+                             '\n', cur, flags=re.S)
+            check('untouched_except:' + rel, cur == up,
+                  '剥离声明过的例外片段后与上游一致')
+            continue
         check('untouched:' + rel, up is not None and cur == up,
               '' if up is not None else 'baseline missing')
+    # 例外片段本身必须在（否则"剥离"会把功能一起剥掉）
+    for rel, frags in SAFETY_LAYER_EXCEPTIONS.items():
+        cur = (ROOT / rel).read_text(encoding='utf-8')
+        for frag in frags:
+            check('exception_present:' + rel + ':' + frag, frag in cur,
+                  '声明过的例外片段仍在')
 
     print('=== 4. 身份独立 ===')
     entry = (ROOT / 'addon' / 'entry.lua.in').read_text(encoding='utf-8')
@@ -174,9 +370,14 @@ def main():
     check('entry_log_is_new', "open_log,'G60BugholeLock.log'" in entry)
     check('entry_no_old_global', "rawset(_G,'G60SmartTargeting'" not in entry)
     check('entry_no_old_log', "open_log,'G60SmartTargeting.log'" not in entry)
+    # ★ 2026-09-29 范围扩展：虫洞 + 吐酸泰坦（build 标识随之改名）。
+    #   仍然必须声明 enemy_priority=REMOVED / unmarked_behavior=VANILLA ——
+    #   扩展的是"接哪些目标"，不是"接所有目标"。
     check('startup_declares_scope',
-          'build=BUGHOLE_ONLY' in entry and 'bughole_profiles=17' in entry
-          and 'enemy_priority=REMOVED' in entry and 'unmarked_behavior=VANILLA' in entry)
+          'build=BUGHOLE_PLUS_TITAN' in entry and 'bughole_profiles=17' in entry
+          and 'enemy_priority=REMOVED' in entry and 'unmarked_behavior=VANILLA' in entry
+          and 'scope=marked_bughole_and_bile_titan' in entry
+          and 'titan_enabled=' in entry and 'titan_resource=' in entry)
     # ★ 裁剪 D（修 bug 的关键）：designed_targets_only 必须为 false。
     #   它为 true 时 native_minimal/selection_veto.lua 第 23-24 行会把"不在 allowlist
     #   (泰坦+弱点)里"的选择清掉 selection + 强制搜索 —— 表现为"G-60 只锁大型敌人、
@@ -215,12 +416,6 @@ def main():
     #                             -> 标记虫洞时 titan_selected 被 `not retry_search` 压掉
     #   H  disposal 段只判 behavior_id/state/到期 -> 敌人 G-60 到期被本 mod 主动引爆
     rt = strip_comments((ROOT / 'src/g60' / 'experimental_runtime.lua').read_text(encoding='utf-8'))
-    check('F_priority_gated_on_structure',
-          'if priority and (structure_mark or (old and (old.lock or old.titan))) then' in rt,
-          'priority 段只在有虫洞标记/已有锁定时进入')
-    check('F_arrival_gated_on_held_lock',
-          'if arrival and old and (old.lock or old.titan) and not retired[m.id] then' in rt,
-          'arrival 段只在真正持有锁定/航点时进入')
     check('G_force_search_not_forced_by_reservations',
           'result.released or reservations' not in rt and 'elseif result.released then' in rt,
           'force_search 只在真释放锁定时置位')
@@ -286,7 +481,8 @@ def main():
           in pri,
           'sticky 分支复用 eligible() 校验（实体在、unit 未变、target_valid、距离）')
     check('I_sticky_marks_structure_flag',
-          'marked_structure=true}' in pri,
+          'marked_structure=true,\n' in pri
+          and 'marked_structure=true,\n                        point=' in pri,
           'sticky 构造的 row 必须带 marked_structure=true（否则 eligible 会走 allowlist 半边）')
     check('I_emits_lock_lost_diagnostic',
           "structure_lock_lost" in pri and "ENTITY_GONE" in pri,
@@ -346,11 +542,39 @@ def main():
     check('K_arrival_has_no_native_gate', 'target_valid' not in arr,
           'native_arrival 不含 target_valid（无第 4 处遗漏）')
 
+    # ★ 2026-09-28 重构：priority / arrival 的门控判定已抽到 src/g60/take_gate.lua
+    #   （纯函数，可真跑测试）。原因见该文件头：重构前这些判断内联在
+    #   experimental_runtime 的 host:tick()（550 行、7 类职责）里，而仓库
+    #   195 个测试跑的是 g60/core.lua，**一行 runtime 都跑不到** ——
+    #   连续四轮实机事故全从这条缝隙溜过去。
+    #   所以这里的"门控必须存在"断言改为同时守住两处：
+    #     · take_gate 里有该判定（纯函数，可测）
+    #     · runtime 真的调用了它（防止"抽出来就忘了用"）
+    gate = (ROOT / 'src/g60' / 'take_gate.lua').read_text(encoding='utf-8')
+    check('gate_is_pure_lua',
+          "require('ffi')" not in gate,
+          'take_gate 不依赖 ffi —— 这正是它能在测试里真跑的原因')
+    check('gate_priority_call_sites',
+          'TakeGate.decide{' in rt and 'local enters=priority~=nil and gate.drive' in rt,
+          'runtime 的 priority 段确实走 TakeGate.decide')
+    check('gate_guidance_call_sites',
+          'TakeGate.decide_guidance{' in rt and 'if arrival and guide.run then' in rt,
+          'runtime 的 arrival 段确实走 TakeGate.decide_guidance')
+    check('F_priority_gated_on_structure',
+          'if old and old.quarantined then' in gate
+          and 'if not (o.structure_mark or (old and (old.lock or old.titan))) then' in gate,
+          'priority 门控：只有虫洞标记/已有锁定才驱动；quarantined 交回原生')
+    check('F_arrival_gated_on_held_lock',
+          'if not (o.old and (o.old.lock or o.old.titan)) then' in gate
+          and 'if not o.can_guide then' in gate,
+          'arrival 门控：必须真正持有锁定/航点，且仅 can_guide（state 4）可做')
     # 三处门控必须真的存在（防止有人"优化"掉）
-    for _tag, _frag in (('priority', 'if priority and (structure_mark'),
-                        ('arrival', 'if arrival and old and (old.lock or old.titan)'),
-                        ('disposal', 'if disposal and held and m.behavior_id==4')):
+    for _tag, _frag in (('disposal', 'if disposal and held and m.behavior_id==4'),):
         check(f'gate_present_{_tag}', _frag in rt, f'{_tag} 门控片段存在')
+    for _tag, _frag in (('priority', "o.structure_mark or (old and (old.lock or old.titan))"),
+                        ('guidance', 'o.old.lock or o.old.titan'),
+                        ('early_flight_age', 'too_early_in_flight')):
+        check(f'gate_fragment_{_tag}', _frag in gate, f'{_tag} 判定存在于 take_gate')
 
     print('=== 5. 产物 ===')
     if not ZIP.exists():

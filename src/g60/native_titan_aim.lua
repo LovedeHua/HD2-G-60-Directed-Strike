@@ -30,9 +30,18 @@ function M.new(env)
             assert(ffi.istype(setter,calls.clear) and ffi.istype(orbit,calls.orbit)
                 and ffi.istype(valid,calls.target_valid),'Titan call ABI mismatch')
             local resource=c.selection.has_target and scope.snapshot.selected and scope.snapshot.selected.resource
-            local profile=resource and ((env.weakpoint_profiles or {})[resource]
+            -- ★ 查找顺序：泰坦优先（2026-09-29）
+            -- 原上游顺序是 weakpoint → structure → titan，最后判泰坦。
+            -- 那个顺序有个隐患：`env.weakpoint_profiles` 里登记着 7 个**敌人**
+            -- （head/rear/thorax/underside），一旦本函数拿到敌人目标，
+            -- 就会用敌人的弱点几何去引导 G-60。
+            -- 进入本函数的唯一条件是 runtime 的 `titan_selected`（已限定泰坦资源），
+            -- 所以现在**逻辑上不可达**；但把泰坦放第一位可以让这个不变量
+            -- 由代码本身保证，而不是依赖"调用方一定传对了"——
+            -- 跨模块的隐式约定正是 2026-09-29 越权 bug 的成因。
+            local profile=resource and (resource==env.titan_profile.resource and env.titan_profile
                 or (env.structure_profiles or {})[resource]
-                or resource==env.titan_profile.resource and env.titan_profile)
+                or (env.weakpoint_profiles or {})[resource])
             local fresh=profile~=nil and profile~=false
             if not fresh and previous and previous.target then profile=previous.target.profile or env.titan_profile end
             local owned_point=previous and not c.selection.has_target and c.selection.flag==1

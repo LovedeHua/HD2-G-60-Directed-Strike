@@ -100,8 +100,12 @@ function M.capture(reader,base,observed,engine,options)
     local record=read(record_address,0x1f8)
     assert(identity==observed.identity_bytes and record==observed.record_bytes,'stale observation')
     local id=u32(identity,8)
+    -- ★ 早期接管：options.allow_early_state 时放行 state 2/3（观测+设目标用）。
+    --   只放宽**观测**，写入端（titan/arrival）的门控另行独立判断。
+    local early=options and options.allow_early_state
+        and (u32(record,8)==2 or u32(record,8)==3)
     assert(id~=invalid and hex(identity,0)=='8e325c933e55bf62'
-        and u32(record,0)==4 and u32(record,8)==4,'not active state-4 G60')
+        and u32(record,0)==4 and (u32(record,8)==4 or early),'not active state-4 G60')
     assert(math.floor(u32(identity,20)/2)%2==0,'native update excluded')
     assert(u32(record,0x68)==id,'candidate source mismatch')
     local root=pointer(base+0x346bf98,'root')
