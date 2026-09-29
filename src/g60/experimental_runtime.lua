@@ -102,6 +102,28 @@ function M.new(env)
             and resource==env.titan_profile.resource then
             return env.titan_profile
         end
+        -- ★★ 蟑龙 Dragonroach（2026-09-29）★★
+        --
+        -- resource=960b48a421a3faaa，weakpoint kind="thorax"，standoff=2.5。
+        -- docs/TARGETS.md："胸腔气囊下方，带 blast standoff"。
+        --
+        -- **为什么不需要新几何**（这是查证过的，不是猜的）：
+        --   · weakpoint_route 的 thorax 分支不查地面：
+        --         goal={p[1],p[2],p[3]-profile.standoff}
+        --     只有 Impaler 的 underside 分支才有 `transit<origin[3]+0.3` 的检查。
+        --   · 上游源码里有一句注释直接说明了这一点：
+        --         -- Dragonroach can be airborne; its root is not a terrain-height sample.
+        --   ⇒ 爆点由"瞄准点 − standoff"得出，与地面高度无关 ⇒ 天生适配飞行单位。
+        --   · titan_context 也是通用的：它的断言里写着 "weakpoint scenegraph
+        --     variant mismatch" / "weakpoint aim anchor unavailable"，本来就是
+        --     为 weakpoint profile 设计的。
+        --
+        -- 用**精确哈希**匹配，不按 kind 推断 —— 按 kind 会把 Spore Charger
+        -- 等其它同 kind 敌人一起放进来，那是用户没要求的范围扩张。
+        if env.dragonroach_enabled~=false and env.weakpoint_profiles
+            and resource==env.dragonroach_resource then
+            return env.weakpoint_profiles[resource]
+        end
         return nil
     end
     local function has_weakpoint(resource) return claim_profile(resource)~=nil end

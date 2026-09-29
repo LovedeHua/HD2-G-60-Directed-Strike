@@ -314,14 +314,28 @@ def main():
     _i = rt.index('local function claim_profile(resource)')
     _j = rt.find('\n    local ', _i + 10)
     body = rt[_i:_j] if _j > _i else rt[_i:_i + 900]
-    # ★ 2026-09-29 范围扩展：虫洞 + 吐酸泰坦，其余（weakpoint_profiles 里的
-    #   7 个敌人 head/rear/thorax/underside）仍然不接管。
-    #   原断言要求"只有 structure_profiles"，现已按用户要求放宽到含 titan_profile，
-    #   但**仍然必须不含 weakpoint_profiles** —— 那是本轮最需要守住的那条线。
-    check('has_weakpoint_structure_and_titan_only',
+    # ★ 2026-09-29 范围两度扩展：虫洞 + 吐酸泰坦 + 蟑龙（Dragonroach）。
+    #
+    #   第一次扩展（+泰坦）时，断言从"只认 structure_profiles"放宽到含 titan_profile，
+    #   但死守"不得出现 weakpoint_profiles"。
+    #   第二次扩展（+蟑龙）后这条不再成立 —— 蟑龙**就是** weakpoint profile
+    #   （kind="thorax"）。所以改成钉**更精确**的安全属性：
+    #     · weakpoint_profiles 只能通过 `[resource]` 精确取用
+    #     · **不得**按 kind 过滤/批量放行（那会把 Spore Charger 等一起拉进来）
+    #     · 匹配用的必须是一个专门的资源常量，不是 kind 判断
+    check('has_weakpoint_scope_is_bughole_titan_dragonroach',
           'structure_profiles' in body and 'titan_profile' in body
-          and 'weakpoint_profiles' not in body,
+          and 'weakpoint_profiles' in body
+          and 'env.weakpoint_profiles[resource]' in body
+          and 'dragonroach_resource' in body,
           body.strip()[:70])
+    # ★ 最关键的一条：不得按 kind 批量放行
+    check('weakpoint_not_admitted_by_kind',
+          '.kind' not in body and 'kind==' not in body,
+          '★ 只按精确哈希放行蟑龙，不按 kind 推断（防 Spore Charger 等被顺带拉进来）')
+    check('weakpoint_single_exact_lookup',
+          body.count('weakpoint_profiles[') == 1,
+          '★ weakpoint_profiles 在 claim_profile 里只有一处**精确**取用')
     check('titan_selected_still_reachable',
           re.search(r'titan_selected=not abandoned and titan and selected', rt) is not None
           and 'has_weakpoint(m.selection_resource)' in rt,

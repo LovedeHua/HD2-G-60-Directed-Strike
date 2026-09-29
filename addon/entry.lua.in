@@ -30,6 +30,21 @@ local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets
     --   "裁剪 C"里被收窄成只认 structure_profiles，导致泰坦永远进不了接管路径
     --   （titan_route / titan_aim / titan_profile 全套代码其实一直都在）。
     titan_enabled=true,
+    -- ★ 蟑龙 Dragonroach（2026-09-29）★
+    --   resource=960b48a421a3faaa，weakpoint kind="thorax"，standoff=2.5。
+    --   docs/TARGETS.md 记录的攻击位置："胸腔气囊下方，带 blast standoff"。
+    --
+    --   为什么天生适配飞行单位：
+    --     · weakpoint_route 的 thorax 分支**没有地面净空检查**
+    --       （只有 Impaler 的 underside 分支才有 floor 判断）
+    --     · 上游源码注释原话："Dragonroach can be airborne;
+    --       its root is not a terrain-height sample."
+    --     ⇒ 爆点由"瞄准点 − standoff"得出，与地面无关。
+    --   ⇒ 不需要新几何、不需要新路由，只需放行资源。
+    --
+    --   注意：用**精确哈希**匹配，不按 kind 推断 —— 按 kind 会把其它
+    --   同 kind 敌人（Spore Charger 也是 head）一起放进来。
+    dragonroach_enabled=true,dragonroach_resource='960b48a421a3faaa',
     -- ★ 到达区域按**虫洞**重新标定（2026-09-28 实机几何反推）
     --   上游的 {radius=1.75,depth=0.8} 是给**泰坦**（20m 高）标定的，
     --   arrival_policy 的 `dz<=0` 要求"必须在目标点下方才算到达"。
@@ -177,6 +192,7 @@ local ok,why=pcall(function()
         --   · G-60 在**飞行寿命到期（30s）时自然转入 state 4**，与敌人无关
         allow_state3=false,
         titan_standoff=state.titan_standoff,titan_standoff_min=state.titan_standoff_min,
+        dragonroach_enabled=state.dragonroach_enabled,dragonroach_resource=state.dragonroach_resource,
         titan_arrival_region=state.titan_arrival_region,
         thread=function() return tonumber(k.GetCurrentThreadId()) end,
         engine=assert(rawget(_G,'stingray'),'engine API unavailable'),emit=emit})
@@ -195,6 +211,8 @@ local ok,why=pcall(function()
         ..'native_lifetime_verified=false;mode=EXPERIMENTAL_NATIVE_CALLS;titan_standoff='..state.titan_standoff
         ..';titan_arrival_radius='..state.titan_arrival_region.radius..';titan_arrival_depth='..state.titan_arrival_region.depth
         ..';titan_standoff_min='..tostring(state.titan_standoff_min)
+        ..';dragonroach_enabled='..tostring(state.dragonroach_enabled)
+        ..';dragonroach_resource='..tostring(state.dragonroach_resource)
         -- ★ 2026-09-29：接管范围 = 标记虫洞 + 吐酸泰坦，其余交还引擎。
         --   titan_resource 打出实际哈希，方便日志确认是否命中预期目标。
         ..';titan_enabled='..tostring(state.titan_enabled)

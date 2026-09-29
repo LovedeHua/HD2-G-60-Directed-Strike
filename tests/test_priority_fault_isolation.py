@@ -1102,6 +1102,65 @@ def test_stuck_grenade_breakers():
           "正常引爆仍然标记 retired（熔断是额外的收尾口，不是替代）")
 
 
+def test_dragonroach_takeover():
+    print()
+    print("=== ⑳ ★ 蟑龙 Dragonroach 接管（飞行单位）===")
+    r = RUNTIME.read_text(encoding="utf-8")
+    e = (ROOT / "addon" / "entry.lua.in").read_text(encoding="utf-8")
+    weak = (ROOT / "compat" / "weakpoint_profiles.lua").read_text(encoding="utf-8")
+    wr = (ROOT / "src/g60" / "weakpoint_route.lua").read_text(encoding="utf-8")
+    cat = (ROOT / "compat" / "priority_catalog.lua").read_text(encoding="utf-8")
+    docs = (ROOT / "docs" / "TARGETS.md").read_text(encoding="utf-8")
+
+    # 身份与来源（不靠名字猜，靠 catalog + docs）
+    check("dragonroach_identity",
+          '["960b48a421a3faaa"]={rank=10,name="Dragonroach"}' in cat,
+          "resource 960b48a421a3faaa = Dragonroach（priority_catalog 权威）")
+    check("dragonroach_kind_thorax",
+          'profiles["960b48a421a3faaa"]' in weak
+          and re.search(r'profiles\["960b48a421a3faaa"\]=\{[^}]*kind="thorax"', weak) is not None,
+          "weakpoint kind=thorax")
+    check("dragonroach_has_standoff",
+          re.search(r'profiles\["960b48a421a3faaa"\].*?standoff=2\.5', weak, re.S) is not None,
+          "★ 有 standoff=2.5（thorax 分支要用它，缺了会 p[3]-nil 崩）")
+    check("dragonroach_documented",
+          "Dragonroach" in docs and "thorax sac" in docs,
+          "docs/TARGETS.md 有记录（攻击位置：胸腔气囊下方）")
+
+    # ★ 飞行适配：thorax 分支不得有地面净空检查（那是 Impaler 的 underside 才有的）
+    thorax_ok = ("goal={p[1],p[2],p[3]-profile.standoff}" in wr
+                 and "Dragonroach can be airborne" in wr)
+    check("dragonroach_airborne_supported", thorax_ok,
+          "★ 上游注释明确 Dragonroach can be airborne，爆点与地面无关")
+    check("ground_check_only_for_underside",
+          "if profile.kind=='underside' and transit<target.origin[3]+0.3" in wr,
+          "地面净空检查只属于 underside（Impaler），thorax 不查")
+
+    # 放行方式：精确哈希 + 开关，不得按 kind
+    code = "\n".join(l for l in r.splitlines() if not l.strip().startswith("--"))
+    check("dragonroach_admitted_exact_hash",
+          "resource==env.dragonroach_resource" in code
+          and "env.weakpoint_profiles[resource]" in code,
+          "★ 按精确哈希放行，取用 weakpoint_profiles[resource]")
+    check("dragonroach_config_toggle",
+          "dragonroach_enabled=true" in e and "dragonroach_resource='960b48a421a3faaa'" in e
+          and "dragonroach_enabled=state.dragonroach_enabled" in e,
+          "有开关与资源常量，且正确传入 env")
+    check("dragonroach_logged_in_version_line",
+          "dragonroach_enabled='..tostring(state.dragonroach_enabled)" in e,
+          "启动日志打出开关与资源，便于确认生效")
+
+    # ★ 安全属性：其它 4 个 weakpoint 敌人仍不接管
+    others = ["1a7fcdff98c664b0", "3aff5fd7d5450b99", "a05bd1ec67b3ac4c",
+              "fd5247653c897803", "6b202392f4ab605e", "dcf8e74212fbee3b"]
+    leaked = [o for o in others if o in code]
+    check("other_enemies_still_excluded", not leaked,
+          f"★ 其它敌人仍未接管（泄漏：{leaked}）")
+    check("dragonroach_only_one_hash_in_code",
+          code.count("960b48a421a3faaa") <= 1,
+          "claim_profile 里只硬编码蟑龙一个哈希")
+
+
 def test_adaptive_standoff():
     print()
     print("=== ⑲ ★ standoff 自适应 1.5~2.5（用户授权放宽）===")
@@ -1272,11 +1331,18 @@ def test_takeover_scope_is_bughole_and_titan_only():
           re.search(r"titan_enabled=true", e) is not None,
           "默认开启")
 
-    # ★ 关键安全属性：仍然**不认** weakpoint_profiles（穿刺者/龙蟑螂等其它敌人）
-    check("weakpoint_profiles_still_excluded",
-          "weakpoint_profiles[resource]" not in
-          "\n".join(l for l in r.splitlines() if not l.strip().startswith("--")),
-          "★ 不接管其它敌人（weakpoint_profiles 仍不在 has_weakpoint 里）")
+    # ★ 关键安全属性（2026-09-29 收紧了两次范围的表述）：
+    #   蟑龙加入后 weakpoint_profiles **会**被用到，所以不能再断言"完全不碰"。
+    #   改成钉真正要守的东西：**只有一处精确取用**，且**不得按 kind 批量放行**。
+    #   （按 kind 放行会把 Spore Charger 等一起拉进来 —— 那是用户没要求的扩张。）
+    _code = "\n".join(l for l in r.splitlines() if not l.strip().startswith("--"))
+    check("weakpoint_single_exact_lookup",
+          _code.count("weakpoint_profiles[") == 1,
+          "★ weakpoint_profiles 只有一处精确取用（不是批量放行）")
+    check("no_kind_based_admission",
+          "weakpoint_profiles[resource].kind" not in _code
+          and "kind=='thorax'" not in _code,
+          "★ 不按 kind 推断（只认精确哈希）")
     # ★ 表**非空**（登记了 7 个敌人弱点：head/rear/thorax/underside）——
     #   实机日志里 dcf8e74212fbee3b 就被 RESOURCE_NOT_SUPPORTED 拒过。
     #   安全性不靠"表是空的"，而靠 has_weakpoint 不认它。
@@ -1339,6 +1405,7 @@ def main():
     test_diagnostics_not_throttled()
     test_clearance_diagnostics_placement()
     test_adaptive_standoff()
+    test_dragonroach_takeover()
     test_stuck_grenade_breakers()
     test_link_diagnostics()
     test_priority_wiring()

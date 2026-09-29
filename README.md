@@ -18,7 +18,8 @@
 |---|---|
 | 你标记了下面 17 个虫洞之一 | **本 mod 接管**：打断 G-60 当前的敌人锁定，改为朝该虫洞飞去，到达后引爆 |
 | 你标记了**吐酸泰坦**（Bile Titan） | **本 mod 接管**：走为体型标定的航路（around → descend → under → attack），在腹部下方引爆 |
-| 引擎自己选中了吐酸泰坦（你没标记） | 同上接管 |
+| 你标记了**蟑龙**（Dragonroach） | **本 mod 接管**：飞到胸腔气囊下方引爆 |
+| 引擎自己选中了吐酸泰坦 / 蟑龙（你没标记） | 同上接管 |
 | 虫洞与泰坦同时被标记 | **虫洞优先** |
 | 你没标记任何支持目标 | **本 mod 完全不插手**，G-60 按游戏原生 TargetLock 打敌人 |
 | 你标记了其他敌人 / 尖啸者巢 / 孢子菇 / 任务虫卵 | **本 mod 不接管**，G-60 原生处理 |
@@ -27,7 +28,8 @@
 「按部位弱点瞄准」**已全部移除**——那正是它"只能标记虫族敌人、不能标记机器人/光能族"的原因。
 本 mod 只接管**吐酸泰坦这一种敌人**，且是精确资源哈希匹配，不做任何顺位或自动挑选。
 
-`titan_enabled=false` 可一键退回"只打虫洞"。
+`titan_enabled=false` 关闭泰坦接管，`dragonroach_enabled=false` 关闭蟑龙接管，
+两个都设 false 即退回"只打虫洞"。
 
 ## 支持的 17 个虫巢（9 基线 + 8 变体）
 
@@ -37,15 +39,28 @@
 已删除（标记它们本 mod 不接管）：Shrieker Nest（尖啸者巢）、普通/大型 Spore Spewer（孢子菇）、
 `embryo_01`（任务虫卵）。
 
-## 支持的敌人（1 种）
+## 支持的敌人（2 种）
 
-**吐酸泰坦（Bile Titan）** = `9e2e17f2ccccafdd`，精确匹配。
+| 敌人 | resource | 航路 |
+|---|---|---|
+| **吐酸泰坦** Bile Titan | `9e2e17f2ccccafdd` | `titan_route`（为体型标定，RADIUS=12 / standoff 2.5） |
+| **蟑龙** Dragonroach | `960b48a421a3faaa` | `weakpoint_route` 的 **thorax** 分支（胸腔气囊下方，standoff 2.5） |
+
+> **蟑龙的飞行适配是上游自带的**，不是我们新写的：
+> `weakpoint_route` 的 thorax 分支**没有地面净空检查**（只有穿刺者的 underside
+> 分支才有），源码注释原话是 *"Dragonroach can be airborne; its root is not a
+> terrain-height sample."* ⇒ 爆点由「瞄准点 − standoff」得出，与地面高度无关。
+> ⇒ 我们只做了"放行资源"这一步，几何一个字没改。
 
 > 支持泰坦用的是上游 `titan_profile.lua` + `titan_route.lua` 里**本来就为泰坦标定**的那套几何
 > （`RADIUS=12` / `standoff=2.5`），不是照抄别人的参数，也不是为虫洞标定的值。
 
-**不接管**：`weakpoint_profiles.lua` 里另外登记的 7 种敌人（head / rear / thorax / underside
-弱点类型，含穿刺者、龙蟑螂等）。它们仍由引擎原生 TargetLock 处理。
+**不接管**：`weakpoint_profiles.lua` 里另外登记的 5 种敌人 —— 穿刺者（Impaler）、
+孢子冲锋兵（Spore Charger）、冲锋兵巨兽（Charger Behemoth ×3）、冲锋兵（Charger）。
+它们仍由引擎原生 TargetLock 处理。
+
+> 放行用的是**精确资源哈希**，不按 `kind` 推断 —— 按 kind 会把同类型的其它敌人
+> 一起拉进来（例如 Spore Charger 也是 `head`）。
 
 ## 安装
 
@@ -96,6 +111,7 @@
 | 普通虫洞（9 基线） | ✅ 已实机验证（引爆距离 0.9–1.8m） |
 | 大型 colony 洞 | ✅ 已实机验证 |
 | 吐酸泰坦 | ✅ 已实机验证（引爆距离 2.1–2.3m） |
+| 蟑龙 Dragonroach | ⚠️ **尚未实机验证**（几何与路由是上游自带且已自测，但本 mod 未上机确认） |
 | 其余 8 个虫洞变体 | ⚠️ 清单已覆盖，实机样本较少 |
 | 未支持的敌人不被接管 | ✅ 已实机验证（其它敌人不产生接管日志） |
 
