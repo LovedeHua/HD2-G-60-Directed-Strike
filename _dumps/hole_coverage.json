@@ -1,0 +1,217 @@
+{
+  "log": "C:\\Users\\dsypk\\AppData\\Local\\CowboyBingus\\Helldivers2\\Logs\\G60BugholeLock.log",
+  "rows": [
+    {
+      "resource": "8901f188db366b4b",
+      "name": "bug_spawner_scavenger",
+      "nodes": 86,
+      "kind": "structure_hole",
+      "in_list": true,
+      "marked": true,
+      "detonated": true,
+      "risk": "low(\u4e0a\u6e38\u6807\u5b9a\u503c)"
+    },
+    {
+      "resource": "9b58c95349d051f9",
+      "name": "bug_spawner_spitter",
+      "nodes": 86,
+      "kind": "structure_hole",
+      "in_list": true,
+      "marked": false,
+      "detonated": false,
+      "risk": "low(\u4e0a\u6e38\u6807\u5b9a\u503c)"
+    },
+    {
+      "resource": "8c31b749759cbd61",
+      "name": "bug_spawner_warrior",
+      "nodes": 77,
+      "kind": "structure_hole",
+      "in_list": true,
+      "marked": true,
+      "detonated": true,
+      "risk": "low(\u4e0a\u6e38\u6807\u5b9a\u503c)"
+    },
+    {
+      "resource": "36cc8ead2bb18d78",
+      "name": "bug_spawner_hiveguard",
+      "nodes": 77,
+      "kind": "structure_hole",
+      "in_list": true,
+      "marked": false,
+      "detonated": false,
+      "risk": "low(\u4e0a\u6e38\u6807\u5b9a\u503c)"
+    },
+    {
+      "resource": "bc2af8548c6d5e06",
+      "name": "bug_spawner_hunter",
+      "nodes": 77,
+      "kind": "structure_hole",
+      "in_list": true,
+      "marked": true,
+      "detonated": true,
+      "risk": "low(\u4e0a\u6e38\u6807\u5b9a\u503c)"
+    },
+    {
+      "resource": "f78bf0ff5c62140d",
+      "name": "bug_spawner_boomer",
+      "nodes": 113,
+      "kind": "structure_hole",
+      "in_list": true,
+      "marked": false,
+      "detonated": false,
+      "risk": "low(\u4e0a\u6e38\u6807\u5b9a\u503c)"
+    },
+    {
+      "resource": "97dd3178e9f0ab70",
+      "name": "bug_spawner_prowler",
+      "nodes": 113,
+      "kind": "structure_hole",
+      "in_list": true,
+      "marked": false,
+      "detonated": false,
+      "risk": "low(\u4e0a\u6e38\u6807\u5b9a\u503c)"
+    },
+    {
+      "resource": "4776a1cf3f19a13b",
+      "name": "bug_spawner_stalker",
+      "nodes": 113,
+      "kind": "structure_hole",
+      "in_list": true,
+      "marked": true,
+      "detonated": false,
+      "risk": "low(\u4e0a\u6e38\u6807\u5b9a\u503c)"
+    },
+    {
+      "resource": "3a2cef12ed32a088",
+      "name": "bug_spawner_bile_titan",
+      "nodes": 85,
+      "kind": "structure_hole",
+      "in_list": true,
+      "marked": false,
+      "detonated": false,
+      "risk": "low(\u4e0a\u6e38\u6807\u5b9a\u503c)"
+    },
+    {
+      "resource": "7e4c6b45bcc45c3f",
+      "name": "bug_spawner_warrior_captive",
+      "nodes": 77,
+      "kind": "structure_hole",
+      "in_list": true,
+      "marked": false,
+      "detonated": false,
+      "risk": "low(\u590d\u7528\u540c\u6a21\u578b\u57fa\u7ebf)"
+    },
+    {
+      "resource": "b6a181adcf547aeb",
+      "name": "bug_spawner_warrior_ceiling",
+      "nodes": 77,
+      "kind": "structure_hole",
+      "in_list": true,
+      "marked": false,
+      "detonated": false,
+      "risk": "low(\u590d\u7528\u540c\u6a21\u578b\u57fa\u7ebf)"
+    },
+    {
+      "resource": "9d8632a79c2d9789",
+      "name": "bug_spawner_warrior_tutorial",
+      "nodes": 77,
+      "kind": "structure_hole",
+      "in_list": true,
+      "marked": false,
+      "detonated": false,
+      "risk": "low(\u590d\u7528\u540c\u6a21\u578b\u57fa\u7ebf)"
+    },
+    {
+      "resource": "d666aa61d804d311",
+      "name": "bug_spawner_scavenger_captive",
+      "nodes": 86,
+      "kind": "structure_hole",
+      "in_list": true,
+      "marked": false,
+      "detonated": false,
+      "risk": "low(\u590d\u7528\u540c\u6a21\u578b\u57fa\u7ebf)"
+    },
+    {
+      "resource": "095686275a113614",
+      "name": "bug_spawner_shrieker",
+      "nodes": 72,
+      "kind": "structure_hole",
+      "in_list": true,
+      "marked": true,
+      "detonated": true,
+      "risk": "low(\u4e0a\u6e38\u539f\u59cb\u53c2\u6570)"
+    },
+    {
+      "resource": "688949109126ece4",
+      "name": "mechanical_bughole",
+      "nodes": 77,
+      "kind": "structure_hole",
+      "in_list": true,
+      "marked": false,
+      "detonated": false,
+      "risk": "\u2605HIGH(\u65e0\u57fa\u7ebf\uff0c\u4fdd\u5b88\u5047\u8bbe)"
+    },
+    {
+      "resource": "5cf84155e60c6e4d",
+      "name": "mechanical_bughole_scavenger",
+      "nodes": 77,
+      "kind": "structure_hole",
+      "in_list": true,
+      "marked": false,
+      "detonated": false,
+      "risk": "\u2605HIGH(\u65e0\u57fa\u7ebf\uff0c\u4fdd\u5b88\u5047\u8bbe)"
+    },
+    {
+      "resource": "0df874e208040d2f",
+      "name": "bug_spawner_base",
+      "nodes": 86,
+      "kind": "structure_hole",
+      "in_list": true,
+      "marked": false,
+      "detonated": false,
+      "risk": "low(\u590d\u7528\u540c\u6a21\u578b\u57fa\u7ebf)"
+    }
+  ],
+  "verified": 4,
+  "unverified": 13,
+  "missed": [],
+  "rejected_by_class": {
+    "projectile": [
+      {
+        "resource": "16f397ca5f51f271",
+        "name": "(\u672a\u6536\u5f55)",
+        "rejected": 8
+      }
+    ],
+    "listed": [
+      {
+        "resource": "8901f188db366b4b",
+        "name": "bug_spawner_scavenger",
+        "rejected": 7
+      },
+      {
+        "resource": "8c31b749759cbd61",
+        "name": "bug_spawner_warrior",
+        "rejected": 8
+      },
+      {
+        "resource": "095686275a113614",
+        "name": "bug_spawner_shrieker",
+        "rejected": 3
+      }
+    ],
+    "enemy": [
+      {
+        "resource": "36aa99cce5e60146",
+        "name": "cha_boomer",
+        "rejected": 1
+      },
+      {
+        "resource": "a1f37bf2a40fbde4",
+        "name": "cha_warrior_plus",
+        "rejected": 1
+      }
+    ]
+  },
+  "soft_invalid": []
+}

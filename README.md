@@ -1,60 +1,311 @@
-# HD2 G-60 Smart Targeting
+# G-60 Bug Hole Lock —— 标记虫洞专用版
 
-![G-60 Smart Targeting](assets/cover-16x9.png)
+《绝地潜兵2》G-60 反坦克追踪者手雷的**虫洞专用**接管 mod。
 
-[繁體中文](README.zh-TW.md) · **0.1 beta.1** · [Downloads](https://github.com/etxp/HD2-G60-Smart-Targeting/releases)
+> 本工程是 [`etxp/HD2-G60-Smart-Targeting`](https://github.com/etxp/HD2-G60-Smart-Targeting)
+> 0.1-beta.1 的**裁剪派生版**（源码 MIT / AI-assisted）。裁剪只动"决策层"，
+> **签名守卫、持锁窗口、状态机白名单、身份复验等安全机制全部原样保留**。
+> 上游原始说明保留在 `README.upstream.md` / `README.upstream.zh-TW.md`（仅供对照，**不打进包**）。
 
-G-60 targeting for selected Terminid heavies, with tuned attack positions and one grenade assigned to each target.
-Mark a supported bug hole, Shrieker Nest, Spore Spewer or objective egg sack to send a grenade there first,
-including a grenade already flying toward an enemy.
+---
 
-## Behavior
+## 它做什么（只有这一件事）
 
-- Automatic priority: **Bile Titan = Dragonroach > Impaler > Spore Charger > Charger Behemoth > Charger**.
-- Only the specifically supported enemy variants are eligible. Ordinary small bugs are ignored.
-- A target stays reserved until its assigned grenade disappears. Other grenades choose another eligible target or orbit.
-- Your own structure marks override enemy targeting. The latest eligible mark has priority and is remembered after the UI marker expires.
-- Enemy-mark priority is currently disabled. Unmarked structures, teammate marks and ordinary ground pings do not trigger structure attacks.
-- Grenades use adjusted approach routes and arrival checks. Unsuccessful approaches return to search;
-  the 30-second flight limit removes the grenade without a timeout explosion.
+**你标记虫洞 → G-60 优先飞去炸它。** 仅此而已。
 
-The addon still depends on the game's available enemy candidates and visibility behavior; it is not a global enemy scanner.
-See [supported targets and attack sites](docs/TARGETS.md).
+| 情况 | 行为 |
+|---|---|
+| 你标记了下面 9 个虫洞之一 | **本 mod 接管**：打断 G-60 当前的敌人锁定，改为朝该虫洞飞去，到达后引爆 |
+| 你没标记虫洞 | **本 mod 完全不插手**，G-60 按游戏原生 TargetLock 打敌人 |
+| 你标记了敌人 / 尖啸者巢 / 孢子菇 / 任务虫卵 | **本 mod 不接管**（这些目标已从支持清单移除），G-60 原生处理 |
 
-## Install
+上游那套「自动优先级追打 Bile Titan / Impaler / Spore Charger / Charger」以及
+「弱点瞄准」**已全部移除**——那正是它"只能标记虫族敌人、不能标记机器人/光能族"的原因。
 
-1. Close the game and install [Bingus Shared Loader](https://github.com/CowboyBingus/BingusSharedLoader), API 1 with addon discovery (v15+).
-2. Download **HD2-G60-Smart-Targeting-0.1-beta.1.zip** from Releases and import it into your mod manager.
-   The source ZIP is for development, not installation.
-3. Disable older G-60 packages, enable this version, and Purge / Deploy before restarting the game.
+## 支持的 17 个虫巢（9 基线 + 8 变体）
 
-To uninstall, disable this addon, Purge / Deploy, and restart. The existing mod GUID and Lua resource identity are preserved.
-The runtime log is `G60SmartTargeting.log` in the loader's log directory.
-Beta.1 makes diagnostic logging optional. Missing or failed log files no longer prevent startup or operation.
-The runtime identifies itself as `version=0.5.20-experimental`.
+- **8 种普通虫洞**：scavenger / spitter / warrior / hiveguard / hunter / boomer / prowler / stalker
+- **1 个大型 colony 洞** = `bug_spawner_bile_titan`（**泰坦巢**）使用的模型
 
-## Beta status
+已删除（标记它们本 mod 不接管）：Shrieker Nest（尖啸者巢）、普通/大型 Spore Spewer（孢子菇）、
+`embryo_01`（任务虫卵）。
 
-The author has confirmed the enemy filtering, priority/allocation behavior, tuned enemy attacks and normal/large bug-hole explosions in gameplay.
-Objective egg targeting is implemented and covered by isolated tests, but has not yet received separate gameplay confirmation.
-Shrieker Nest and Spore Spewer destruction also remain unconfirmed. These are not guaranteed one-grenade kills.
+## 安装
 
-This version uses original native calls with build signatures and identity/ownership checks. It contains no executable-memory patches,
-hooks or injected custom DLL. Complete native lifetime/cadence proof remains unfinished (`native_lifetime_verified=false`).
-Future game updates may make the checks refuse activation; compatibility across updates is not promised.
+1. 关闭游戏，安装 [Bingus Shared Loader](https://github.com/CowboyBingus/BingusSharedLoader)
+   （**API 1，v15+**，需 addon discovery）。
+2. 把 `G60-BugHole-Lock-0.1.0.zip` 导入 mod 管理器。
+3. **与上游官方包二选一**——两个包都会改 G-60 的决策，同时启用会打架。
+   本包 GUID `9c1d4e77-…`，官方包 GUID `58a16a67-…`。
+4. Purge / Deploy 后重启游戏。
 
-## Build and contribute
+卸载：禁用本包 → Purge / Deploy → 重启。
 
-Python 3.10+ builds the addon without a game installation or external packager. LuaJIT and/or Lua run the portable tests.
+## 日志判读
+
+日志在 `%LOCALAPPDATA%\CowboyBingus\Helldivers2\Logs\G60BugholeLock.log`
+（beta.1 起日志是可选的，日志失败不影响功能）。
+
+| 日志片段 | 含义 |
+|---|---|
+| `mode=EXPERIMENTAL_NATIVE_CALLS` | **签名校验通过，功能已激活** |
+| `disabled: game layout mismatch` | 游戏版本与签名不符 → **安全停用**（不崩游戏），需等上游适配 |
+| `disabled: Titan engine layout mismatch` | 同上（另一组 exe 签名） |
+| `structure_mark;…` | 读到你的虫洞标记 |
+| `search_applied;entity=…` | 已让该手雷进入"朝虫洞飞"的状态 |
+| `arrival_detonated;entity=…;distance=…` | **到达并引爆** |
+| `titan_aim;…;point=…` | 虫洞瞄准点（结构 profile 换算出来的爆点） |
+
+启动时那行会明确打印本包的能力边界：
+`build=BUGHOLE_ONLY;scope=marked_bughole_only;bughole_profiles=17;enemy_priority=REMOVED;weakpoints=REMOVED;shrieker_spewer_egg=REMOVED;unmarked_behavior=VANILLA`
+
+## 已知限制
+
+- **版本敏感**：88 条 game.dll 机器码签名 + exe 签名守卫。游戏更新后若不匹配会**直接停用**
+  （这是刻意设计：宁可不做，也不要在错误的地址上执行原生调用）。
+- **`native_lifetime_verified=false`**：上游自己标注"原生对象生命周期证明未完成"。
+- **不是寻路器**：爆点来自模型节点换算，地形/移动目标/虫腿仍可能干扰。
+- **未实机验证项**：本裁剪版尚未上机跑过（裁剪只影响"要不要接管"，接管后的飞行与引爆
+  逻辑与上游同源；上游已实机确认普通虫洞与大型 colony 洞爆炸）。
+
+## 构建
 
 ```sh
-python -B scripts/check.py
-python -B scripts/build.py
+python -B scripts/build.py       # 出包 -> dist/G60-BugHole-Lock-0.1.0.zip
+python -B scripts/run_tests.py   # 跑测试（本机无 luajit/lua，用 lupa 跑）
+python -B tests/test_bughole_scope.py   # 裁剪点 + 产物级验证
 ```
 
-The public build reproduces the tested deployment files byte for byte. See [building](docs/BUILDING.md),
-[validation](docs/VALIDATION.md), [compatibility](docs/COMPATIBILITY.md) and [contributing](CONTRIBUTING.md).
+`scripts/run_tests.py` 会跳过 13 个 `*_windows` 套件——它们需要
+`scripts/test_windows.py` 编译 `tests/native_minimal_fixture.c` 成 DLL 并用 Windows Lua 注入
+`G60_FIXTURE_DLL`。**本机没有该环境，因此覆盖 `native_priority` / `experimental_runtime`
+的集成测试未运行**；裁剪点由 `tests/test_bughole_scope.py` 做静态与产物级验证兜底。
 
-Maintained by **etxp**, with AI-assisted development and artwork editing.
-Authored code and documentation use the [MIT license](LICENSE); game-derived data and artwork have separate rights described in
-[third-party notices](THIRD_PARTY_NOTICES.md). Both [16:9](assets/cover-16x9.png) and [4:3](assets/cover-4x3.png) covers are available.
+## 裁剪了什么（相对上游的 diff 摘要）
+
+| 文件 | 改动 |
+|---|---|
+| `src/g60/native_priority.lua` | 删除"从引擎候选列表按 rank 自动挑敌人"整段（`Candidates.capture` + `Policy.choose`）。**保留** structure_mark 分支——它才是"标记虫洞时打断敌人锁、优先去炸"的那段 |
+| `src/g60/experimental_runtime.lua` | 5 处：① `excluded` 恒 `false` ② `has_weakpoint()` 收窄为只认 `structure_profiles` ③ priority 段入口加门控 ④ arrival 段加门控 ⑤ `result.released or reservations` → `result.released` ⑥ disposal 段加门控（详见"实机反馈"） |
+| `compat/structure_profiles.lua` | 13 条 → 9 条，只留 `structure_hole`；删掉 3 条 `structure_tower` + 1 条 `structure_egg` |
+| `src/g60/small_filter.lua` | **`excluded` 表整表清空**（见下方"实机反馈"） |
+| **`addon/entry.lua.in`** | **`designed_targets_only=false`**（见下方"实机反馈"）；独立 `_G` 全局名 / 日志名 / 启动描述 |
+| `scripts/build.py` | 独立 GUID / 资源名，`resource_id` 按新资源名现算（不再复用上游的） |
+
+`compat/build.json`（88 条签名守卫 + 引擎签名）、`compat/titan_profile.lua`、
+`compat/native_search_binding.lua`（`clear`/`orbit` 原生绑定）、`src/g60/native_minimal.lua`、
+`src/g60/native_arrival.lua`（`explode` 调用）**均未改动**。
+
+## 实机反馈与修复记录
+
+### 目标筛选有**两道闸门**，我第一版只关了一道（裁剪 D / E）
+
+`src/g60/selection_veto.lua:23` 的判据是两个条件的**与**：
+
+```lua
+if not Filter.excluded(selected.resource) and (not allowed or allowed(selected.resource)) then
+    return {kind='keep'}, 'VANILLA_ALLOWED'
+end
+return {kind='search', clear_selection=true}, 'EXCLUDED_SELECTION'
+```
+
+| 闸门 | 上游默认 | 后果 | 修法 |
+|---|---|---|---|
+| `allowed` = `Allowlist(泰坦 + 弱点)` | 非 nil（`designed_targets_only=true`） | 非名单目标一律被清 selection | **裁剪 D**：`designed_targets_only=false` ⇒ `target_allowed=nil` ⇒ `not allowed` 恒真 |
+| `Filter.excluded`（`small_filter.lua` 的表，9 个资源：8 种小虫 + Impaler 触手 + Hive Guard） | 非空 | **即使 `allowed` 变 nil，这半个条件仍生效** | **裁剪 E**：整表清空 |
+
+⇒ 这两处合起来，才是"**G-60 只锁大型敌人、打不了中小型**"的**筛选层**原因，也正是官方包
+"只能标记虫族敌人"的真正机制。虫洞同样不在名单里（上游自己的
+`tests/structure_windows.lua:54` 就写着 `assert(not f.target_allowed(hole) ...)`）。
+
+### ★ 但筛选层之外还有**三条接管路径**也在碰敌人的 G-60（裁剪 F / G / H）
+
+第二轮实测（关掉 D+E 后）**仍然打不了中小型敌人**，日志给出决定性证据：
+
+```
+arrival_retired;entity=663;delivery=native_queue      ← 敌人在飞的 G-60 被本 mod 主动引爆
+arrival_retired;entity=664;delivery=native_queue        （原生行为是让它自然过期）
+```
+
+根因是：`selection_veto` / `small_filter` 只是**筛选层**，而 runtime 里的**接管流程**
+本身对**所有** state-4 G-60 无条件执行：
+
+| 编号 | 位置 | 上游判据 | 实际影响 |
+|---|---|---|---|
+| **F** | priority 段入口 | `if priority then` | 为**每个** state-4 G-60 建 `tracked` 记录（顺带跑一次 `Search.capture`） |
+| **F** | arrival 段入口 | `if arrival and old and not retired` | 敌人因此走 `arrival:step(target=nil, …, mask_only='search')` → **每帧 `scope.calls.clear(pair,nil)` + `orbit`**。引擎刚选中的中小型敌人被反复清掉；大型目标离得远、被重选的机会多，所以表现为"**只锁大型**" |
+| **G** | priority 返回处理 | `elseif result.released or reservations` | 裁剪后 priority 对敌人**永远**返回 `{kind='keep',released=false}`，`or reservations` 恒真 ⇒ 每帧把 `old.force_search` 置 true ⇒ 虫洞标记来了以后 `titan_selected` 被 `not retry_search` 压掉 ⇒ **"标记了却不接管"** |
+| **H** | disposal 段 | `if disposal and m.behavior_id==4 and state∈{3,4,5} and 到期` | 敌人 G-60 到期被本 mod 主动引爆（就是上面那 5 条 `arrival_retired` 的来源） |
+
+**修法：三处都改成"只对本 mod 真正持有锁定的实体生效"**
+
+```lua
+if priority and (structure_mark or (old and (old.lock or old.titan))) then   -- F 入口
+…
+elseif result.released then old.lock=nil;old.force_search=true end            -- G
+…
+if arrival and old and (old.lock or old.titan) and not retired[m.id] then      -- F 出口
+…
+if disposal and held and m.behavior_id==4 and …                               -- H
+```
+
+⇒ **无虫洞标记时，本 mod 对任何 G-60 一个字节都不写**（不建 `tracked`、不跑
+`Search.capture`、不调 `clear` / `orbit` / `explode`）。启动日志会打印：
+
+```
+enemy_tracking=VANILLA_UNTOUCHED;priority_gated=STRUCTURE_ONLY;
+arrival_gated=HELD_LOCK_ONLY;disposal_gated=HELD_LOCK_ONLY
+```
+
+### 实机日志确认（第三轮，123 行）
+
+虫洞链路**一直是通的**：
+
+```
+structure_mark;target=462;resource=8c31b749759cbd61;reason=ACCEPTED
+priority_locked;entity=584;target=462;reason=PLAYER_MARK_STRUCTURE
+titan_started / titan_aim / titan_stage …            ← 4 段完整航点
+arrival_detonated;entity=584;target=462;distance=1.61   ← 虫洞被引爆
+```
+
+`arrival_detonated` 共 **4 次**（距离 1.61 / 1.64 / 1.73 / 1.82 m），`priority_locked` 4 次
+—— **每一次标记的虫洞都炸成功了**。被拒的 6 条 `RESOURCE_NOT_SUPPORTED` 也都合理：
+`51eea86b…`=`cha_scavenger_tier_1`（敌人）、`3d0e03e2…`=`cha_hunter_tier_1`（敌人）、
+`16f397ca…`=带 `StratagemBallComponent`+`ThrowableComponent` 的**投掷物**。
+
+### ★★ 追踪虫巢被拒：拿"索敌系统的函数"去否决虫洞（裁剪 K）
+
+第五轮实测（274 行）**大成功**：22 个标记 / 21 次引爆，
+`structure_lock_lost` **0 次**（裁剪 I 的 sticky 完全生效），
+清单 17 条里的 `095686275a113614`（尖啸者巢）也炸了 2 次。
+被拒的资源反查后确认全是**敌人**（`36aa99cce5e60146`=cha_boomer、
+`a1f37bf2a40fbde4`=cha_warrior_plus、`16f397ca…`=投掷物）—— 正确。
+
+**但用户反馈"追踪虫（stalker）的虫洞标记后不能炸"。日志给出精确证据**：
+
+```
+271 arrival_detonated     target=512   (爆点 116,-183,4)
+272 structure_mark        target=511  resource=4776a1cf3f19a13b  ACCEPTED
+273 structure_unavailable target=511  detail=NATIVE_TARGET_INVALID   ← 立刻否决，从未锁定
+```
+
+511 与刚被炸的 512 **位置相距甚远**（512 爆点 `(116,-183)`、513 爆点 `(-147,10)`），
+所以不是连锁殉爆，而是**被原生校验直接否决**。
+
+**根因（本 mod 最核心的一处自相矛盾）**：
+`scope.calls.target_valid`（`game.dll+0x8858a0`）是**游戏索敌系统的一部分**，
+它回答"引擎能不能把这个实体当作锁定目标"。而虫巢**没有 `HealthComponent`**
+—— 正是这一点让引擎原生索敌排除它们（2026-09-24 我花三天证否了
+"让虫巢成为合法目标"那条路，结论就是判据写在 `game.dll` 里）。
+
+**本 mod 的核心恰恰是绕过索敌**（改导航目的地 + 直接调 `explode`），
+却又拿**索敌系统的函数**去否决虫洞 —— 这正是 09-24 那三天的老问题以另一种形式回来了。
+
+**修法**：`target_valid` 从**硬否决**降级为**软信号**。
+硬门槛改成**纯只读校验**（实体可读 / `identity` 未变 / `unit` 未变 /
+`pose.validate()` / 距离 < 200m —— 上游本来就有这些，只是被 `target_valid` 挡在前面）：
+
+```lua
+local function readonly_alive(id, identity)
+    local ok, again = pcall(d.entity, id)
+    if not ok or not again then return false, 'ENTITY_GONE' end
+    if again.identity ~= identity then return false, 'IDENTITY_CHANGED' end
+    local okp = pcall(d.position, again)
+    if not okp then return false, 'POSITION_UNREADABLE' end
+    return true, 'ALIVE_BY_READ'
+end
+```
+
+`target_valid` 说 false 时做一次独立只读复核：**通过就继续接管**（并发
+`structure_target_soft_invalid` 诊断），复核也失败才真的放弃。
+⇒ 不会误杀"引擎不认但实际存在"的虫巢；真正已死的实体（读不到 identity）仍被拒绝。
+
+启动自述新增 `target_valid=SOFT_SIGNAL`。
+
+### ★ 虫洞锁被新标记劫持 + 清单漏了 8 个变体（裁剪 I / J）
+
+第四轮实测（235 行日志）敌人侧已完全干净（`enemy_tracking=VANILLA_UNTOUCHED`，
+只剩 1 次 `arrival_retired` 且属虫洞锁定期间），虫洞链路 12 次引爆成功。
+但用户反馈"有的虫洞标记后不会飞过去炸"——**日志里是两个不同的原因**：
+
+#### 原因一：G-60 飞行途中被新标记劫持（裁剪 I）
+
+按 `entity` 分组统计"每颗 G-60 实际服务过哪些 target"，三条铁证：
+
+```
+G-60 #1083: 锁定562 -> 锁定559            ← 562 永久报废
+G-60 #1107: 锁定562 -> 锁定564 -> 炸564
+G-60 #1116: 锁定567 -> 锁定561 -> 炸561
+```
+
+上游 `native_priority.step` 的注释写着
+`An explicit structure mark may interrupt an existing enemy lock`，
+但**代码没有区分** `previous` 是「敌人锁」还是「已在飞行中的虫洞锁」——
+只要来了新标记就抢占。你标记多个巢时，后标的会把前一个的 G-60 拉走。
+
+**修法**：已在飞向某个虫洞的 G-60 **保持忠实**（sticky），只有该虫洞确实不可用
+（实体消失 / `target_valid` 为假 / 超出 200m / unit 变了）才允许改投，并发
+`structure_lock_lost` 诊断行区分原因。
+
+#### 原因二：8 个同样能标记的虫巢类型不在清单里（裁剪 J）
+
+离线核对（`generated_entities.dl_bin` 全表 + 107,744 条资源名）发现 **8 个实体**
+的 `SpottableComponent.markerType` 都是 `EnemyMassive(3)`、`findable`/`startActive` 都开
+⇒ **玩家能正常 ping 它们**，但上游 9 条 profile 没收录 ⇒ mod 报 `RESOURCE_NOT_SUPPORTED`
+不接管。这就是"有些虫洞不能标记炸毁"的直接原因。
+
+| 资源 | 实体 | 处理方式 |
+|---|---|---|
+| `7e4c6b45bcc45c3f` | bug_spawner_warrior_captive | 复用 **warrior** 基线（组件差异仅 `AnimationComponent`，碰撞参数一致） |
+| `b6a181adcf547aeb` | bug_spawner_warrior_ceiling | 复用 **warrior** 基线（组件集完全相同） |
+| `9d8632a79c2d9789` | bug_spawner_warrior_tutorial | 复用 **warrior** 基线（组件集完全相同） |
+| `d666aa61d804d311` | bug_spawner_scavenger_captive | 复用 **scavenger** 基线（组件集完全相同） |
+| `095686275a113614` | **尖啸者巢** Shrieker Nest | 按其**上游原始参数**恢复（`nodes=72` / `offset z=13.0`，上游归为 `structure_tower`） |
+| `688949109126ece4` | mechanical_bughole（机械虫洞） | ⚠ 无同模型基线，暂用最保守通用爆点 |
+| `5cf84155e60c6e4d` | mechanical_bughole_scavenger | ⚠ 同上 |
+| `0df874e208040d2f` | bug_spawner_base（基类） | 复用 **scavenger** 基线，防漏网 |
+
+**"复用基线"不是编造**：逐条对比组件集与 `CollisionEventComponent` 参数，
+4 个变体与各自基线**几乎逐条相同**（见 `compat/structure_profiles.lua` 的注释），
+说明它们是**同一模型的不同摆放**，爆点相对模型的偏移不变。
+唯一没有基线可依的是 `mechanical_bughole`（不同阵营的机械结构），
+已明确标注 ⚠ —— 若炸不塌，删掉那一行即可，其余 16 条不受影响。
+
+**清单从 9 → 17**。仍**不接管**：孢子菇 ×2（`bug_fog_generator` / `_large`）、任务虫卵
+（`embryo_01`）—— 它们不是虫洞。
+
+#### 一个"看起来像 bug 但其实正确"的现象
+
+日志里 8 次 `structure_unavailable;detail=NATIVE_TARGET_INVALID` 里有 7 次是
+**巢已被炸塌**后的正常失效。只有 `559` 那次不同：它和 `560` 挨得太近，
+`560` 被引爆时把 `559` 一起带走了 —— **连锁殉爆，属于合理行为**。
+
+### 关于虫洞清单（历史说明）
+
+离线核对（`generated_entities.dl_bin` 全表 + 107,744 条资源名）：
+
+- 9 个 profile 覆盖了**全部 9 种带 `UnitComponent` 的普通 `bug_spawner_*`**
+  （bile_titan 泰坦巢 / boomer / hiveguard / hunter / prowler / scavenger / spitter / stalker / warrior）
+- **未收录但也带 `Unit` 的**：`bug_spawner_shrieker`（尖啸者巢）、
+  `bug_spawner_{warrior,scavenger}_captive`、`bug_spawner_warrior_ceiling`、
+  `bug_spawner_warrior_tutorial`、`mechanical_bughole(_scavenger)`（机械虫洞）、`bug_spawner_base`
+- profile 里的 `nodes`（骨架节点数）/ `offset` / `belly_hash` 是**上游实机标定值**。
+  **我没有为新类型编造这些数字** —— 猜错会让 G-60 飞到错误的爆点甚至炸不塌。
+  扩充需要实机标定，或等上游补充。
+
+### 如果虫洞仍然偶尔不去，按日志顺序定位
+
+| 看到什么 | 卡在哪 |
+|---|---|
+| `structure_mark;…;reason=RESOURCE_NOT_SUPPORTED` | **该资源不在 9 个 profile 里**（敌人 / 投掷物 / 未收录巢型）—— 这不是 bug |
+| 有 `structure_mark;…;reason=ACCEPTED` 但无 `priority_locked;…` | 标记读到了但锁定被拒 —— 看紧跟其后的 `structure_unavailable;detail=…` |
+| 有 `priority_locked` 但无 `titan_aim;…;point=…` | 进入了朝虫洞飞的状态，但**爆点没算出来** |
+| 有 `titan_aim` 但无 `arrival_detonated` | 飞到了但到达判定没过（多半是 `front_distance` / 爆点高度带） |
+| `titan_skipped;reason=…` / `arrival_skipped;detail=…` / `priority_skipped;detail=…` | **把这几行的 reason 原样发我**，能直接定位到哪一层拒绝 |
+| 开头一串 `frame_error;detail=…: pointer bound` | 正常现象：进任务初期引擎指针未就绪，会自愈（前 ~50 帧） |
+| 连 `version=` 都没有 | 包没被 loader 加载，看 `BingusSharedLoader.log` |
+
+## 许可与来源
+
+代码 MIT（见 `LICENSE`）。**派生自 etxp/HD2-G60-Smart-Targeting**，原作者与 AI 辅助开发声明
+保留在 `THIRD_PARTY_NOTICES.md`。游戏数据与美术资源权利另计（见该文件）。

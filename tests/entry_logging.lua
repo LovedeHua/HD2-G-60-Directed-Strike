@@ -56,7 +56,7 @@ test('working log keeps output and closes once',function()
     local handle={write=function(self,s) output[#output+1]=s;return self end,
         flush=function() return true end,close=function() closes=closes+1 end}
     local api=start({api=1,open_log=function(name)
-        assert(name=='G60SmartTargeting.log');return handle
+        assert(name=='G60BugholeLock.log');return handle
     end})
     api.emit('one');api.emit('two');api.close();api.close();api.emit('three')
     assert(table.concat(output)=='one\ntwo\n' and closes==1)

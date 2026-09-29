@@ -1,13 +1,16 @@
 -- Exact resources only. Unknown variants retain vanilla eligibility.
 local U = require('g60.util')
 local M = {}
+-- ★★ 裁剪 E（修 bug 的最后一层）：上游这张表排除了 8 种小虫 + Impaler 触手 + Hive Guard，
+--   而 selection_veto.plan() 第 23 行的判据是
+--       if not Filter.excluded(r) and (not allowed or allowed(r)) then keep end
+--   即使 designed_targets_only=false 让 allowed 变成 nil，**这半个条件仍会生效**，
+--   于是这 9 个资源照样被 clear_selection + 强制搜索 —— 表现就是
+--   "G-60 打不了中小型敌人、只锁大型目标"。
+--   本工程要求"未标记虫洞时完全按游戏原生处理"，所以整表清空：
+--   敌人选择权 100% 交还引擎 TargetLock，本 mod 只在 9 个虫洞上接管。
 local excluded = {
-    ['51eea86bf6997e4e']=true, ['9a8a3aae287b230c']=true,
-    ['aab438596f5e8fd9']=true, ['72a83e49ced6db3d']=true,
-    ['3d0e03e2d574e1ca']=true, ['5ca832447445c0ba']=true,
-    ['be39e313a1e46bb9']=true,
-    ['672f7da17f3ba34a']=true, -- Impaler tentacle; aim at the separate body resource.
-    ['a1f37bf2a40fbde4']=true, -- Hive Guard (cha_warrior_plus), explicitly requested.
+    -- 全部清空，见上方说明。保留表结构是为了不改动调用方契约。
 }
 function M.excluded(resource) return excluded[resource] == true end
 local function resource(value)

@@ -31,9 +31,11 @@ function M.new(env)
     local retired={}
     local titan=env.titan_profile and Titan.new(env)
     local function has_weakpoint(resource)
-        return env.titan_profile and resource==env.titan_profile.resource
-            or env.weakpoint_profiles and env.weakpoint_profiles[resource]~=nil
-            or env.structure_profiles and env.structure_profiles[resource]~=nil
+        -- ★ 裁剪 C：原上游把 titan_profile / weakpoint_profiles / structure_profiles
+        --   三类都算作"有自定义瞄准点"。本工程只用第三类(9 个虫洞)，所以收窄成
+        --   只认 structure_profiles —— 否则敌人仍会被 arrival 阶段当成弱点目标而跳过
+        --   实体到达判定(下方 `if has_weakpoint(...) then target=nil end`)。
+        return env.structure_profiles and env.structure_profiles[resource]~=nil
     end
     local ping=env.priority_catalog and env.mark_priority_enabled~=false and Ping.new(env)
     local structure_ping=env.structure_profiles and Ping.new(env,{
@@ -148,7 +150,13 @@ function M.new(env)
             for _,m in ipairs(observed.matches) do
                 local retired_key=m.identity_bytes..m.flight_start
                 if retired[m.id] and retired[m.id]~=retired_key then retired[m.id]=nil end
-                if disposal and m.behavior_id==4 and (m.state==3 or m.state==4 or m.state==5)
+                -- ★ 裁剪 H：上游此处只判 `disposal and m.behavior_id==4 and state in {3,4,5}`
+                --   且到期 —— 对**所有** G-60 生效，包括引擎原生锁定敌人的那些。
+                --   日志里 5 次 `arrival_retired;delivery=native_queue` 就是敌人在飞的 G-60
+                --   被本 mod 主动引爆（原生行为是让它自然过期）。同样属于"影响其他地方"。
+                --   现在只对本 mod 持有锁定/航点的实体做寿命回收。
+                local held=tracked[m.id] and (tracked[m.id].lock or tracked[m.id].titan)
+                if disposal and held and m.behavior_id==4 and (m.state==3 or m.state==4 or m.state==5)
                     and time>=m.flight_start and ArrivalPolicy.elapsed(time,m.flight_start)>=ArrivalPolicy.lifetime_ticks
                     and not retired[m.id] then
                     local result,reason=disposal:step(m,jobs_ready)
@@ -164,7 +172,16 @@ function M.new(env)
                     local old=tracked[m.id]
                     local fingerprint=m.identity_bytes..m.flight_start
                     if old and old.fingerprint~=fingerprint then runner:release(old.ref);old=nil;tracked[m.id]=nil end
-                    if priority then
+                    -- ★ 裁剪 F（同上，入口侧）★
+                    -- priority 段会做 with_observation → Search.capture（预算上限
+                    -- 65536 B / 2048 次读），对**没有虫洞锁**的敌人 G-60 是纯浪费，
+                    -- 而且它返回 {kind='keep'} 后下面的 `elseif result.released or
+                    -- reservations` 会把 old.force_search 置 true —— 正是这个标志
+                    -- 让 arrival 块进入 'search' 分支去 clear 引擎目标。
+                    --
+                    -- 所以只在"有虫洞标记"或"本 mod 已持有锁定/航点"时才进入。
+                    -- 无标记的敌人 G-60：本 mod 不建 tracked、不读 Search、不写任何内存。
+                    if priority and (structure_mark or (old and (old.lock or old.titan))) then
                         if not old then
                             serial=serial+1
                             old={fingerprint=fingerprint,ref={id=tostring(m.id),
@@ -198,16 +215,29 @@ function M.new(env)
                                 m.selection_id=Layout.u32(result.record,0x18)
                                 m.selection_flag=result.record:byte(0x79)
                                 m.selection_resource=result.resource
-                            elseif result.released or reservations then old.lock=nil;old.force_search=true end
+                            -- ★ 裁剪 G（实机"标记虫洞时灵时不灵"的另一半）★
+                            -- 上游原文是 `elseif result.released or reservations then`，那个
+                            -- `or reservations` 建立在"keep == 候选全被否掉"的前提上，所以要
+                            -- 强制重搜。但裁剪后本 mod 的 priority 对**敌人**永远返回
+                            -- {kind='keep',released=false}（自动挑敌人那段已删），于是每一帧
+                            -- 都会命中 `or reservations` 把 old.force_search 置 true。
+                            -- 后果：虫洞标记来了以后，titan_selected 因为
+                            -- `not retry_search` 被压掉 → 标记被读到却不接管。
+                            -- 现在只在**真的释放了已有锁定**时才强制重搜。
+                            elseif result.released then old.lock=nil;old.force_search=true end
                         else
                             env.emit('priority_skipped;entity='..m.id..';detail='..tostring(good and reason or result))
                             if reservations then old.lock=nil;old.force_search=true end
                         end
                     end
                     local selected=m.selection_flag~=0 and m.selection_id~=Layout.u32(read(base+0x3483c20,4),0)
-                    local excluded=selected and (Filter.excluded(m.selection_resource)
-                        or env.target_allowed and not env.target_allowed(m.selection_resource)
-                            and not (old and old.lock and old.lock.marked_structure and old.lock.id==m.selection_id))
+                    -- ★ 裁剪 A：原上游在此判 excluded —— 被 small_filter 列入的小怪、或不在
+                    --   allowlist(泰坦+弱点) 里的敌人，都会触发"清掉引擎选择 + 强制搜索"。
+                    --   那是 mod 的"只打指定敌人"行为。恒置 false 后，没有虫洞标记时
+                    --   G-60 的敌人选择完全交给引擎原生 TargetLock，本 mod 不再插手。
+                    --   (下方 titan_selected 走 has_weakpoint，而它已被裁剪成只认
+                    --    structure_profiles，所以只有 9 个虫洞会进入接管路径。)
+                    local excluded=false
                     local retry_search=arrival and old and (old.force_search or (old.blocked and not old.lock))
                     if retry_search then old.titan=nil end
                     local titan_selected=titan and selected and not retry_search and has_weakpoint(m.selection_resource)
@@ -267,7 +297,20 @@ function M.new(env)
                         end
                         if runner:disabled() or (titan and titan:disabled()) then self.disabled=true;error('native operation disabled after partial failure') end
                     end
-                    if arrival and old and not retired[m.id] then
+                    -- ★ 裁剪 F（实机反馈"打不了中小型敌人"的真凶）★
+                    -- 原上游在这里只判 `arrival and old`：`old` 是 priority 段为**每个**
+                    -- state-4 G-60 建的记录，所以**敌人 G-60 也会走进 arrival:step**。
+                    -- 而 arrival:step 在 target=nil 且 mask_only='search' 时会执行
+                    --   scope.calls.clear(pair,nil)   ← 清掉引擎的原生目标选择
+                    --   scope.calls.orbit(pair,10,2.5,1.2)
+                    -- 逐帧重复 ⇒ 引擎刚选中的中小型敌人被反复清掉，G-60 永远锁不上，
+                    -- 表现为"只能锁大型敌人"（大型目标离得远、被重选的机会多）。
+                    --
+                    -- 本工程只在**本 mod 真正持有锁定**时才需要 arrival：
+                    --   · old.lock      —— 玩家标记的虫洞（priority 的 PLAYER_MARK_STRUCTURE）
+                    --   · old.titan     —— 已建立的虫洞航点
+                    -- 两者皆无 ⇒ 敌人侧完全交还引擎原生逻辑，本 mod 一个字节都不写。
+                    if arrival and old and (old.lock or old.titan) and not retired[m.id] then
                         -- Recapture after preceding setters, including the Titan waypoint.
                         local manager=pointer(base+0x3326740)
                         local records=Layout.pointer(read(manager+0x60,8),0)

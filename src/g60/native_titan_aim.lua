@@ -65,9 +65,40 @@ function M.new(env)
             end
             if target then
                 assert(target.validate(),'Titan target changed')
+                -- ★ 裁剪 K（第三处，也是最关键的一处）：`target_valid` 硬否决 → 软信号。
+                --
+                -- 上游这里是 `if not alive then target=nil;reason='Titan no longer alive' end`，
+                -- 而它**每个飞行帧都会跑**。虫巢没有 HealthComponent ——
+                -- 原生 target_valid（game.dll+0x8858a0，索敌系统的函数）可能对
+                -- "实际存在但引擎不认"的巢返回 false ⇒ target 每帧被置 nil
+                -- ⇒ 永远算不出航点 ⇒ G-60 飞到附近也不会引爆。
+                --
+                -- 这解释了"priority_locked 出现了、却没有 titan_aim"的那些失败案例。
+                -- 改成：原生说 false 时做**只读复核**（实体可读 / identity 未变 / 位置可读），
+                -- 复核通过就继续规划航点，只发诊断；复核也失败才真的放弃。
                 local alive=calls.target_valid(nil,target.id,ffi.cast('const void *',target.address))
                 assert(scope.validate() and target.validate(),'Titan target changed during validation')
-                if not alive then target=nil;reason='Titan no longer alive' end
+                if not alive then
+                    -- 只读复核：复用 Context.capture（它本来就在每帧重新读该实体），
+                    -- 能成功重读并拿到有效 pose 就说明实体还在，只是原生不认它。
+                    local ok, again = pcall(Context.capture, scope.read, env.base, env.exe,
+                                             target.id, profile, target)
+                    local why = 'ALIVE_BY_READ'
+                    if not ok then why = 'CAPTURE_FAILED' end
+                    if ok and type(again)=='table' and type(again.validate)=='function'
+                        and not again.validate() then
+                        ok, why = false, 'POSE_INVALID'
+                    end
+                    if ok then
+                        if env.emit then env.emit('structure_target_soft_invalid;target='..tostring(target.id)
+                            ..';native=false;readonly='..why..';context=TITAN') end
+                    else
+                        local tid = target and target.id or '?'
+                        target=nil;reason='Titan gone: '..tostring(why)
+                        if env.emit then env.emit('structure_unavailable;target='..tostring(tid)
+                            ..';detail='..tostring(why)..';context=TITAN') end
+                    end
+                end
             end
             if target then
                 local prior=previous and not previous.cancelled and previous.target.id==target.id

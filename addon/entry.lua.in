@@ -1,11 +1,25 @@
 -- User-authorized experimental native filtering; no executable-memory modifications.
-local existing=rawget(_G,'G60SmartTargeting')
+local existing=rawget(_G,'G60BugholeLock')
 if existing then return existing end
-local state={version='@@VERSION@@-experimental',filter_enabled=false,designed_targets_only=true,titan_standoff=2.5,
+-- ★ 裁剪版身份：独立 _G 全局名 + 独立日志文件，与上游 G60SmartTargeting 并存不冲突
+--   （但两个包的**玩法**互斥，管理器里只能启用其中一个）。
+-- ★ 行为范围：只有"玩家标记了 9 个虫洞之一"才接管；其余情况 mod 完全不插手，
+--   G-60 的敌人选择保持游戏原生 TargetLock。
+-- ★★ 裁剪 D（本轮修 bug 的关键）：designed_targets_only 必须 **false**。
+--   它为 true 时 experimental_runtime 会建 env.target_allowed = Allowlist(泰坦+弱点)，
+--   而 native_minimal 的 selection_veto.plan() 第 23 行是：
+--       if not excluded(r) and (not allowed or allowed(r)) then keep end
+--       return {kind='search', clear_selection=true}, 'EXCLUDED_SELECTION'
+--   ⇒ 任何不在 allowlist 里的选择都会被**清掉 selection + 强制搜索**。
+--   allowlist 只有泰坦/冲锋者那几类 ⇒ 结果就是"G-60 只能锁大型敌人，打不了中小型"，
+--   而且**虫洞同样不在名单里**，某些时序下虫洞目标也会被清掉（用户实机反馈的两个 bug）。
+--   置 false ⇒ target_allowed=nil ⇒ `not allowed` 恒真 ⇒ 永不 veto ⇒ 敌人侧完全原生，
+--   虫洞则只由 structure_profiles（9 个虫洞）单独决定接管。
+local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets_only=false,titan_standoff=2.5,
     mark_priority_enabled=false,exclusive_targets=true,marked_structures=true,
-    titan_arrival_region={radius=1.75,depth=0.8},
+    titan_arrival_region={radius=1.75,depth=0.8},bughole_only=true,bughole_profiles=17,
     experimental=true,native_lifetime_verified=false,state='starting'}
-rawset(_G,'G60SmartTargeting',state)
+rawset(_G,'G60BugholeLock',state)
 local log,host
 local function close()
     local handle=log;log=nil
@@ -19,7 +33,7 @@ local ok,why=pcall(function()
     assert(loader.api==1,'loader API unavailable')
     -- Diagnostics are optional; logging failures must not disable gameplay.
     if type(loader.open_log)=='function' then
-        local opened,handle=pcall(loader.open_log,'G60SmartTargeting.log')
+        local opened,handle=pcall(loader.open_log,'G60BugholeLock.log')
         if opened then log=handle end
     end
     local written,lines=0,0
@@ -91,7 +105,15 @@ local ok,why=pcall(function()
         state.filter_enabled=false;state.state='disabled';emit('disabled;applied='..host.applied);close()
     end)
     state.stats=host;state.filter_enabled=true;state.state='experimental filtering active'
-    emit('version=@@VERSION@@-experimental;filter_enabled=true;designed_targets_only=true;mark_priority_enabled=false;exclusive_targets=true;marked_structures=true;native_lifetime_verified=false;mode=EXPERIMENTAL_NATIVE_CALLS;titan_standoff='..state.titan_standoff
+    emit('version=@@VERSION@@-bughole;build=BUGHOLE_ONLY;scope=marked_bughole_only;'
+        ..'bughole_profiles=17;enemy_priority=REMOVED;weakpoints=REMOVED;'
+        ..'hole_variants=INCLUDED;spore_spewer_egg=REMOVED;target_valid=SOFT_SIGNAL;'
+        ..'selection_veto=DISABLED;unmarked_behavior=VANILLA;filter_enabled=true;'
+        ..'enemy_tracking=VANILLA_UNTOUCHED;priority_gated=STRUCTURE_ONLY;arrival_gated=HELD_LOCK_ONLY;'
+        ..'disposal_gated=HELD_LOCK_ONLY;'
+        ..'designed_targets_only='..tostring(state.designed_targets_only)..';'
+        ..'mark_priority_enabled=false;exclusive_targets=true;marked_structures=true;'
+        ..'native_lifetime_verified=false;mode=EXPERIMENTAL_NATIVE_CALLS;titan_standoff='..state.titan_standoff
         ..';titan_arrival_radius='..state.titan_arrival_region.radius..';titan_arrival_depth='..state.titan_arrival_region.depth)
 end)
 if not ok then
@@ -99,5 +121,5 @@ if not ok then
     if log then pcall(function() log:write(state.state..'\n') end) end
     close()
 end
-print('[G60SmartTargeting] '..state.state)
+print('[G60BugholeLock] '..state.state)
 return state

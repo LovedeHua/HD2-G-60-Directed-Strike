@@ -8,9 +8,30 @@ from zipfile import ZipFile, ZipInfo, ZIP_DEFLATED
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = json.loads((ROOT / 'compat/build.json').read_text())
 VERSION = CONFIG['public_version']
-NAME = 'mods/etxp/g60_small_filter'
-GUID = '58a16a67-a72b-474a-ad05-adbaaa99da78'
+# ★ 裁剪版身份：独立 GUID + 独立资源名 + 独立标题，与上游官方包互不覆盖(管理器槽位二选一)。
+NAME = 'mods/hd2test/g60_bughole_lock'
+GUID = '9c1d4e77-2b83-4f6a-91e5-0d7b3a6c8f42'
+TITLE = 'G-60 Bug Hole Lock 0.1.0'
+ZIP_NAME = 'G60-BugHole-Lock-0.1.0.zip'
 ARCHIVE = 'Addon/9ba626afa44a3aa3.patch_0'
+
+
+def resource_hash(name):
+    """MurmurHash64A —— 换资源名后必须重算 archive 里的 nameHash。
+    已对上游校验：resource_hash('mods/etxp/g60_small_filter') == tested-payload.resource_id。"""
+    data = name.encode('utf-8')
+    mask, mix = (1 << 64) - 1, 0xC6A4A7935BD1E995
+    value = len(data) * mix & mask
+    end = len(data) // 8 * 8
+    for (word,) in struct.iter_unpack('<Q', data[:end]):
+        word = word * mix & mask
+        word ^= word >> 47
+        value = (value ^ (word * mix & mask)) * mix & mask
+    if data[end:]:
+        value = (value ^ int.from_bytes(data[end:], 'little')) * mix & mask
+    value ^= value >> 47
+    value = value * mix & mask
+    return value ^ (value >> 47)
 
 
 def sha(data):
@@ -48,8 +69,9 @@ def assemble():
 
 
 def archive(body):
-    baseline = json.loads((ROOT / 'evidence/tested-payload.json').read_text())
-    resource_id = int(baseline['resource_id'], 16)
+    # ★ 不再从上游 evidence/tested-payload.json 取 resource_id —— 那个值属于上游资源名。
+    #   这里按本工程的 NAME 现算，避免"换了名字却还用旧 hash"导致 loader 认不出资源。
+    resource_id = resource_hash(NAME)
     lua_type = 0xA14E8DFA2CD117E2
     offset = 192
     payload = struct.pack('<II', len(body), 2) + body
@@ -71,19 +93,29 @@ def package_files():
     entry = assemble()
     body = ('-- HD2-Addon: ' + NAME + '\n').encode() + entry
     files = {ARCHIVE: archive(body), ARCHIVE + '.stream': b'', ARCHIVE + '.gpu_resources': b''}
-    title = 'HD2 G-60 Smart Targeting ' + VERSION.replace('-', ' ')
-    description = ('G-60 priority targeting, tuned weakpoints, one grenade per target, and locally marked '
-                   'bug holes, nests and objective eggs. Experimental original native calls; '
-                   'requires Bingus Shared Loader API 1. See compatibility and beta limitations.')
+    title = TITLE
+    description = ('Bughole-only build. When YOU mark one of the nine supported bug holes '
+                   '(eight normal nests plus the large colony hole used by the Bile Titan nest), '
+                   'the grenade is redirected to detonate there and interrupts whatever enemy '
+                   'lock the game had chosen. With no bug-hole mark this addon does nothing and '
+                   'G-60 keeps the game native targeting. Enemy priority, tuned weakpoints, '
+                   'Shrieker Nest, Spore Spewer and objective eggs are all removed. '
+                   'Experimental original native calls; requires Bingus Shared Loader API 1. '
+                   'Mutually exclusive with the upstream HD2-G60-Smart-Targeting package '
+                   '(enable one or the other, not both).')
     files['manifest.json'] = json_bytes({'Version': 1, 'Guid': GUID, 'Name': title,
         'Description': description, 'Options': [{'Name': title, 'Description': description, 'Include': ['Addon']}]})
-    for pattern in ('*.md', 'LICENSE', 'docs/*.md', 'evidence/*.json', 'assets/cover-16x9.png', 'assets/cover-4x3.png'):
+    # ★ 只打"仍然成立"的文档。上游 README / docs / CHANGELOG 描述的是完整功能
+    #   (自动敌人优先级、弱点、尖啸者巢、任务虫卵)，与本裁剪版不符，打进去会误导使用者。
+    for pattern in ('LICENSE', 'THIRD_PARTY_NOTICES.md', 'README.md'):
         for path in ROOT.glob(pattern):
             if path.is_file():
                 files[path.relative_to(ROOT).as_posix()] = path.read_bytes()
-    files['Source/g60_small_filter.lua'] = body
+    files['Source/g60_bughole_lock.lua'] = body
     files['BUILD-INFO.json'] = json_bytes({'version': VERSION, 'runtime_baseline': CONFIG['runtime_version'],
-        'entry_sha256': sha(entry), 'resource_name': NAME,
+        'derived_from': 'etxp/HD2-G60-Smart-Targeting 0.1-beta.1',
+        'entry_sha256': sha(entry), 'resource_name': NAME, 'resource_id': f'{resource_hash(NAME):016X}',
+        'bughole_profiles': 9,
         'addon_sha256': {n: sha(b) for n, b in files.items() if n.startswith('Addon/')}})
     return files
 
@@ -100,16 +132,23 @@ def write_zip(path, files):
 
 def main():
     files = package_files()
-    baseline = json.loads((ROOT / 'evidence/tested-payload.json').read_text())
-    # A changed development checkout remains buildable; checks report whether
-    # it still matches this release. Never silently certify changed source.
-    matches = all(sha(files[n]) == digest for n, digest in baseline['addon_sha256'].items())
     (ROOT / 'build').mkdir(exist_ok=True)
     (ROOT / 'build/entry.lua').write_bytes(assemble())
-    target = ROOT / 'dist' / ('HD2-G60-Smart-Targeting-' + VERSION + '.zip')
+    # ★ 本工程基线：上游 check.py 那套"产物必须与 release 逐字节一致"的断言对裁剪版
+    #   必然不成立（我们就是来改的）。这里记录本工程自己的 entry / addon 哈希，
+    #   供 check.py 与之后的改动做回归比对。
+    derived = {'derived_from': 'etxp/HD2-G60-Smart-Targeting 0.1-beta.1',
+               'resource_name': NAME, 'resource_id': f'{resource_hash(NAME):016X}',
+               'entry_sha256': sha(assemble()),
+               'addon_sha256': {n: sha(b) for n, b in files.items() if n.startswith('Addon/')}}
+    (ROOT / 'evidence').mkdir(exist_ok=True)
+    (ROOT / 'evidence/derived-payload.json').write_text(json.dumps(derived, indent=2) + '\n')
+    target = ROOT / 'dist' / ZIP_NAME
     write_zip(target, files)
     print(json.dumps({'package': str(target.relative_to(ROOT)), 'sha256': sha(target.read_bytes()),
-                      'matches_tested_payload': matches}, indent=2))
+                      'entry_sha256': derived['entry_sha256'],
+                      'resource_id': derived['resource_id'],
+                      'resource_name': NAME, 'guid': GUID}, indent=2))
 
 
 if __name__ == '__main__':
