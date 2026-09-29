@@ -279,8 +279,26 @@ end
 
 ```
 enemy_selection;entity=..;resource=..;vetoed=true|false   ← 只读，按 resource 去重
-enemy_veto;entity=..;resource=..;result=..;why=..         ← 实际执行了否决
+enemy_veto;entity=..;resource=..;result=search;why=EXCLUDED_SELECTION;frame=..
 ```
+
+> ⚠️ `runner:step` 的返回契约是 **`(result, reason)`**。第一版我按 `(ok, result, why)` 取值，
+> 结果 145 条日志全打成 `result=nil;why=nil`，成功失败都看不出来 —— **诊断把自己骗了一次**。
+> 现在按正确顺序取（`result` = 结果表 `.kind`，`why` = reason），并加了 `frame` 便于量化频率。
+> 测试 `veto_log_reads_tuple_in_order` 会读 `native_minimal.lua` 的 `return result,reason`
+> 来钉住这个契约。
+
+### ★ 实机结论（2026-09-29 晚，机器人战线）
+
+```
+enemy_veto            145 次（全部成功：result 表非空）
+enemy_selection       entity=1170 的 db90077e76faa025 → vetoed=true
+frame_error / disabled / guide_give_up / arrival_retired   ← 0（除启动期那条 pointer bound）
+```
+
+按实体分布：`1317`×30 / `1518`×28 / `1318`×26 / `1170`×21 / `1321`×18 / `1525`×12 / `1526`×8（其余各 1）。
+⇒ 平均每颗 G-60 被否决 20~30 次，不是逐帧刷屏；entity=1170 在被否决后又选中了
+`b92435fbf60f0748`（重型蹂躏者 MK2）⇒ **否决之后确实会转去打地面敌人**，不是白盘旋。
 
 > ⚠️ **第一版过滤错了哈希 —— 已修正**（2026-09-29 当晚实机）
 >

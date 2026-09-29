@@ -1534,6 +1534,21 @@ def test_enemy_veto_wiring():
           "runner:disabled()" in blk and "self.disabled=true" in blk,
           "部分写入后失败 ⇒ 停手（与既有引导路径同一处置）")
     check("veto_logged", "enemy_veto;" in blk, "否决有专门日志（含 result/why）")
+    # ★★ 日志字段必须按 runner:step 的**真实返回契约**取值 ★★
+    #   2026-09-29 我按 (ok,result,why) 取，而契约是 **(result, reason)**
+    #   ⇒ 145 条实机日志全是 `result=nil;why=nil`，成功/失败都看不出。
+    #   **诊断把自己骗了一次** ⇒ 现在把契约本身也钉住。
+    _minimal = (ROOT / "src/g60" / "native_minimal.lua").read_text(encoding="utf-8")
+    check("runner_step_returns_result_reason",
+          "return result,reason" in _minimal,
+          "native_minimal 的 step 返回 (result, reason) —— 契约源头")
+    check("veto_log_reads_tuple_in_order",
+          "';result='..tostring(ok_v and ok_v.kind or 'FAILED')" in blk
+          and "';why='..tostring(res_v)" in blk,
+          "★ 否决日志按 (result, reason) 取值，而非 (ok,result,why)")
+    check("veto_log_has_frame",
+          "';frame='..frame" in blk,
+          "带 frame，便于事后量化触发频率")
     check("veto_no_direct_native_calls",
           "calls." not in blk and "ffi." not in blk,
           "★ 否决分支不直接做原生调用：全部经 runner（已实机验证的路径）")

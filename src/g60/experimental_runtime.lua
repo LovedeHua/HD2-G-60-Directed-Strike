@@ -499,10 +499,16 @@ function M.new(env)
                         --   释放后语义收敛为"只在引擎当前确实选中该目标时才清一次"。
                         runner:release(veto_ref)
                         if env.emit then
+                            -- ★ runner:step 的返回契约是 (result, reason)，**不是** (ok,result,why)。
+                            --   2026-09-29 我按后者取值 ⇒ 实际打出 `result=nil;why=nil`
+                            --   （res_v 是字符串，`res_v.kind` 恒为 nil；why_v 恒为 nil）。
+                            --   145 条日志全是 nil，看不出成功还是失败 —— **诊断又骗了我一次**。
+                            --   现在按正确顺序取：result=结果表.kind，why=reason。
                             env.emit('enemy_veto;entity='..m.id
                                 ..';resource='..tostring(veto_resource)
-                                ..';result='..tostring(ok_v and (res_v and res_v.kind or 'nil') or 'FAILED')
-                                ..';why='..tostring(why_v))
+                                ..';result='..tostring(ok_v and ok_v.kind or 'FAILED')
+                                ..';why='..tostring(res_v)
+                                ..';frame='..frame)
                         end
                         -- 与既有引导路径同一处置：发生部分写入后失败 ⇒ 停手（fail-closed）。
                         if runner:disabled() then
