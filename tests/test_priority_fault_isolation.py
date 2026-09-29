@@ -1549,10 +1549,20 @@ def test_enemy_veto_wiring():
           "enemy_veto_enabled=true," in e
           and "enemy_veto_enabled=state.enemy_veto_enabled" in e,
           "entry 有开关并传入 env")
+    # ★ 启动日志的排除清单必须**派生**，不得硬编码：
+    #   2026-09-29 这里硬编码了 98152772a72f7838，而实现里已换成
+    #   db90077e76faa025 ⇒ 日志与实现不一致，实机核对时把我带偏过一次。
     check("veto_declared_in_version_line",
           "enemy_veto_enabled='..tostring(state.enemy_veto_enabled)" in e
-          and "enemy_veto_resources=98152772a72f7838" in e,
-          "启动日志打出开关与实际排除的资源")
+          and "enemy_veto_resources='..table.concat(Filter.excluded_resources()" in e,
+          "启动日志打出开关，且排除清单由 Filter.excluded_resources() 派生")
+    check("veto_version_line_not_hardcoded",
+          "enemy_veto_resources=98152772a72f7838" not in e
+          and "enemy_veto_resources=db90077e76faa025" not in e,
+          "★ 不得在 entry 里硬编码排除哈希（否则日志会与实现脱节）")
+    check("veto_exposes_readonly_list",
+          "function M.excluded_resources()" in sf,
+          "small_filter 暴露只读清单作为**单一来源**")
     for ev_name in ("enemy_veto", "enemy_selection"):
         check(f"throttle_whitelists_{ev_name}",
               f"line:match('^{ev_name};')" in e,
@@ -1564,15 +1574,17 @@ def test_enemy_veto_wiring():
     #   而引擎真正分配给 G-60 的是 db90077e76faa025（cyborg_dropship）⇒ 从未生效。
     #   教训："名字对得上"不等于"就是那个哈希"。下面每条都断言来源。
     keys = re.findall(r"\['([0-9a-f]{16})'\]\s*=\s*true", sf)
-    check("veto_list_is_dropship_family",
-          sorted(keys) == sorted(["db90077e76faa025", "98152772a72f7838"]),
-          f"★ 排除表恰好这两个运输船哈希（实际 {sorted(keys)}）")
+    check("veto_list_is_cyborg_dropship_only",
+          keys == ["db90077e76faa025"],
+          f"★ 排除表恰好一项 = 机器人运输船（实际 {keys}）")
     check("veto_list_has_log_evidenced_hash",
           "db90077e76faa025" in keys,
-          "★ 含**实机日志证据**的那个（entity=933 的引擎选择）")
-    check("veto_list_has_user_named_hash",
-          "98152772a72f7838" in keys,
-          "含用户点名的那个（社区表标'运输船 Dropship'）")
+          "★ 唯一一项必须带**实机日志证据**（entity=933 的引擎选择）")
+    # ★ 反向断言：停落地面的那个运输船不得被加回来
+    #   （用户 2026-09-29 判断它是地面上不再起飞的运输船 ⇒ G-60 不会锁它 ⇒ 排除无意义）
+    check("veto_list_excludes_landed_dropship",
+          "98152772a72f7838" not in keys,
+          "★ 停落地面的运输船(98152772a72f7838)不得重新加入")
     # ★ 安全属性：绝不能把玩家自己的撤离机（鹈鹕 shuttle_dropship = 7b0f8449ca9d2da0）
     #   也否决掉 —— 那会把"不追踪敌方运输船"变成"不追踪自己的撤离机"。
     check("veto_list_excludes_friendly_pelican",
@@ -1592,8 +1604,9 @@ def test_enemy_veto_wiring():
         for _m in re.finditer(r"enemy_selection;entity=\d+;resource=([0-9a-f]{16})", _txt):
             _seen.add(_m.group(1))
         _friendly = {"7b0f8449ca9d2da0"}       # 玩家撤离机，不算
+        # 关注"敌方运输船家族"里本工程认的那一个（停落地面的那个不算目标）
         _dropships = {h for h in _seen if h in ("db90077e76faa025",
-                                                "98152772a72f7838")} - _friendly
+                                                "74e2285c01da4f71")} - _friendly
         check("veto_list_covers_logged_dropship",
               _dropships <= set(keys),
               f"★ 日志里出现过的运输船哈希都在排除表里（日志: {sorted(_dropships)}）")

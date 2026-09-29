@@ -431,10 +431,15 @@ def main():
     # ★ 2026-09-29 晚修正：第一版只放了 98152772a72f7838 —— **过滤错了哈希**。
     #   实机日志给出直接证据：`enemy_selection;entity=933;resource=db90077e76faa025`
     #   ⇒ 引擎真正分配给 G-60 的运输船是 db90077e76faa025（cyborg_dropship）。
-    #   ⇒ 断言从"恰好一项"改为"恰好这两项"，逐条点名。
-    check('small_filter_excludes_dropship_family',
-          sorted(entries) == sorted(['db90077e76faa025', '98152772a72f7838']),
-          f'恰好排除这两个运输船哈希（实际 {sorted(entries)}）')
+    #   而 98152772a72f7838（社区表"运输船"）从未被选中过，用户判断它是
+    #   **停落地面的运输船** ⇒ 已去掉，表里只剩前者。
+    check('small_filter_excludes_cyborg_dropship_only',
+          entries == ['db90077e76faa025'],
+          f'恰好排除机器人运输船一项（实际 {entries}）')
+    # 反向：冗余的那个不得被加回来（除非日志真的出现它）
+    check('small_filter_landed_dropship_not_readded',
+          '98152772a72f7838' not in entries,
+          '★ 停落地面的运输船(98152772a72f7838)不得重新加入排除表')
     # ★ 安全属性：**绝不能**把玩家自己的撤离机（鹈鹕 shuttle_dropship）也否决掉
     check('small_filter_excludes_no_friendly_pelican',
           '7b0f8449ca9d2da0' not in entries and 'e556fd38edafb3c0' not in entries,

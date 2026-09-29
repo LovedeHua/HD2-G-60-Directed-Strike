@@ -46,23 +46,40 @@ local M = {}
 --   逐条证据（每条都必须能追到来源）：
 --     · db90077e76faa025 —— ★ 实机日志证据（上面那行）
 --         游戏路径 = content/fac_cyborgs/vehicles/cyborg_dropship/cyborg_dropship
---         ⇒ 机器人运输船本体
---     · 98152772a72f7838 —— 用户点名 + 社区表标"运输船 | Dropship"
---         游戏路径反查不到、实机日志里未出现过。**保留**（用户点名，且无害），
---         但要知道它**目前没有实机证据**。
+--         ⇒ 机器人运输船本体。**唯一一项。**
+--
+--   ⚠️ **98152772a72f7838 已从本表去除**（2026-09-29，用户决定）
+--       它 = 社区表「哈希表-整合」第 112 行的"运输船 | Dropship"，
+--       游戏资源路径反查不到，实机日志里**从未被引擎选中过**。
+--       用户判断那大概是**停落在地面上的运输船**（不再起飞投放兵力的那种），
+--       所以 G-60 本来就不会去锁它 ⇒ 排除它没有意义，去掉。
+--       ⇒ **后来者请注意：不要再把它加回来。** 除非日志里真的出现
+--         `enemy_selection;...;resource=98152772a72f7838`。
 --
 --   ⚠️ 明确**不得**加入本表的：`7b0f8449ca9d2da0`
 --       = content/fac_helldivers/vehicles/shuttle_gunship/shuttle_dropship
 --       = 鹈鹕 MK2（**玩家自己的撤离机**）。把友军撤离机也否决掉是严重错误，
 --       测试里有 `veto_list_excludes_friendly_pelican` 钉住这一点。
+--   ⚠️ 同类但**未**加入（用户 2026-09-29 决定"只排除机器人运船"）：
+--       `74e2285c01da4f71` = content/fac_illuminate/vehicles/illuminate_dropship
+--       （社区表"增援穿梭舰 Warp Ship"）。将来打光能族若遇到同类问题再加。
 --
 --   ⇒ 仍保留 enemy_selection 只读日志（实机确认触发时机）与
 --     enemy_veto_enabled 开关（一键回退）。
 local excluded = {
     ['db90077e76faa025'] = true,   -- ★ 机器人运输船 cyborg_dropship（实机日志证据）
-    ['98152772a72f7838'] = true,   -- 社区表"运输船 Dropship"（用户点名；暂无实机证据）
 }
 function M.excluded(resource) return excluded[resource] == true end
+-- 只读：把排除表如实列出来（**排序后**，保证启动日志稳定可比）。
+--   存在的意义：启动日志的 `enemy_veto_resources=` 必须由这里生成，
+--   而不是在 entry 里再抄一份哈希 —— 2026-09-29 就是因为日志里硬编码了
+--   旧哈希，实机核对时把我带偏过一次（日志说 9815…，实现里其实换了）。
+function M.excluded_resources()
+    local out={}
+    for resource in pairs(excluded) do out[#out+1]=resource end
+    table.sort(out)
+    return out
+end
 local function resource(value)
     return type(value)=='string' and #value==16 and value:match('^[0-9a-f]+$')~=nil
 end

@@ -248,7 +248,10 @@ local ok,why=pcall(function()
         ..';titan_variants_enabled='..tostring(state.titan_variants_enabled)
         -- ★ 引擎选择否决：开关 + 实际排除的资源，便于日志确认是否生效
         ..';enemy_veto_enabled='..tostring(state.enemy_veto_enabled)
-        ..';enemy_veto_resources=98152772a72f7838'
+        -- ★ 必须从 Filter.excluded_resources() 派生，**不得硬编码哈希**：
+        --   2026-09-29 就是这里硬编码了旧哈希(98152772a72f7838)，
+        --   而实现里已换成 db90077e76faa025 ⇒ 日志与实现不一致，核对时被骗。
+        ..';enemy_veto_resources='..table.concat(Filter.excluded_resources(),',')
         ..';titan_variants='..table.concat(TitanVariants and TitanVariants.resources() or {},',')
         -- ★ 2026-09-29：接管范围 = 标记虫洞 + 吐酸泰坦，其余交还引擎。
         --   titan_resource 打出实际哈希，方便日志确认是否命中预期目标。
