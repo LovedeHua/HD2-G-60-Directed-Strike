@@ -405,15 +405,25 @@ def main():
                'arrival_gated=HELD_LOCK_ONLY', 'disposal_gated=HELD_LOCK_ONLY',
                'target_valid=SOFT_SIGNAL'):
         check('startup_declares_' + _k.split('=')[0], _k in entry, _k)
-    # ★ 裁剪 E：small_filter.excluded 必须整表清空。它与 allowlist 是**两道独立闸门**——
-    #   selection_veto.plan() 第 23 行 `not Filter.excluded(r) and (not allowed or allowed(r))`
-    #   里两个条件是"与"关系，只关掉 allowlist(裁剪 D) 仍会被这张表 veto 掉
-    #   8 种小虫 + Impaler 触手 + Hive Guard —— 正是"打不了中小型敌人"的原因。
+    # ★★ 2026-09-29：这张表**不再为空** —— 用户要求"G-60 不追踪运输船"。
+    #   但只允许出现**用户点名的那一项**。上游那 9 项（8 种小虫 + Impaler 触手 +
+    #   Hive Guard）**不得恢复** —— 它们的症状是"G-60 打不了中小型敌人"，
+    #   正是本工程当初清空该表的原因。
+    #   ⇒ 断言从"必须为空"收紧为"恰好一项，且是运输船；上游 9 项一个不许回来"。
+    UPSTREAM_EXCLUDED = (
+        '51eea86bf6997e4e', '9a8a3aae287b230c', 'aab438596f5e8fd9',
+        '72a83e49ced6db3d', '3d0e03e2d574e1ca', '5ca832447445c0ba',
+        'be39e313a1e46bb9', '672f7da17f3ba34a', 'a1f37bf2a40fbde4',
+    )
     sf = strip_comments((ROOT / 'src/g60' / 'small_filter.lua').read_text(encoding='utf-8'))
     body = sf[sf.index('local excluded = {'):sf.index('}', sf.index('local excluded = {')) + 1]
-    check('small_filter_excluded_is_empty',
-          not re.search(r"\['[0-9a-f]{16}'\]\s*=\s*true", body),
-          f'仍排除: {re.findall(chr(91) + chr(39) + r"[0-9a-f]{16}" + chr(39) + chr(93), body)}')
+    entries = re.findall(r"\[?'?([0-9a-f]{16})'?\]?\s*=\s*true", body)
+    check('small_filter_excludes_only_dropship',
+          entries == ['98152772a72f7838'],
+          f'恰好排除运输船一项（实际 {entries}）')
+    check('small_filter_upstream_never_restored',
+          not any(u in body for u in UPSTREAM_EXCLUDED),
+          '★ 上游 9 项一个都不得恢复（那会重演"打不了中小型敌人"）')
     check('veto_has_no_gate_left',
           'Filter.excluded(selected.resource)' in
           strip_comments((ROOT / 'src/g60' / 'selection_veto.lua').read_text(encoding='utf-8')),

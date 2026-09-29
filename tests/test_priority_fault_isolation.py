@@ -937,6 +937,63 @@ def test_take_gate_pure_logic(rt):
           f"无持有时 guidance 拒绝（why={ev("__nob")}）")
     check("gate_guidance_needs_can_guide", ev("__g") == "state_not_guidable",
           f"非 can_guide 时 guidance 拒绝（why={ev("__g")}）")
+
+    # ---- ★★ 引擎选择否决（2026-09-29，用户要求"G-60 不追踪运输船"）★★
+    #   真跑，不是字符串匹配。核心安全属性：**只对非自有的 G-60 生效**。
+    rt.execute("""
+        local G = require('g60.take_gate')
+        -- (a) 无标记、无持有、引擎选择命中排除表 ⇒ 放行 veto，且不得 drive
+        local a = G.decide{behavior_id=4, state=4, native_update_eligible=true,
+                           selection_vetoed=true}
+        __a_veto, __a_drive, __a_why = a.veto, a.drive, a.why
+        -- (b) 同样的实体但选择未命中排除表 ⇒ 一切照旧
+        local b = G.decide{behavior_id=4, state=4, native_update_eligible=true}
+        __b_veto, __b_why = b.veto, b.why
+        -- (c) 有虫洞标记时：仍正常驱动，绝不出否决（否决会搅乱标记目标）
+        local c = G.decide{behavior_id=4, state=4, native_update_eligible=true,
+                           structure_mark='t', selection_vetoed=true}
+        __c_veto, __c_drive = c.veto, c.drive
+        -- (d) 本 mod 已持有锁时：同上
+        local d = G.decide{behavior_id=4, state=4, native_update_eligible=true,
+                           old={lock={id=5}}, selection_vetoed=true}
+        __d_veto, __d_drive = d.veto, d.drive
+        -- (e) 引擎已接管：先返回 engine_owns_it，不得否决
+        local e = G.decide{behavior_id=4, state=4, native_update_eligible=false,
+                           selection_vetoed=true}
+        __e_veto, __e_why = e.veto, e.why
+        -- (f) 已被引擎抢写（quarantined）：交回原生，不得否决
+        local f = G.decide{behavior_id=4, state=4, native_update_eligible=true,
+                           old={quarantined=true}, selection_vetoed=true}
+        __f_veto, __f_why = f.veto, f.why
+        -- (g) 非 G-60：不得否决
+        local g = G.decide{behavior_id=3, state=4, native_update_eligible=true,
+                           selection_vetoed=true}
+        __g2_veto, __g2_why = g.veto, g.why
+    """)
+    check("veto_fires_without_mark",
+          rt.eval("__a_veto") is True and rt.eval("__a_drive") is False
+          and ev("__a_why") == "VETO_ENEMY_SELECTION",
+          f"非自有 + 命中排除表 ⇒ veto（why={ev('__a_why')}）")
+    check("veto_absent_when_not_excluded",
+          rt.eval("__b_veto") in (None, False) and ev("__b_why") == "no_mark_no_hold",
+          f"未命中排除表 ⇒ 行为完全不变（why={ev('__b_why')}）")
+    check("veto_never_when_marked",
+          rt.eval("__c_veto") in (None, False) and rt.eval("__c_drive") is True,
+          "有虫洞标记时正常驱动、绝不否决（否决会搅乱标记目标）")
+    check("veto_never_when_held",
+          rt.eval("__d_veto") in (None, False) and rt.eval("__d_drive") is True,
+          "本 mod 已持有时正常驱动、绝不否决")
+    check("veto_blocked_by_engine_owns_it",
+          rt.eval("__e_veto") in (None, False) and ev("__e_why") == "engine_owns_it",
+          "引擎已接管 ⇒ 不否决（native_minimal 要求该位，否则断言失败）")
+    check("veto_blocked_by_quarantine",
+          rt.eval("__f_veto") in (None, False) and ev("__f_why") == "quarantined",
+          "已隔离实体交回原生、不否决")
+    check("veto_blocked_for_non_g60",
+          rt.eval("__g2_veto") in (None, False) and ev("__g2_why") == "not_g60",
+          "非 G-60 不否决")
+
+
 def test_structure_whitelist(rt):
     print()
     print("=== ⑫ 白名单：非虫洞目标（尖啸巢穴等）绝不接管 ===")
@@ -1373,6 +1430,81 @@ def test_clearance_diagnostics_placement():
               frag in route, f"titan_route 仍保留：{frag[:40]}")
 
 
+def test_enemy_veto_wiring():
+    print()
+    print("=== ㉒ ★ 引擎选择否决：只清目标、不接管飞行 ===")
+    r = RUNTIME.read_text(encoding="utf-8")
+    e = (ROOT / "addon" / "entry.lua.in").read_text(encoding="utf-8")
+    g = (ROOT / "src/g60" / "take_gate.lua").read_text(encoding="utf-8")
+    sf = (ROOT / "src/g60" / "small_filter.lua").read_text(encoding="utf-8")
+
+    # 1) 判据直接用 observer 已读好的字段（零新增读取）
+    check("veto_uses_observed_selection",
+          "local veto_resource=m.selection_flag~=0 and m.selection_resource or nil" in r
+          and "Filter.excluded(veto_resource)" in r,
+          "判据来自 native_observer 已读好的 m.selection_resource（零新增读取）")
+    check("veto_switch_short_circuits",
+          "env.enemy_veto_enabled~=false and veto_resource~=nil" in r,
+          "★ 开关关闭 ⇒ veto_selected=false ⇒ 门控回落到 no_mark_no_hold（完全原生）")
+
+    # 2) 决策在 take_gate（纯函数，已被真跑测试覆盖）
+    check("veto_decision_in_gate",
+          "if o.selection_vetoed then" in g
+          and "veto=true,why='VETO_ENEMY_SELECTION'" in g,
+          "否决决策在 take_gate（纯函数，可真跑）")
+    check("veto_after_no_mark_gate",
+          g.index("if o.selection_vetoed then") > g.index("if not (o.structure_mark or"),
+          "★ 否决判定放在 no_mark_no_hold 之后 ⇒ 有标记时永不触发")
+
+    # 3) ★ 最关键：否决分支不得建锁、不得引导
+    i = r.index("if gate.veto and not retired[m.id]")
+    j = r.index("error('native operation disabled after enemy veto')", i)
+    blk = r[i:j]
+    check("veto_creates_no_tracked",
+          "tracked[m.id]=" not in blk and "old.lock=" not in blk
+          and "old.titan=" not in blk and "seen[m.id]=true" not in blk,
+          "★ 不建 tracked、不设 lock/titan、不标 seen ⇒ 三条引导/引爆路径都碰不到它")
+    check("veto_does_not_guide",
+          "arrival:step" not in blk and "titan:step" not in blk
+          and "priority:step" not in blk,
+          "★ 不调任何引导：只走 runner 的 search（clear）")
+    check("veto_releases_runner_state",
+          "runner:release(veto_ref)" in blk,
+          "★ 立刻释放 runner 状态，否则 search 成功后每帧 CONTINUE_SEARCH ⇒ 一直盘旋")
+    check("veto_is_failclosed",
+          "runner:disabled()" in blk and "self.disabled=true" in blk,
+          "部分写入后失败 ⇒ 停手（与既有引导路径同一处置）")
+    check("veto_logged", "enemy_veto;" in blk, "否决有专门日志（含 result/why）")
+    check("veto_no_direct_native_calls",
+          "calls." not in blk and "ffi." not in blk,
+          "★ 否决分支不直接做原生调用：全部经 runner（已实机验证的路径）")
+
+    # 4) 只读诊断：按资源去重
+    check("veto_diag_deduped_by_resource",
+          "local veto_seen={}" in r and "not veto_seen[veto_resource]" in r
+          and "veto_seen[veto_resource]=true" in r,
+          "只读诊断按 resource 去重（条数受场上敌人种类数约束）")
+
+    # 5) 配置面 + 日志
+    check("veto_switch_declared",
+          "enemy_veto_enabled=true," in e
+          and "enemy_veto_enabled=state.enemy_veto_enabled" in e,
+          "entry 有开关并传入 env")
+    check("veto_declared_in_version_line",
+          "enemy_veto_enabled='..tostring(state.enemy_veto_enabled)" in e
+          and "enemy_veto_resources=98152772a72f7838" in e,
+          "启动日志打出开关与实际排除的资源")
+    for ev_name in ("enemy_veto", "enemy_selection"):
+        check(f"throttle_whitelists_{ev_name}",
+              f"line:match('^{ev_name};')" in e,
+              f"★ {ev_name} 必须常驻写日志（诊断被节流掉 = 诊断不存在）")
+
+    # 6) 排除表只有运输船一项（范围最小化）
+    keys = re.findall(r"\['([0-9a-f]{16})'\]\s*=\s*true", sf)
+    check("veto_list_is_single_resource", keys == ["98152772a72f7838"],
+          f"★ 排除表恰好一项（实际 {keys}）")
+
+
 def test_diagnostics_not_throttled():
     print()
     print("=== ⑰ ★ 关键诊断不得被日志节流丢掉 ===")
@@ -1502,6 +1634,7 @@ def main():
     test_no_lock_path_bypasses_whitelist()
     test_takeover_scope_is_bughole_and_titan_only()
     test_diagnostics_not_throttled()
+    test_enemy_veto_wiring()
     test_clearance_diagnostics_placement()
     test_adaptive_standoff()
     test_dragonroach_takeover()

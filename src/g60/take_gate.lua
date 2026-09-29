@@ -70,6 +70,26 @@ function M.decide(opts)
     -- 门控：只在"玩家标记了虫洞"或"本 mod 已持有锁定/航点"时才驱动。
     --   无标记的敌人 G-60：本 mod 不建 tracked、不读 Search、不写任何内存。
     if not (o.structure_mark or (old and (old.lock or old.titan))) then
+        -- ★★ 唯一的例外：引擎选择否决（2026-09-29，用户要求）★★
+        --
+        --   引擎给这颗**非自有**的 G-60 选了我们明确排除的目标（目前只有运输船），
+        --   就放行一条"否决"决策：清掉那个选择，让它重新搜索。
+        --
+        --   为什么必须放在这里（门控**之后**）：
+        --     · 有虫洞标记时上面已经返回 drive=true，优先级路径会用自己的 setter
+        --       覆盖选择 ⇒ 不需要否决，也不能否决（否决会把标记目标一起搅乱）。
+        --     · 只有"本 mod 完全不认领这颗 G-60"这一支才轮到否决。
+        --
+        --   为什么用 veto 而不是 drive：否决**不接管**这颗 G-60。
+        --     不建 tracked、不设 lock/titan ⇒ 后续 titan/arrival/disposal 三条
+        --     引导与引爆路径全部碰不到它（它们都要求 old.lock 或 old.titan）。
+        --     这正是"只影响引擎选择、不引导飞行"的最小面。
+        --
+        --   o.selection_vetoed 由调用方算好传入（本模块保持零依赖、纯函数）：
+        --     判据 = 引擎确实选了目标 且 该资源在 small_filter 的排除表里。
+        if o.selection_vetoed then
+            return {drive=false,early=false,veto=true,why='VETO_ENEMY_SELECTION'}
+        end
         return {drive=false,early=false,why='no_mark_no_hold'}
     end
 

@@ -53,6 +53,23 @@ local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets
     --   失败是 fail-closed：titan_context 在写任何字节之前会校验身份/类/锚点，
     --   不符则记 titan_skipped，不写内存。
     titan_variants_enabled=true,
+    -- ★ 引擎选择否决（2026-09-29，用户要求"G-60 不追踪运输船"）
+    --   默认**开启**（按用户要求）。设为 false 立即退回"敌人侧完全原生"。
+    --
+    --   ⚠️ 这是本工程**唯一**一处主动干预"非本 mod 持有"的 G-60 的地方
+    --      （裁剪 F 的例外）。做法：把资源放进 small_filter 的排除表 + 在
+    --      take_gate 里为这一种情况放行 veto 决策 → 走 runner 的 search 动作
+    --      （calls.clear + calls.orbit）清掉引擎的选择，**但不接管飞行**。
+    --
+    --   ⚠️ 代价（必须知情）：runner 的 search 动作在**发生部分写入之后**失败时
+    --      会永久停手，本工程按既有惯例同步置 self.disabled（fail-closed）。
+    --      与现有虫洞引导走的是同一套 runner，所以风险与既有路径同级。
+    --
+    --   ⚠️ 已加只读诊断 enemy_selection / enemy_veto 用于确认资源身份：
+    --      资源哈希 98152772a72f7838 确认存在于游戏实体表，但**未能**用
+    --      MurmurHash64A 反查到资源路径 ⇒ "它=运输船"未经独立验证。
+    --      若日志显示它在别的东西上触发，置 false 即可。
+    enemy_veto_enabled=true,
     -- ★ 到达区域按**虫洞**重新标定（2026-09-28 实机几何反推）
     --   上游的 {radius=1.75,depth=0.8} 是给**泰坦**（20m 高）标定的，
     --   arrival_policy 的 `dz<=0` 要求"必须在目标点下方才算到达"。
@@ -118,7 +135,10 @@ local ok,why=pcall(function()
             -- ★ 泰坦净空拒绝的几何画像：这是用来决定"能不能优化"的唯一数据源，
             --   被节流掉就等于没测（同日 arrival_already_exploded 已经栽过一次）。
             and not line:match('^titan_clearance;')
-            and not line:match('^titan_standoff_adapted;') then return end
+            and not line:match('^titan_standoff_adapted;')
+            -- ★ 否决与其只读诊断必须常驻：诊断被节流掉 = 诊断不存在
+            and not line:match('^enemy_veto;')
+            and not line:match('^enemy_selection;') then return end
         if written+#line+1>262144 then close();return end
         local good=pcall(function() assert(log:write(line..'\n'));assert(log:flush()) end)
         if not good then close() else written=written+#line+1 end
@@ -204,6 +224,7 @@ local ok,why=pcall(function()
         allow_state3=false,
         titan_standoff=state.titan_standoff,titan_standoff_min=state.titan_standoff_min,
         dragonroach_enabled=state.dragonroach_enabled,dragonroach_resource=state.dragonroach_resource,
+        enemy_veto_enabled=state.enemy_veto_enabled,
         titan_arrival_region=state.titan_arrival_region,
         thread=function() return tonumber(k.GetCurrentThreadId()) end,
         engine=assert(rawget(_G,'stingray'),'engine API unavailable'),emit=emit})
@@ -225,6 +246,9 @@ local ok,why=pcall(function()
         ..';dragonroach_enabled='..tostring(state.dragonroach_enabled)
         ..';dragonroach_resource='..tostring(state.dragonroach_resource)
         ..';titan_variants_enabled='..tostring(state.titan_variants_enabled)
+        -- ★ 引擎选择否决：开关 + 实际排除的资源，便于日志确认是否生效
+        ..';enemy_veto_enabled='..tostring(state.enemy_veto_enabled)
+        ..';enemy_veto_resources=98152772a72f7838'
         ..';titan_variants='..table.concat(TitanVariants and TitanVariants.resources() or {},',')
         -- ★ 2026-09-29：接管范围 = 标记虫洞 + 吐酸泰坦，其余交还引擎。
         --   titan_resource 打出实际哈希，方便日志确认是否命中预期目标。

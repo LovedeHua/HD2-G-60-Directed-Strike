@@ -174,6 +174,9 @@ function M.new(env)
     local guide_fail={}
     -- selection_resource 缺失只提示一次（它可能连续很多帧发生）
     local selection_resource_warned=false
+    -- 只读诊断去重：按**资源**去重（不是按实体）⇒ 条数受场上敌人种类数约束。
+    --   用途：确认"运输船"这个哈希在实机里真的作为 G-60 的引擎选择出现过。
+    local veto_seen={}
     local EARLY_MIN_AGE=15       -- 至少飞够这么多帧才在早期 state 设目标
     local host={applied=0,aimed=0,skipped=0,disabled=false,native_lifetime_verified=false}
     local function pointer(a) return Layout.pointer(read(a,8),0) end
@@ -443,17 +446,68 @@ function M.new(env)
                     -- 仓库 195 个测试一行都跑不到，于是四轮实机事故
                     -- （nil 索引 / diag 未初始化 / upvalue nil / assert 阻断）
                     -- 全部从测试缝隙溜过去。现在它们进入测试覆盖。
+                    -- ★★ 引擎选择否决的判据（2026-09-29）★★
+                    --   "引擎确实给这颗 G-60 选了目标，且该资源在排除表里"。
+                    --   m.selection_resource 由 native_observer:110 在 selection_flag~=0
+                    --   时就读好了 ⇒ **零新增读取**。
+                    --   本 mod 认领的实体由上面的接管路径处理；这一支只服务
+                    --   "完全不认领"的 G-60（门控放在 take_gate 里，见那里的说明）。
+                    local veto_resource=m.selection_flag~=0 and m.selection_resource or nil
+                    --   开关关掉时直接用 false ⇒ 门控回到 no_mark_no_hold ⇒ 敌人侧
+                    --   完全原生（连只读诊断都还会打，但带 vetoed=false，便于确认）。
+                    local veto_selected=env.enemy_veto_enabled~=false and veto_resource~=nil
+                        and Filter.excluded(veto_resource)
+                    -- 只读诊断：每出现一个新"引擎选择"打一条。
+                    --   这是**验证身份**用的 —— 用户给的哈希能不能确认是运输船，
+                    --   就看追运输船时这里有没有出现它。
+                    --   必须进日志节流白名单（诊断被节流掉 = 诊断不存在）。
+                    if m.behavior_id==4 and m.state==4 and veto_resource
+                        and not veto_seen[veto_resource] and env.emit then
+                        veto_seen[veto_resource]=true
+                        env.emit('enemy_selection;entity='..m.id..';resource='..veto_resource
+                            ..';vetoed='..tostring(veto_selected))
+                    end
                     local gate=TakeGate.decide{
                         behavior_id=m.behavior_id,state=m.state,
                         native_update_eligible=m.native_update_eligible,
                         retired=retired[m.id]~=nil,old=old,
                         structure_mark=structure_mark,allow_early=drive3,
+                        selection_vetoed=veto_selected,
                         state_age=state_age[early_fp] or 0,
                         early_min_age=EARLY_MIN_AGE}
                     if not gate.drive and structure_mark and old then
                         if gate.why=='holding_nothing' or gate.why=='no_mark_no_hold'
                             then diag.held=diag.held+1
                         elseif gate.why=='quarantined' then diag.blocked=diag.blocked+1
+                        end
+                    end
+                    -- ★★ 否决：清掉引擎给这颗**非自有** G-60 选的、我们明确排除的目标 ★★
+                    --   （目前只有运输船；见 small_filter 的排除表与 take_gate 的说明）
+                    --
+                    --   只清不接管 —— 不建 tracked、不设 lock/titan，
+                    --   所以 titan / arrival / disposal 三条引导与引爆路径都碰不到它
+                    --   （它们一律要求 old.lock 或 old.titan）。这是最小影响面。
+                    if gate.veto and not retired[m.id] and runner and not runner:disabled() then
+                        local veto_ref={id=tostring(m.id),generation='veto-'..m.id,
+                            scene='experimental-session'}
+                        current={ref=veto_ref,match=m}
+                        local ok_v,res_v,why_v=runner:step(veto_ref)
+                        current=nil
+                        -- 立刻释放：否则 search 一旦成功，searching[key] 会一直为真
+                        --   ⇒ 之后每帧都走 CONTINUE_SEARCH ⇒ 每帧强行 orbit，
+                        --   等于把"不追踪运输船"变成"一直盘旋"（副作用外溢）。
+                        --   释放后语义收敛为"只在引擎当前确实选中该目标时才清一次"。
+                        runner:release(veto_ref)
+                        if env.emit then
+                            env.emit('enemy_veto;entity='..m.id
+                                ..';resource='..tostring(veto_resource)
+                                ..';result='..tostring(ok_v and (res_v and res_v.kind or 'nil') or 'FAILED')
+                                ..';why='..tostring(why_v))
+                        end
+                        -- 与既有引导路径同一处置：发生部分写入后失败 ⇒ 停手（fail-closed）。
+                        if runner:disabled() then
+                            self.disabled=true
+                            error('native operation disabled after enemy veto')
                         end
                     end
                     local abandoned=false

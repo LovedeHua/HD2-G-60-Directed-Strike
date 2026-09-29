@@ -1,7 +1,8 @@
-# G-60 Bug Hole Lock —— 标记虫洞 / 吐酸泰坦 专用版
+# G-60 Bug Hole Lock —— 标记虫洞 / 大型虫族 专用版
 
 《绝地潜兵2》G-60 反坦克追踪者手雷的**目标专用**接管 mod。
-只接管两类目标：**玩家标记的虫洞** 与 **吐酸泰坦**。其余全部交还游戏原生。
+只接管**玩家标记的虫洞** 与 **吐酸泰坦 / 孢子泰坦 / 蟑龙**。其余全部交还游戏原生 ——
+唯一例外是"不让 G-60 追踪运输船"（见下文"唯一例外"一节，可一键关闭）。
 
 > 本工程是 [`etxp/HD2-G60-Smart-Targeting`](https://github.com/etxp/HD2-G60-Smart-Targeting)
 > 0.1-beta.1 的**裁剪派生版**（源码 MIT / AI-assisted）。裁剪只动"决策层"，
@@ -22,6 +23,7 @@
 | 引擎自己选中了吐酸泰坦 / 蟑龙（你没标记） | 同上接管 |
 | 虫洞与泰坦同时被标记 | **虫洞优先** |
 | 你没标记任何支持目标 | **本 mod 完全不插手**，G-60 按游戏原生 TargetLock 打敌人 |
+| 引擎给 G-60 选了**运输船** | 例外：清掉该选择（`enemy_veto_enabled`，见下文"唯一例外"） |
 | 你标记了其他敌人 / 尖啸者巢 / 孢子菇 / 任务虫卵 | **本 mod 不接管**，G-60 原生处理 |
 
 上游那套「按固定顺位自动追打 Bile Titan / Impaler / Spore Charger / Charger」以及
@@ -221,12 +223,49 @@ if disposal and held and m.behavior_id==4 and …                               
 ```
 
 ⇒ **无虫洞标记时，本 mod 对任何 G-60 一个字节都不写**（不建 `tracked`、不跑
-`Search.capture`、不调 `clear` / `orbit` / `explode`）。启动日志会打印：
+`Search.capture`、不调 `clear` / `orbit` / `explode`）—— **唯一例外见下节**。启动日志会打印：
 
 ```
 enemy_tracking=VANILLA_UNTOUCHED;priority_gated=STRUCTURE_ONLY;
 arrival_gated=HELD_LOCK_ONLY;disposal_gated=HELD_LOCK_ONLY
 ```
+
+### ★★ 唯一例外：引擎选择否决（2026-09-29，用户要求"G-60 不追踪运输船"）
+
+上面那条"一个字节都不写"有一条**点名例外**：当引擎给一颗**非本 mod 持有**的 G-60
+选中的目标落在**排除表**里时（目前只有运输船 `98152772a72f7838`），会清掉那个选择。
+
+```lua
+-- take_gate.lua：放在 no_mark_no_hold **之后** ⇒ 有虫洞标记时永不触发
+if not (o.structure_mark or (old and (old.lock or old.titan))) then
+    if o.selection_vetoed then
+        return {drive=false,early=false,veto=true,why='VETO_ENEMY_SELECTION'}
+    end
+    return {drive=false,early=false,why='no_mark_no_hold'}
+end
+```
+
+| 项 | 设计 |
+|---|---|
+| **只清不接管** | 不建 `tracked`、不设 `lock`/`titan` ⇒ `titan`/`arrival`/`disposal` 三条引导与引爆路径**都碰不到它**（它们一律要求 `old.lock` 或 `old.titan`） |
+| **复用已实机验证的路径** | 走 `runner`（`native_minimal`）的 search 动作，不新增任何原生调用代码 |
+| **立刻 `runner:release`** | 否则 search 成功后 `searching[key]` 恒真 ⇒ 每帧 `CONTINUE_SEARCH` ⇒ 每帧强行 `orbit`，把"不追踪"变成"一直盘旋" |
+| **范围最小** | 排除表**恰好一项**，上游那 9 项（8 种小虫 + Impaler 触手 + Hive Guard）**不恢复** —— 它们的症状是"打不了中小型敌人"，正是当初清空该表的原因 |
+| **可一键回退** | `enemy_veto_enabled=false` ⇒ 判据恒 false ⇒ 门控回落到 `no_mark_no_hold`，敌人侧完全原生 |
+| **代价（知情）** | 与既有虫洞引导共用同一个 `runner`：一旦发生部分写入后失败，按既有惯例 `self.disabled`（fail-closed）。风险与既有引导路径同级 |
+
+诊断（都进日志节流白名单）：
+
+```
+enemy_selection;entity=..;resource=..;vetoed=true|false   ← 只读，按 resource 去重
+enemy_veto;entity=..;resource=..;result=..;why=..         ← 实际执行了否决
+```
+
+> ⚠️ **身份未经独立验证**：`98152772a72f7838` 确认存在于游戏实体表
+> （`generated_entities.dl_bin` 小端 @67356），但用 `MurmurHash64A` 反查资源路径
+> **查不到**（17/17 虫洞都能反查）。所以"它 = 运输船"目前**采信标签，未经证实**。
+> `enemy_selection` 就是为此加的：追运输船时若出现该哈希 ⇒ 身份确认；
+> 若在别的东西上触发 ⇒ 置 `enemy_veto_enabled=false` 即可。
 
 ### 实机日志确认（第三轮，123 行）
 

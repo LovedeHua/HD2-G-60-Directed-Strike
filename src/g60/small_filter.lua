@@ -9,8 +9,35 @@ local M = {}
 --   "G-60 打不了中小型敌人、只锁大型目标"。
 --   本工程要求"未标记虫洞时完全按游戏原生处理"，所以整表清空：
 --   敌人选择权 100% 交还引擎 TargetLock，本 mod 只在 9 个虫洞上接管。
+--
+-- ★★★ 2026-09-29 例外：用户明确要求"G-60 不追踪运输船"，重新启用**一项** ★★★
+--
+--   上游那 9 项（8 种小虫 + Impaler 触手 + Hive Guard）**不恢复** ——
+--   它们的症状是"G-60 打不了中小型敌人"，正是本工程当初清空该表的原因。
+--   这里只放**用户点名的一个资源**，范围最小化。
+--
+--   ⚠️ 与上游用法的关键差别：这张表的**三个调用方**
+--     ① native_priority.lua:120  eligible()   —— 只作用于本 mod 已持有的实体
+--     ② target_policy.lua:7     候选打分      —— 同上
+--     ③ selection_veto.lua:23   选择否决      —— 经 runner 调用，**这才是生效点**
+--   ①② 的效果只是"我们不会把运输船当成自己的锁定目标"，无害且符合意图；
+--   ③ 才是实现"不追踪"的地方：Veto.plan 返回
+--      {kind='search', clear_selection=true} → calls.clear + calls.orbit。
+--
+--   ⚠️ 仅把资源加进这张表**并不够** —— `runner` 只在"本 mod 持有的实体"上被调用
+--      （见 take_gate 的 no_mark_no_hold 门控）。所以配套改了 take_gate：
+--      当**非自有** G-60 的引擎选择命中本表时，专门放行一条 `veto` 决策。
+--      缺了那一步，这张表对本场景**完全无效**。
+--
+--   证据程度（诚实记录）：用户给的十进制 ID 换算为 98152772a72f7838，
+--   该哈希**确认存在于**游戏实体表 generated_entities.dl_bin（小端 @67356，
+--   32 B/条，组件数 30）；但用 MurmurHash64A 反查资源路径**查不到**
+--   （17/17 虫洞都能反查），所以"它=运输船"**未经独立验证**。
+--   ⇒ 因此加了 enemy_selection 只读日志与 enemy_veto_enabled 开关：
+--      实机看到 enemy_veto 在追运输船时触发 = 身份得到确认；
+--      若在别的东西上触发，置 false 即可立即回退。
 local excluded = {
-    -- 全部清空，见上方说明。保留表结构是为了不改动调用方契约。
+    ['98152772a72f7838'] = true,   -- 运输船 Dropship（用户 2026-09-29 点名排除）
 }
 function M.excluded(resource) return excluded[resource] == true end
 local function resource(value)
