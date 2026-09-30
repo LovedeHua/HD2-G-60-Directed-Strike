@@ -1601,13 +1601,30 @@ def test_enemy_veto_wiring():
           "if o.selection_vetoed then" in g
           and "veto=true,why='VETO_ENEMY_SELECTION'" in g,
           "否决决策在 take_gate（纯函数，可真跑）")
-    check("veto_after_no_mark_gate",
+    # ★★ 2026-09-30 修复后语义变更 ★★
+    #   原断言"'有标记时永不触发' —— 那**正是运输船漏过滤的根因**：
+    #   玩家标记了友方 ⇒ structure_mark 非 nil ⇒ take_gate 的 veto 不可达；
+    #   而 priority 又会拒绝友方（NOT_VALID_TARGET）⇒ 引擎给的运输船没人清。
+    #   现在 veto 有**两个触发点**，用"有没有接管"而不是"有没有标记"来区分。
+    check("veto_decision_in_gate_for_no_mark",
           g.index("if o.selection_vetoed then") > g.index("if not (o.structure_mark or"),
-          "★ 否决判定放在 no_mark_no_hold 之后 ⇒ 有标记时永不触发")
+          "无标记路径的否决判定仍在 take_gate 的 no_mark_no_hold 之后（不变）")
+    check("veto_fallback_after_priority",
+          "run_veto(m,vr,'after_priority')" in r
+          and "if structure_mark and not abandoned" in r,
+          "★ 新增兜底触发点：有标记但 priority 没接管时也否决（修复运输船漏过滤）")
+    check("veto_fallback_requires_no_hold",
+          "and not (old and (old.lock or old.titan))" in r,
+          "★ 兜底不得在'正飞向自己的目标'时触发（那会破坏自己的锁定）")
+    check("veto_single_implementation",
+          r.count("local function run_veto(") == 1
+          and r.count("runner:release(veto_ref)") == 1
+          and r.count("enemy_veto;entity=") == 1,
+          "★ veto 执行只有**一份实现**，两个触发点共用（防'改一份漏一份'）")
 
-    # 3) ★ 最关键：否决分支不得建锁、不得引导
-    i = r.index("if gate.veto and not retired[m.id]")
-    j = r.index("error('native operation disabled after enemy veto')", i)
+    # 3) ★ 最关键：否决实现不得建锁、不得引导
+    i = r.index("local function run_veto(")
+    j = r.index("for _,m in ipairs(observed.matches) do", i)
     blk = r[i:j]
     check("veto_creates_no_tracked",
           "tracked[m.id]=" not in blk and "old.lock=" not in blk

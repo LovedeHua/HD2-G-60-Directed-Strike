@@ -268,17 +268,34 @@ arrival_gated=HELD_LOCK_ONLY;disposal_gated=HELD_LOCK_ONLY
 ### ★★ 唯一例外：引擎选择否决（2026-09-29，用户要求"G-60 不追踪运输船"）
 
 上面那条"一个字节都不写"有一条**点名例外**：当引擎给一颗**非本 mod 持有**的 G-60
-选中的目标落在**排除表**里时（目前只有运输船 `98152772a72f7838`），会清掉那个选择。
+选中的目标落在**排除表**里时（目前只有机器人运输船 `db90077e76faa025`），会清掉那个选择。
+
+**两个触发点**（`run_veto` 是单一实现，两处共用）：
 
 ```lua
--- take_gate.lua：放在 no_mark_no_hold **之后** ⇒ 有虫洞标记时永不触发
+-- take_gate.lua：无标记路径（原唯一入口）
 if not (o.structure_mark or (old and (old.lock or old.titan))) then
-    if o.selection_vetoed then
-        return {drive=false,early=false,veto=true,why='VETO_ENEMY_SELECTION'}
-    end
-    return {drive=false,early=false,why='no_mark_no_hold'}
+    if o.selection_vetoed then return {veto=true,why='VETO_ENEMY_SELECTION'} end
+    return {drive=false,why='no_mark_no_hold'}
 end
 ```
+
+```lua
+-- experimental_runtime.lua：priority 段**之后**的兜底（2026-09-30 修复）
+--   take_gate 的 veto 分支被 structure_mark 挡住 ⇒ 玩家标记了东西时不可达；
+--   而 priority 会拒绝不该接管的目标（友方 ⇒ NOT_VALID_TARGET）
+--   ⇒ 引擎给的运输船没人清。
+if structure_mark and not abandoned
+    and not (old and (old.lock or old.titan))    -- 持有说明正飞向自己的目标，不能清
+    and Filter.excluded(m.selection_resource) then
+    run_veto(m, m.selection_resource, 'after_priority')
+end
+```
+
+> ⚠️ **2026-09-30 实机修复**：玩家标记**信标球**（友方）时，`structure_mark` 非 nil
+> ⇒ take_gate 的 veto 不可达；而 priority 又正确拒绝了它（`NOT_VALID_TARGET`）
+> ⇒ 引擎的运输船选择没人清，表现就是"运输船没被过滤"。
+> 在此之前只有虫洞/泰坦，标记的一定会被接管 ⇒ setter 自然覆盖了运输船，缺口一直没暴露。
 
 | 项 | 设计 |
 |---|---|
@@ -293,7 +310,7 @@ end
 
 ```
 enemy_selection;entity=..;resource=..;vetoed=true|false   ← 只读，按 resource 去重
-enemy_veto;entity=..;resource=..;result=search;why=EXCLUDED_SELECTION;frame=..
+enemy_veto;entity=..;resource=..;result=search;why=EXCLUDED_SELECTION;via=no_mark|after_priority;frame=..
 ```
 
 > ⚠️ `runner:step` 的返回契约是 **`(result, reason)`**。第一版我按 `(ok, result, why)` 取值，
@@ -367,7 +384,7 @@ G-60 的追踪数值**没有可调项**（2026-09-30 用游戏离线数据核实
 
 > ⚠️ **第一版过滤错了哈希 —— 已修正**（2026-09-29 当晚实机）
 >
-> 第一版只排除了 `98152772a72f7838`（社区表「哈希表-整合」第 112 行标"运输船 | Dropship"，
+> 第一版只排除了 `db90077e76faa025`（社区表「哈希表-整合」第 112 行标"运输船 | Dropship"，
 > 用户给的十进制 ID 也确实是它）。**但它从未被引擎选中过** —— 玩家看到的仍是"运输船没被过滤"。
 >
 > 用户日志给出了直接否证：
@@ -376,13 +393,13 @@ G-60 的追踪数值**没有可调项**（2026-09-30 用游戏离线数据核实
 > ```
 > `db90077e76faa025` → `content/fac_cyborgs/vehicles/cyborg_dropship/cyborg_dropship`
 > ⇒ **引擎真正分配给 G-60 的运输船是机器人运输船 `cyborg_dropship`。**
-> 而 `98152772a72f7838` 连游戏资源路径都反查不到。
+> 而 `db90077e76faa025` 连游戏资源路径都反查不到。
 >
 > | 排除项 | 证据 |
 > |---|---|
 > | `db90077e76faa025` | ★ **实机日志**（entity=933 的引擎选择）+ 游戏路径 `cyborg_dropship` ⇒ 机器人运输船。**唯一一项** |
 >
-> ~~`98152772a72f7838`~~ 已**去除**（2026-09-29 用户决定）：社区表把它标为"运输船 | Dropship"，
+> ~~`db90077e76faa025`~~ 已**去除**（2026-09-29 用户决定）：社区表把它标为"运输船 | Dropship"，
 > 但游戏资源路径反查不到、实机日志里从未被引擎选中过 —— **用户判断它是停落在地面上的运输船**
 > （不再起飞投放兵力），G-60 本来就不会锁它 ⇒ 排除它没有意义。
 >

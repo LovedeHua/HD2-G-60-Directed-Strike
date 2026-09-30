@@ -377,6 +377,49 @@ function M.new(env)
             diag.total=#observed.matches
             diag.manager=observed.behavior_count
             diag.sig=table.concat(sigs,',')
+            -- ★ veto 执行的**单一实现**（2026-09-30 修复）
+            --
+            -- 两个触发点共用（这是抽出来的原因：项目吃过"同一逻辑写两份、
+            -- 只改一份"的亏 —— 见 native_priority 的 sticky 分支越权事故）：
+            --   ① take_gate 的 veto 分支 —— **无标记**路径（2026-09-30 前的唯一入口）
+            --   ② priority 段之后的兜底 —— **有标记但 priority 没接管**
+            --
+            -- 为什么需要 ②：veto 判定嵌在门控的"无标记且无持有"里
+            --   `if not (structure_mark or held) then ... veto ... end`
+            -- ⇒ 玩家一旦标记了东西，veto 就**不可达**；而 priority 会**拒绝**
+            --   不该接管的目标（友方 ⇒ NOT_VALID_TARGET）⇒ 引擎给的排除表目标
+            --   没人清。实机 2026-09-30：
+            --     structure_mark resource=16f397ca5f51f271(信标球) ACCEPTED
+            --     generic_rejected ... detail=NOT_VALID_TARGET
+            --     enemy_selection entity=923 resource=db90077e76faa025 vetoed=true
+            --     enemy_veto → 0 次        ← 运输船因此没被过滤
+            --   （2026-09-30 前只有虫洞/泰坦，标记的一定会被接管 ⇒ setter 自然
+            --     覆盖了运输船，所以这个缺口一直没暴露。）
+            local function run_veto(match,resource,via)
+                local veto_ref={id=tostring(match.id),generation='veto-'..match.id,
+                    scene='experimental-session'}
+                current={ref=veto_ref,match=match}
+                local ok_v,res_v=runner:step(veto_ref)
+                current=nil
+                -- 立刻释放：否则 search 一旦成功，searching[key] 会一直为真
+                --   ⇒ 之后每帧都走 CONTINUE_SEARCH ⇒ 每帧强行 orbit，
+                --   等于把"不追踪运输船"变成"一直盘旋"（副作用外溢）。
+                --   释放后语义收敛为"只在引擎当前确实选中该目标时才清一次"。
+                runner:release(veto_ref)
+                if env.emit then
+                    -- ★ runner:step 的返回契约是 (result, reason)，**不是** (ok,result,why)。
+                    --   2026-09-29 我按后者取值 ⇒ 实际打出 `result=nil;why=nil`（145 条全是 nil）。
+                    --   现在按正确顺序取，并加 via 标明触发点。
+                    env.emit('enemy_veto;entity='..match.id..';resource='..tostring(resource)
+                        ..';result='..tostring(ok_v and ok_v.kind or 'FAILED')
+                        ..';why='..tostring(res_v)..';via='..via..';frame='..frame)
+                end
+                -- 与既有引导路径同一处置：部分写入后失败 ⇒ 停手（fail-closed）。
+                if runner:disabled() then
+                    self.disabled=true
+                    error('native operation disabled after enemy veto')
+                end
+            end
             for _,m in ipairs(observed.matches) do
                 local retired_key=m.identity_bytes..m.flight_start
                 -- ★★ 爆炸已触发 ⇒ 视为"完成"（2026-09-29）★★
@@ -521,33 +564,7 @@ function M.new(env)
                     --   所以 titan / arrival / disposal 三条引导与引爆路径都碰不到它
                     --   （它们一律要求 old.lock 或 old.titan）。这是最小影响面。
                     if gate.veto and not retired[m.id] and runner and not runner:disabled() then
-                        local veto_ref={id=tostring(m.id),generation='veto-'..m.id,
-                            scene='experimental-session'}
-                        current={ref=veto_ref,match=m}
-                        local ok_v,res_v,why_v=runner:step(veto_ref)
-                        current=nil
-                        -- 立刻释放：否则 search 一旦成功，searching[key] 会一直为真
-                        --   ⇒ 之后每帧都走 CONTINUE_SEARCH ⇒ 每帧强行 orbit，
-                        --   等于把"不追踪运输船"变成"一直盘旋"（副作用外溢）。
-                        --   释放后语义收敛为"只在引擎当前确实选中该目标时才清一次"。
-                        runner:release(veto_ref)
-                        if env.emit then
-                            -- ★ runner:step 的返回契约是 (result, reason)，**不是** (ok,result,why)。
-                            --   2026-09-29 我按后者取值 ⇒ 实际打出 `result=nil;why=nil`
-                            --   （res_v 是字符串，`res_v.kind` 恒为 nil；why_v 恒为 nil）。
-                            --   145 条日志全是 nil，看不出成功还是失败 —— **诊断又骗了我一次**。
-                            --   现在按正确顺序取：result=结果表.kind，why=reason。
-                            env.emit('enemy_veto;entity='..m.id
-                                ..';resource='..tostring(veto_resource)
-                                ..';result='..tostring(ok_v and ok_v.kind or 'FAILED')
-                                ..';why='..tostring(res_v)
-                                ..';frame='..frame)
-                        end
-                        -- 与既有引导路径同一处置：发生部分写入后失败 ⇒ 停手（fail-closed）。
-                        if runner:disabled() then
-                            self.disabled=true
-                            error('native operation disabled after enemy veto')
-                        end
+                        run_veto(m,veto_resource,'no_mark')
                     end
                     local abandoned=false
                     local enters=priority~=nil and gate.drive
@@ -705,6 +722,29 @@ function M.new(env)
                                     ..';life_left='..tostring(math.max(0,1-spent/ArrivalPolicy.lifetime_ticks)))
                             end
                             if reservations then old.lock=nil;old.force_search=true end
+                        end
+                    end
+                    -- ★★ 兜底 veto（2026-09-30 修复）★★
+                    --
+                    -- priority 段跑完了 —— 这时才**真正知道**我们有没有接管这颗 G-60。
+                    -- 如果**有标记**但**没接管**（标记的是友方 ⇒ NOT_VALID_TARGET、
+                    -- 或位置读不到、或超 200m），那么引擎给的"排除表目标"（运输船）
+                    -- 就没人清：take_gate 的 veto 分支在结构上被 structure_mark 挡住了。
+                    --
+                    -- 条件逐条：
+                    --   · structure_mark 非 nil —— 为 nil 时走 take_gate 原路径（已覆盖）
+                    --   · 未 abandoned —— 已放弃的实体本帧不再写任何东西
+                    --   · **没有 lock/titan** —— 持有说明我们正飞向自己的目标，
+                    --     此时清选择会破坏自己的锁定（veto 的本意不是这个）
+                    --   · 引擎当前选择确实在排除表里
+                    -- ⇒ 清掉它，让引擎重新挑。
+                    if structure_mark and not abandoned
+                        and not (old and (old.lock or old.titan))
+                        and env.enemy_veto_enabled~=false
+                        and runner and not runner:disabled() then
+                        local vr=m.selection_flag~=0 and m.selection_resource or nil
+                        if vr and Filter.excluded(vr) then
+                            run_veto(m,vr,'after_priority')
                         end
                     end
                     local selected=m.selection_flag~=0 and m.selection_id~=Layout.u32(read(base+0x3483c20,4),0)
