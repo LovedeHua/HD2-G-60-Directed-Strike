@@ -91,6 +91,7 @@ SAFETY_LAYER_EXCEPTIONS = {
 #   是给泰坦标定的，虫洞在地上 ⇒ G-60 绕飞时始终在洞口上方 ⇒ 永不引爆。
 #   实机 5 个采样点原判定 0/5 可引爆，加 `above` 后 4/5。
 #   不配 above 时 `above=0`，行为与上游完全一致（下游断言保证）。
+#   ★ 2026-09-30：球形判定试过一版（`dx²+dy²+dz²<=r²`），实机效果很差 ⇒ **已回滚为圆柱**。
 #   改动是行内的，无法正则剥离 ⇒ 用锚点比对。
 ARRIVAL_ANCHORS = (
     "assert(type(region.radius)=='number' and region.radius>0 and region.radius<=3",
@@ -103,6 +104,7 @@ ARRIVAL_ANCHORS = (
 )
 ARRIVAL_FORBIDDEN = (
     "arrived=dx*dx+dy*dy<=region.radius^2 and dz<=0 and dz>=-region.depth",  # 上游那句
+    "dx*dx+dy*dy+dz*dz<=region.radius^2",   # ★ 球形那句（2026-09-30 试过，实机效果差，已回滚）
 )
 ARRIVAL_REQUIRED = (
     "region.above or 0",

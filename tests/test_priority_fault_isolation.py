@@ -531,7 +531,7 @@ def test_arrival_region_geometry(rt):
     e = (ROOT / "addon" / "entry.lua.in").read_text(encoding="utf-8")
     check("entry_retunes_region",
           "titan_arrival_region={radius=2.0,depth=1.2,above=1.2}" in e,
-          "到达区域按虫洞重新标定")
+          "★ 到达区域（泰坦/变体专用，球形 radius=2.0 / above=1.2）")
 
 
 def lua_table(rows):
@@ -1113,17 +1113,34 @@ def test_no_lock_path_bypasses_whitelist():
           "previous and not previous.marked_structure" not in code,
           "★ 敌人锁分支已删除（它是唯一绕过白名单的锁路径）")
     n_locked = code.count("chosen,reason=row,'LOCKED'")
-    check("single_lock_assignment", n_locked == 1,
-          f"只有一处能产出 LOCKED（实际 {n_locked} 处）")
+    # 2026-09-30：通用目标的 sticky 改走 generic_validate ⇒ LOCKED 变成**两处**
+    # （虫洞 sticky / 通用 sticky）。两处必须各受**自己的**复核保护：
+    #   · 虫洞 → structure_profiles[e.resource] + eligible()
+    #   · 通用 → generic_validate()（target_valid 硬门槛，**不查虫洞白名单**）
+    check("lock_assignment_is_two_guarded_paths", n_locked == 2,
+          f"LOCKED 恰好两处（虫洞 sticky / 通用 sticky），实际 {n_locked} 处")
 
-    # sticky 复用必须重新核对 resource（防实体 id 被复用）
-    sticky = p[p.index("if previous and previous.marked_structure"):][:1600]
+    # sticky 复用必须重新核对（防实体 id 被复用）。
+    sticky = code[code.index("if previous and previous.marked_structure"):]
+    sticky = sticky[:sticky.index("if not chosen and structure_mark and env.structure_profiles")]
     check("sticky_rechecks_whitelist",
           "structure_profiles[e.resource]" in sticky,
-          "★ sticky 复用每次都复核 resource（防 id 复用打到非虫洞）")
+          "★ 虫洞 sticky 复用每次都复核 resource（防 id 复用打到非虫洞）")
     check("sticky_logs_resource_reject",
           "RESOURCE_NOT_IN_WHITELIST" in sticky,
           "id 复用导致资源变化时打醒目日志")
+    check("generic_sticky_uses_generic_validate",
+          "if previous.generic then" in sticky
+          and "generic_validate(" in sticky,
+          "★ 通用目标的 sticky 走统一复核 generic_validate（不是虫洞白名单）")
+    # 反向：通用 sticky 分支内**不得**出现虫洞白名单 —— 那正是实机
+    # 66 次 `structure_lock_lost;RESOURCE_NOT_IN_WHITELIST` 的根因
+    # （旧逻辑把通用目标判成"不在虫洞白名单"⇒ 每轮丢锁 ⇒ 目标不忠实）。
+    _gs = sticky[sticky.index("if previous.generic then"):]
+    _gs = _gs[:_gs.index("local whitelisted=e and env.structure_profiles")]
+    check("generic_sticky_skips_wormhole_whitelist",
+          "structure_profiles" not in _gs,
+          "★ 通用 sticky 分支内不查虫洞白名单")
 
     # track 的 marked_structure 必须 fail-closed
     check("track_marked_structure_fail_closed",
@@ -1131,21 +1148,21 @@ def test_no_lock_path_bypasses_whitelist():
           and "marked_structure=chosen.marked_structure" not in code,
           "★ marked_structure 缺省时直接不返回 lock（不存 nil 锁）")
 
-    # 反向断言：每个 chosen 赋值点之前必须有白名单检查。
-    # 窗口取到**上一个 chosen 赋值点**为止（而不是固定字符数）——
-    # 固定窗口会因代码里多几行注释就误判（我第一版取 2500 就误报了一次）。
-    # 2026-09-30：通用接管引入后，playermark 那处多了 `row.generic and ... or ...`
-    # 三元（区分 PLAYER_MARK_GENERIC / PLAYER_MARK_STRUCTURE）⇒ 锚点随之更新。
-    # 断言的是**位置**（每个 chosen 赋值点之前必须有白名单检查），不关心后半段怎么写。
-    spots = [("sticky", "chosen,reason=row,'LOCKED'"),
-             ("playermark", "chosen,reason=row,row.generic")]
-    for idx, (tag, spot) in enumerate(spots):
-        i = code.index(spot)
-        start = code.index(spots[idx - 1][1]) if idx else 0
-        window = code[start:i]
-        check(f"whitelist_before_{tag}",
-              "structure_profiles" in window,
-              f"{tag} 锁路径之前必须有白名单检查（窗口 {len(window)} 字符）")
+    # 反向断言：**每个** LOCKED / chosen 赋值点之前必须有**对应**的复核。
+    # 窗口取到上一个锚点为止（不固定字符数 —— 注释多几行就误判，踩过）。
+    _i_gs = code.index("if previous.generic then")
+    _i_locked_gen = code.index("chosen,reason=row,'LOCKED'")
+    check("guard_before_generic_sticky",
+          "generic_validate(" in code[_i_gs:_i_locked_gen],
+          "通用 sticky 的 LOCKED 之前必须走 generic_validate")
+    _i_locked_worm = code.index("chosen,reason=row,'LOCKED'", _i_locked_gen + 1)
+    check("guard_before_wormhole_sticky",
+          "structure_profiles" in code[_i_gs:_i_locked_worm],
+          "虫洞 sticky 的 LOCKED 之前必须有白名单检查")
+    _i_pm = code.index("chosen,reason=row,row.generic")
+    check("guard_before_playermark",
+          "structure_profiles" in code[_i_locked_worm:_i_pm],
+          "新标记分支（虫洞 profile 分流）之前必须有白名单检查")
 
 
 def test_generic_takeover():
@@ -1177,20 +1194,25 @@ def test_generic_takeover():
     check("generic_branch_gated_by_switch",
           "if env.generic_takeover_enabled~=false and e then" in code_pr,
           "priority 里有受开关控制的通用分支")
+    # ★★ 2026-09-30：复核抽成单一实现 `generic_validate(e)`，两个入口共用
+    #   （① 新标记 ② sticky 复用）。断言随之下沉到 helper 本体。
+    check("generic_validate_is_single_implementation",
+          code_pr.count("local function generic_validate(e)") == 1,
+          "★ 通用复核只定义一次（两个入口共用，杜绝\"只改一份副本\"）")
     # ★★ 最核心的安全属性：友方排除靠 target_valid 硬门槛 ★★
     check("generic_uses_target_valid_as_hard_gate",
           "scope.calls.target_valid(nil,e.id," in code_pr
-          and "elseif not valid then detail='NOT_VALID_TARGET'" in code_pr,
+          and "if not valid_now then return nil,'NOT_VALID_TARGET' end" in code_pr,
           "★ 用 calls.target_valid 作硬门槛（引擎索敌的\"能不能当锁定目标\"）")
-    # 与虫洞路径**相反**：不做只读兜底，否则友方会被放过
-    _i = code_pr.index("if env.generic_takeover_enabled~=false and e then")
-    _j = code_pr.index("generic_rejected;target=", _i)
-    _blk = code_pr[_i:_j]
+    # helper 本体 = 从定义处到下一个顶层 `end`（用 "local chosen,reason" 作右锚点）。
+    _h0 = code_pr.index("local function generic_validate(e)")
+    _h1 = code_pr.index("local chosen,reason,mark_candidate,chosen_mark_index", _h0)
+    _blk = code_pr[_h0:_h1]
     # ★ 精确区分两件事（第一版断言写太粗，把两者混为一谈 ⇒ 误报）：
     #   ✗ 软信号兜底 = target_valid 返回 false 时用只读复核**推翻**它（会放过友方）
     #   ✓ 额外校验   = target_valid 为 true 之后，再做实体/identity 复核（防 id 复用）
-    #   ⇒ 断言"readonly_alive 不得出现在 `not valid` 分支之前/之中"。
-    _vi = _blk.index("elseif not valid then detail='NOT_VALID_TARGET'")
+    #   ⇒ 断言"readonly_alive 不得出现在 `not valid_now` 之前/之中"。
+    _vi = _blk.index("if not valid_now then return nil,'NOT_VALID_TARGET' end")
     check("generic_target_valid_false_is_terminal",
           "readonly_alive" not in _blk[:_vi] and "check_alive(" not in _blk[:_vi],
           "★ target_valid=false ⇒ 直接拒，不得用只读复核推翻（那正是虫洞路径的做法，"
@@ -1200,13 +1222,19 @@ def test_generic_takeover():
           "valid=true 后仍做实体/identity 复核（防实体 id 被复用）")
     check("generic_uses_d_position_not_context_capture",
           "Context.capture" not in _blk and "d.position" in _blk,
-          "★ 通用分支用 d.position，不调 Context.capture（后者强依赖 profile）")
+          "★ 通用复核用 d.position，不调 Context.capture（后者强依赖 profile）")
     check("generic_builds_setter_payload",
           "ffi.cast('uint32_t *',raw)[0]=e.id" in _blk,
           "构造 setter 载荷（前 4 字节 = 目标 id）")
     check("generic_marks_row_as_generic",
           "generic=true" in _blk,
           "row 带 generic 标记，便于日志与后续区分")
+    # 新标记入口必须**调用** helper（而不是自己再抄一遍判据）
+    _mi = code_pr.index("if env.generic_takeover_enabled~=false and e then")
+    _mj = code_pr.index("generic_rejected;target=", _mi)
+    check("mark_entry_calls_shared_helper",
+          "generic_validate(e)" in code_pr[_mi:_mj],
+          "★ 新标记入口调用共用 helper（不再内联一份判据）")
     check("generic_rejects_with_diagnostic",
           "generic_rejected;target=" in code_pr,
           "不满足条件时打 generic_rejected（含 detail）")
@@ -1468,13 +1496,25 @@ def test_adaptive_standoff():
     print("=== ⑲ ★ standoff 自适应 1.5~2.5（用户授权放宽）===")
     aim = (ROOT / "src/g60" / "native_titan_aim.lua").read_text(encoding="utf-8")
     route = (ROOT / "src/g60" / "titan_route.lua").read_text(encoding="utf-8")
+    # 判"代码里在不在"要先剥注释（注释里提到某个名字不算代码用了它）
+    route_code = "\n".join(l for l in route.splitlines() if not l.strip().startswith("--"))
     e = (ROOT / "addon" / "entry.lua.in").read_text(encoding="utf-8")
 
-    # titan_route 的硬判定：blast = p_z - standoff 必须 >= floor = origin_z + 1.25
-    # 自适应（在调用方）：max_standoff = p_z - (origin_z+1.25)
-    #                     若 2.5 > max_standoff 则 standoff = max(1.5, max_standoff)
+    # titan_route 的硬判定：blast = p_z - standoff 必须 >= floor = origin_z + MARGIN
+    # 自适应（在调用方）：max_standoff = p_z - (origin_z+MARGIN)
+    #                     若 titan_standoff > max_standoff 则 standoff = max(lo, max_standoff)
     # 这里用一个**独立的规格镜像**验证数学不变量，而不是重述源码字符串。
-    LO, HI, MARGIN = 1.5, 2.5, 1.25
+    #
+    # ★ 2026-09-30（mod 生效后，第二轮）：**方向修正**。
+    #   用户实测"泰坦腹部引爆点离腹部太远、离地面太近、炸不死泰坦" ——
+    #   那是**降 MARGIN（离地余量）**造成的：降它只允许爆点更低，而腹部在高处
+    #   ⇒ 爆点更低 = 离腹部更远、更贴地。**方向反了**。
+    #   ⇒ 现在：**MARGIN 保持上游原值 1.25**（不降，守卫文件也恢复逐字节），
+    #            **改降下限 LO 1.5 → 0.5** —— 让 standoff 能缩得更小，
+    #            即爆点**贴近腹部**（伤害集中，才炸得死）。
+    #   组合效果：接管门槛由 `p_z-origin_z ≥ 2.75` 降到 `≥ 1.75`，
+    #             且净空不足时爆点会**贴着腹部**而不是被推到地面附近。
+    LO, HI, MARGIN = 0.5, 2.5, 1.25
 
     def adapt(pz, oz, target=HI, lo=LO):
         max_s = pz - (oz + MARGIN)
@@ -1490,17 +1530,24 @@ def test_adaptive_standoff():
     check("adapt_idle_when_clear", s == HI and not route_refuses(10.0, 0.0, s),
           f"净空充足时不改（standoff={s}）")
 
-    # B) 卡边：2.5 会撞地板，收到"刚好清空"的值并放行
+    # B) 卡边：原值会撞地板，收到"刚好清空"的值并放行
     #    p_z-origin_z = 3.5 ⇒ max_standoff = 2.25
     s = adapt(3.5, 0.0)
     check("adapt_shrinks_to_fit", abs(s - 2.25) < 1e-9 and not route_refuses(3.5, 0.0, s),
           f"卡边时收到 {s}（应 2.25）且能放行")
     check("adapt_stays_within_range", LO <= s <= HI, f"落在 [{LO},{HI}] 内")
 
-    # C) 极低：连 1.5 都不够 ⇒ 仍拒绝（硬底线保留，不贴腹部）
+    # C) ★ 本轮核心：泰坦离地较近（p_z-origin_z = 2.5）时
+    #    旧 LO=1.5 ⇒ 余量 1.25 < 1.5 ⇒ 整颗放弃（用户报的"贴地不引爆"）。
+    #    新 LO=0.5 ⇒ 用余量 1.25 放行，爆点**在腹部下方 1.25 m**（贴着腹部，伤害集中）。
     s = adapt(2.5, 0.0)
-    check("adapt_keeps_hard_floor", s == LO and route_refuses(2.5, 0.0, s),
-          f"连 {LO} 都不够时仍拒绝（standoff={s}）")
+    check("adapt_near_ground_now_works", abs(s - 1.25) < 1e-9 and not route_refuses(2.5, 0.0, s),
+          f"余量 1.25 ≥ LO=0.5 ⇒ 放行，爆点离腹部 {s} m（旧版会放弃）")
+
+    # C2) 极贴地（余量 < LO）⇒ 取 LO 并拒绝：不把爆点压到泰坦身体里
+    s = adapt(1.4, 0.0)
+    check("adapt_keeps_hard_floor", s == LO and route_refuses(1.4, 0.0, s),
+          f"余量 0.15 < {LO} ⇒ 取 LO={LO} 并拒绝（保留底线）")
 
     # D) 单调性：净空越差，standoff 越小（或触底）
     prev = None
@@ -1520,16 +1567,20 @@ def test_adaptive_standoff():
     check("adapt_impl_formula",
           "target.point[3]-(target.origin[3]+1.25)" in code
           and "route_standoff=math.max(lo,max_standoff)" in code,
-          "实现公式与规格镜像一致")
+          "实现公式与规格镜像一致（离地余量保持上游 1.25）")
     check("adapt_upper_bound_is_config",
           "route_standoff=env.titan_standoff" in code,
           "上限取 env.titan_standoff（配置值 2.5），不是硬编码")
     check("adapt_lower_bound_is_config",
-          "env.titan_standoff_min or 1.5" in code and "titan_standoff_min=1.5" in e,
-          "下限取 env.titan_standoff_min（配置值 1.5），可调")
-    check("adapt_does_not_touch_guarded_route",
-          "max_standoff" not in route and "insufficient blast standoff clearance" in route,
-          "★ titan_route 逐字节未动，仍是硬拒绝")
+          "env.titan_standoff_min or 0.5" in code and "titan_standoff_min=0.5" in e,
+          "★ 下限取 env.titan_standoff_min（2026-09-30 定为 0.5：让爆点能贴近腹部），可调")
+    check("adapt_caller_keeps_hard_reject_in_route",
+          "max_standoff" not in route_code and "insufficient blast standoff clearance" in route,
+          "★ titan_route 仍是**硬拒绝**（自适应逻辑只在调用方，没搬进守卫文件）")
+    check("adapt_floor_margin_synced",
+          "target.origin[3]+1.25" in route and "target.origin[3]+1.25" in code,
+          "★ 离地余量 1.25 在**守卫文件与调用方两处一致**"
+          "（不一致会让算出的 standoff 仍被这里拒绝）")
     check("adapt_uses_actual_standoff_in_diag",
           "local standoff=route_standoff or env.titan_standoff or 0" in aim,
           "净空诊断报告**实际使用**的 standoff，不报名义值（防误导）")
@@ -1543,21 +1594,20 @@ def test_clearance_diagnostics_placement():
     print("=== ⑱ ★ 净空诊断必须放在非守卫文件里，且公式自洽 ===")
     aim = (ROOT / "src/g60" / "native_titan_aim.lua").read_text(encoding="utf-8")
     route = (ROOT / "src/g60" / "titan_route.lua").read_text(encoding="utf-8")
+    # ★ 判"某个字符串在不在守卫文件里"必须**先剥掉注释** ——
+    #   2026-09-30 我在 titan_route 的注释里提到 `titan_clearance` / `max_standoff`
+    #   ⇒ 带注释比对会假失败（注释不是代码，不该参与这类判据）。
+    route_code = "\n".join(l for l in route.splitlines() if not l.strip().startswith("--"))
 
-    # ★ 2026-09-29：用户想优化"泰坦贴地就放弃"，但 titan_route.lua 属于
-    #   `untouched:`（安全层逐字节不可变）守卫，上游还有一条测试明令
-    #   "refuses instead of moving the blast back against the belly"
-    #   ⇒ standoff 不能缩、爆点不能往腹部压。
-    #   ⇒ 诊断只能补在**调用方**（native_titan_aim），不能为取证去改守卫文件。
     check("clearance_diag_in_aim_not_route",
-          "titan_clearance" in aim and "titan_clearance" not in route,
-          "★ 诊断在 native_titan_aim（非守卫），titan_route 保持原样")
+          "titan_clearance" in aim and "titan_clearance" not in route_code,
+          "★ 诊断在 native_titan_aim（非守卫），titan_route 的**代码**里不出现")
 
-    # 公式自洽：floor_z = origin_z + 1.25；blast_z = p_z - standoff；short = max(0, floor-blast)
+    # 公式自洽：floor_z = origin_z + 0.5；blast_z = p_z - standoff；short = max(0, floor-blast)
     check("clearance_formula_matches_upstream",
           "o[3]+1.25" in aim and "p[3]-standoff" in aim
           and "math.max(0,(o[3]+1.25)-(p[3]-standoff))" in aim,
-          "诊断公式与 titan_route 的 floor/blast 定义一致（1.25 余量）")
+          "诊断公式与 titan_route 的 floor/blast 定义一致（0.5 余量）")
     check("clearance_reports_need_p_z",
           "need_p_z" in aim and "o[3]+1.25+standoff" in aim,
           "给出还需要多少 p_z 才够，便于直接判断差距")

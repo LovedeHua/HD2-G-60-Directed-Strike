@@ -30,6 +30,21 @@ function M.new(env)
         env.target_allowed=Allowlist.new(env.titan_profile,env.weakpoint_profiles)
     end
     local tracked,serial,frame={},0,0
+    -- ★★ 性能统计 + 空闲降频统一收进**一个 table**（2026-09-30 修实机编译失败）★★
+    --
+    -- 背景：**Lua 5.1 每个函数的 upvalue 上限是 60**（`LUAI_MAXUPVAL`），
+    --   而 `host:tick` 里那个 `pcall(function() ... end)` 已经吃满。
+    --   我此前为诊断/降频按需新增的 **10 个独立 local** 把它顶到 61
+    --   ⇒ **整个 chunk 在游戏里编译失败** ⇒ addon 一行日志都不打
+    --   （表现就是"mod 没生效"：文件已正确部署、游戏日志却毫无记录）。
+    -- ⚠ 本地 `lupa` 跑的是 Lua 5.5（upvalue 上限 255）⇒ 测试全绿、实机全挂，白查一轮。
+    -- 收成一个 local 后，它对 upvalue 的贡献从 10 降到 1。
+    -- 守门：`tests/check_lua51_compile.py`（用游戏自带 lua51.dll 做**真实编译**）。
+    --   · ready_*     —— readiness 每帧缓存（见 jobs_ready）
+    --   · idle_skip   —— 0=每帧观测；>0=空闲时每 N 帧观测一次（见 tick 开头）
+    --   · observe/lreads/lbytes/wframe/window —— perf 窗口统计
+    local P={ready_frame=-1,ready_value=nil,ready_reads=0,
+        idle_skip=0,observe=0,lreads=0,lbytes=0,wframe=0,window=600}
     local frame_errors={}
     local structure_issue_counts={}
     local last_structure_issue
@@ -213,10 +228,38 @@ function M.new(env)
     local EARLY_MIN_AGE=15       -- 至少飞够这么多帧才在早期 state 设目标
     local host={applied=0,aimed=0,skipped=0,disabled=false,native_lifetime_verified=false}
     local function pointer(a) return Layout.pointer(read(a,8),0) end
+    -- ★★★ 每帧只读一次 readiness（2026-09-30 性能优化）★★★
+    --
+    -- `jobs_ready()` = 一次 `Readiness.capture` = **16 次内存读取**。它的调用点很多：
+    --   ① tick 开头（`if not jobs_ready() then ...`）
+    --   ② **每次** `with_observation` 开头
+    --   ③ `scope.validate()` **每次**被 assert 时 —— `native_priority.step` 里
+    --      `assert(scope.validate() and d.validate(),…)` 出现多次，而 validate 第一项
+    --      就是 `jobs_ready()`
+    --   ④ `disposal:step(m, jobs_ready)` 传入的 ready 回调
+    -- 实机一帧内**一颗**在飞的 G-60 就能触发 5~10 次 ⇒ 单这一项可达上百次读取/帧，
+    -- 而同一时刻常有多颗在飞 ⇒ 这是当时最大的可优化项。
+    --
+    -- 缓存论证（为什么与"重读"**等价**，不是削弱同步）：
+    --   `host:tick` 在**引擎主线程**里同步执行 —— 这是我们所有内存读取成立的前提
+    --   （否则读到的每个字节都不可信）。既然引擎不会在我们回调执行期间推进，
+    --   同一帧内 Readiness 的观测值就**不会变** ⇒ 缓存与重读必然同值。
+    --   ⚠ 只在**成功**时缓存；`Readiness.capture` 抛错时照常向上抛（由上层 pcall 处置），
+    --     绝不会把"异常"缓存成"就绪"。
+    -- ★ perf 窗口（2026-09-30）：每 `P.window` 帧打一行，**量化**"一帧到底读了多少"。
+    --   只统计**真实发生**的读（readiness 的缓存命中不计入），否则测不出优化效果。
+    --     ready    = readiness 真实执行次数（优化前应 ≫ 帧数，优化后应 ≈ 帧数）
+    --     observe  = with_observation 次数（≈ 本窗口"每颗 G-60 的引导步数"合计）
+    --     layout_* = Layout.capture 的读次数/字节（每帧无条件一次）
+    --   ⚠ 所有计数器都在 `P` table 里（见上方注释：Lua 5.1 的 60 upvalue 上限）。
     local function jobs_ready()
+        if P.ready_frame==frame then return P.ready_value end
         local r=Readiness.capture(read,base,env.exe,env.thread(),{matches={}},nil)
-        return r.engine_main_thread_observed and r.world_job_completion==1
+        P.ready_value=r.engine_main_thread_observed and r.world_job_completion==1
             and r.context_job_busy==0 and r.context_job_active==0
+        P.ready_frame=frame
+        P.ready_reads=P.ready_reads+1
+        return P.ready_value
     end
     local function release_all()
         for _,t in pairs(tracked) do runner:release(t.ref) end
@@ -229,6 +272,7 @@ function M.new(env)
     local function with_observation(ref,callback)
         assert(current and U.key(ref)==U.key(current.ref),'expired observation key')
         assert(jobs_ready(),'thread or jobs not ready')
+        P.observe=P.observe+1      -- perf 诊断（见 P.window）
         local track=tracked[current.match.id]
         local opts
         if env.experimental_event_window then
@@ -298,11 +342,46 @@ function M.new(env)
     function host:tick()
         if self.disabled then return end
         frame=frame+1
+        -- ★★★ 空闲降频（2026-09-30 性能优化第二项）★★★
+        --
+        -- 实机 `perf` 行：**没有任何 G-60 在场**时 `layout_reads≈93~100 读/帧`，
+        -- 而且这些读**全部**是 `Layout.capture` 遍历 behavior 数组去找 G-60 的成本
+        -- （数组常驻约 55 项 ⇒ 55 次 identity 读 + 队列/头/guards 等）。
+        -- 用户反馈"G60 没投掷时也有挺大的性能开销" —— 说的正是这部分**纯空转**：
+        -- 没有手雷时我们仍然每帧把整张数组扫一遍，只为确认"还是没有"。
+        --
+        -- 处置：上一次捕获**没有任何 G-60** ⇒ 之后隔 3 帧才做一次完整观测；
+        -- 一旦任一帧发现 G-60 立即恢复每帧（`P.idle_skip=0`），直到它消失。
+        --
+        -- 代价（知情）：投掷后最多延迟 2 帧被发现 ≈ 33 ms @60fps ——
+        --   远小于 G-60 从投掷到可接管 state-4 的时间（`EARLY_MIN_AGE`≥15 帧）。
+        --   标记（ping）读取同样最多延迟这么多帧；标记在 UI ring 里**持续存在**
+        --   （`age<duration`，数秒），因此不会因降频而漏掉。
+        -- 安全性：无 G-60 时本帧**不做任何写**，跳过观测不改变任何行为，
+        --   只是"晚一点知道有手雷出现"。
+        if P.idle_skip>0 and (frame%P.idle_skip)~=0 then return end
         local ok,why=pcall(function()
             -- Keep observation keys across a skipped frame so an owned Titan
             -- waypoint can be cleaned up on the next eligible update.
             if not jobs_ready() then current=nil;return end
             local observed=Layout.capture(read,base)
+            P.lreads=P.lreads+observed.read_calls      -- perf 窗口累计
+            P.lbytes=P.lbytes+observed.bytes_read
+            -- ★ 空闲降频状态（见 tick 开头）：有 G-60 ⇒ 每帧（0）；没有 ⇒ 隔 3 帧
+            P.idle_skip=(#observed.matches>0) and 0 or 3
+            -- ★ perf 窗口打点（2026-09-30 性能优化）★
+            --   放在 capture 之后、**任何早退之前**：游戏繁忙时 tick 会在下面
+            --   `queues_complete=false` 处直接 return；若把打点放到 tick 末尾，
+            --   繁忙局就**永远看不到 perf 行** —— 而"繁忙"恰恰是最需要量化的场景。
+            --   放在这里保证只要 capture 成功就一定能采样（窗口对早退帧也计数）。
+            if frame-P.wframe>=P.window then
+                local span=frame-P.wframe
+                P.wframe=frame
+                env.emit('perf;frame='..frame..';frames='..span
+                    ..';ready='..P.ready_reads..';observe='..P.observe
+                    ..';layout_reads='..P.lreads..';layout_bytes='..P.lbytes)
+                P.ready_reads,P.observe,P.lreads,P.lbytes=0,0,0,0
+            end
             if not observed.all_observed_queues_complete or observed.update_mode~=0
                 or observed.root_flags[1]~=1 or observed.root_flags[2]~=0 or observed.root_flags[3]~=0 then
                 if ping then ping:reset() end

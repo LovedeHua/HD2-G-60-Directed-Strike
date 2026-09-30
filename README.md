@@ -113,6 +113,24 @@ ef04cb84d097a497 → content/fac_bugs/cha_strider/cha_strider_gloom
 > 支持泰坦用的是上游 `titan_profile.lua` + `titan_route.lua` 里**本来就为泰坦标定**的那套几何
 > （`RADIUS=12` / `standoff=2.5`），不是照抄别人的参数，也不是为虫洞标定的值。
 
+> ★ **2026-09-30：到达判定试过"球形"，实机效果很差 ⇒ 已回滚为上游的圆柱。**
+> 试过的版本是 `dx²+dy²+dz² ≤ r²`（各向同性，期望"靠够了就炸"），但实测判定为**明显变差**
+> ⇒ 形状不再动，只调数值。记录在此避免以后再试一遍。
+> 当前判定 = **圆柱**：水平 `dx²+dy² ≤ r²` 且 `-depth ≤ dz ≤ above`。
+>
+> **当前参数**（`above` 是 2026-09-28 为让绕飞中的 G-60 在洞口/腹部**上方**也能引爆而加的；
+> 不配时 `above=0`，行为与上游一致）：
+>
+> | 目标 | 参数 | 来源 |
+> |---|---|---|
+> | 吐酸泰坦 / 孢子泰坦 | `radius=2.0` / `depth=1.2` / `above=1.2` | `env.titan_arrival_region`（`entry`） |
+> | 蟑龙（thorax） | `radius=1.75` / `depth=0.8` / 无 `above` | `weakpoint_profiles` 的 `960b48a421a3faaa.region` |
+>
+> 虫洞走 `kind='entrance'` 盒状分支，**不受影响**。
+>
+> ⚠ 参数分工：「**侧面/斜上**」只受 `radius` 限制（水平=r、dz=h 处水平=√(r²−h²)），
+> 「**上方**」才受 `above` 限制 —— 想放宽斜上时别去动 `above`。
+
 **不接管**：`weakpoint_profiles.lua` 里另外登记的 5 种敌人 —— 穿刺者（Impaler）、
 孢子冲锋兵（Spore Charger）、冲锋兵巨兽（Charger Behemoth ×3）、冲锋兵（Charger）。
 它们仍由引擎原生 TargetLock 处理。
@@ -155,10 +173,18 @@ ef04cb84d097a497 → content/fac_bugs/cha_strider/cha_strider_gloom
   （这是刻意设计：宁可不做，也不要在错误的地址上执行原生调用）。
 - **`native_lifetime_verified=false`**：上游自己标注"原生对象生命周期证明未完成"。
 - **不是寻路器**：爆点来自模型节点换算，地形/移动目标/虫腿仍可能干扰。
-- **泰坦离地太近时会主动放弃**：`titan_route` 要求爆点在地面之上，泰坦贴地时
-  `standoff=2.5` 会落到地面以下 ⇒ 日志出现
-  `titan_skipped;reason=Titan has insufficient blast standoff clearance`。
-  这是保护设计（避免炸到地面），不是缺陷。
+- **泰坦离地太近** —— 这一条有两个**方向相反**的旋钮，别搞混：
+  | 旋钮 | 位置 | 作用 | 调大的后果 |
+  |---|---|---|---|
+  | `FLOOR_MARGIN`（**保持上游 1.25**） | `titan_route`，守卫文件 | 爆点相对**泰坦根部**的最低高度 | 更严（更早放弃） |
+  | `titan_standoff_min`（**2026-09-30: 1.5 → 0.5**） | `entry`，调用方 | `standoff` 最小能缩到多少 | 爆点离腹部更远 |
+  **用户真正要的是"爆点贴近腹部"** ⇒ 该放的是 `standoff` 下限，**不是** `FLOOR_MARGIN`。
+  （曾误降 `FLOOR_MARGIN` 到 0.5：那只会允许爆点更低，而腹部在高处 ⇒
+  实测"离腹部太远、离地面太近、炸不死泰坦"，已回滚；`titan_route.lua` 也**恢复逐字节上游**。）
+  现在的行为：净空充足用 `standoff=2.5`；受限时收到"刚好清空地板"的值，**最低 0.5**
+  （爆点贴着腹部 ⇒ 伤害集中）；连 0.5 都放不下（泰坦几乎贴地）时仍拒绝。
+  接管门槛由 `p_z−origin_z ≥ 2.75` 降到 **`≥ 1.75`**。
+  日志：`titan_standoff_adapted`（实际用的 standoff）/ `titan_clearance`（差多少）。
 - **多颗 G-60 同时锁定同一目标**：先到的炸掉后，后来的会识别为"爆炸已触发"并收尾
   （`arrival_already_exploded`），不会无限盘旋。
 
@@ -176,13 +202,67 @@ ef04cb84d097a497 → content/fac_bugs/cha_strider/cha_strider_gloom
 
 > **清单覆盖 ≠ 实机验证**，两者必须分开看。
 
+## 性能（每帧开销）
+
+mod 挂 `update`，每帧走一次 `tick`。口径：`tests/test_perf_probe.py`（每帧固定两件事）+
+`tests/test_runtime_perf.py`（缓存回归）。
+
+| 项 | 每帧 | 说明 |
+|---|---|---|
+| `Layout.capture` | ~40 读 / 3.3 KB | 无条件一次（五个引擎队列 + behavior 数组） |
+| `Readiness.capture` | **1 次**（优化前 5~10 次） | 2026-09-30 起按帧缓存，见下 |
+| `with_observation` | 每颗在飞的 G-60、每步 1 次 | 内含 `Search.capture`（~30–50 读） |
+
+**2026-09-30 优化：`jobs_ready()` 按帧缓存。** 优化前它的调用点有
+① tick 开头 ② 每次 `with_observation` 开头 ③ **`scope.validate()` 每次被 assert 时**
+（`native_priority.step` 里出现多次）④ `disposal:step` 的 ready 回调 ——
+一帧内**一颗**在飞的 G-60 就能触发 5~10 次，即 80~160 次读取/帧，多颗并发时是帧读取量的绝对大头。
+缓存依据：`host:tick` 在**引擎主线程**里同步执行（所有读成立的前提）⇒ 同帧内 Readiness 观测值
+不变 ⇒ 缓存与重读等价。**只在成功时缓存**，`Readiness.capture` 抛错照常上抛。
+
+`perf` 行（每 600 帧 ≈ 10 秒一条，已进日志白名单）给出实测：
+
+```
+perf;frame=N;frames=K;ready=R;observe=O;layout_reads=L;layout_bytes=B
+```
+
+`ready` 应≈ `frames`（缓存生效）；若接近 `frames` 的 5 倍以上，说明缓存没起作用。
+
+**2026-09-30 优化二：空闲降频。** 实机 `perf` 显示**没有 G-60 在场**时
+`layout_reads≈93~100 读/帧`，且全部来自 `Layout.capture` 遍历 behavior 数组找 G-60
+（数组常驻 ~55 项 ⇒ 55 次 identity 读 + 队列/头/guards）。用户反馈"没投掷时也有开销"
+指的就是这部分纯空转。处置：上一次捕获**没有任何 G-60** ⇒ 之后隔 `IDLE_DIV=3` 帧才
+观测一次；一旦发现 G-60 立即恢复每帧。代价：投掷后最多延迟 2 帧（≈33 ms）被发现，
+远小于 G-60 到可接管 state-4 的时间（`EARLY_MIN_AGE`≥15 帧）；标记在 UI ring 里持续
+数秒，不会漏读。
+
 ## 构建
 
 ```sh
 python -B scripts/build.py       # 出包 -> dist/G60-BugHole-Lock-0.1.0.zip
 python -B scripts/run_tests.py   # 跑测试（本机无 luajit/lua，用 lupa 跑）
-python -B tests/test_bughole_scope.py   # 裁剪点 + 产物级验证
+python -B tests/test_bughole_scope.py           # 裁剪点 + 产物级验证
+python -B tests/lua_syntax.py                   # 40 个模块语法（lupa/Lua 5.5）
+python -B tests/check_lua51_compile.py          # ★ 用游戏自带 lua51.dll 做**真实编译**（Lua 5.1）
+python -B tests/test_priority_fault_isolation.py  # 故障域隔离 + 通用接管 + sticky
+python -B tests/test_runtime_perf.py            # 每帧读取开销回归
 ```
+
+> ### ⚠️ 为什么必须跑 `check_lua51_compile.py`
+> 本地其余检查都跑在 **lupa = Lua 5.5**，而游戏是 **Lua 5.1**。两者**函数级上限不同**：
+>
+> | 限制 | Lua 5.1 / LuaJIT | Lua 5.5（lupa） |
+> |---|---|---|
+> | 每函数 **upvalue** 数 | **60** | 255 |
+> | 每函数 local 数 | 200 | 200 |
+>
+> **2026-09-30 实机事故**：为性能诊断往 `M.new` 加了 10 个独立局部变量，
+> `host:tick` 内那个 `pcall(function() … end)` 的 upvalue 被顶到 **61 > 60**
+> ⇒ **整个 chunk 编译失败** ⇒ 文件已正确部署、游戏日志却**一行都没有**（表现为"mod 没生效"）。
+> 而 `lua_syntax.py`（5.5）**全绿**，硬是绕了一大圈才定位。
+> ⇒ 该脚本用**游戏自己的 `bin/lua51.dll`** 编译 `build/entry.lua` + `src/g60/*.lua`，
+> 等价于实机加载期检查；路径可用环境变量 `G60_LUA51` 覆盖，找不到时自动 SKIP（换机不误报）。
+> **教训**：往 `M.new` 这类大函数里加独立局部变量前，先跑这个脚本；宁可直接塞进一个 table。
 
 `scripts/run_tests.py` 会跳过 13 个 `*_windows` 套件——它们需要
 `scripts/test_windows.py` 编译 `tests/native_minimal_fixture.c` 成 DLL 并用 Windows Lua 注入
@@ -510,6 +590,14 @@ G-60 #1116: 锁定567 -> 锁定561 -> 炸561
 **修法**：已在飞向某个虫洞的 G-60 **保持忠实**（sticky），只有该虫洞确实不可用
 （实体消失 / `target_valid` 为假 / 超出 200m / unit 变了）才允许改投，并发
 `structure_lock_lost` 诊断行区分原因。
+
+**2026-09-30 补记（通用目标接管引入后暴露的缺口）**：sticky 的"可用性复核"原本
+**只认虫洞白名单**（`structure_profiles`）。通用标记目标接管加入后，`previous.generic`
+的目标每次都被判 `RESOURCE_NOT_IN_WHITELIST` ⇒ **每轮丢锁再重锁**（实机单局 66 次
+`structure_lock_lost;RESOURCE_NOT_IN_WHITELIST`），表现为"通用目标不忠实 + 白算一遍"。
+修法：sticky 对通用目标改走与新标记路径**同一套**复核 `generic_validate`
+（`target_valid` 硬门槛 + 实体/identity 复核 + `d.position`），**不查虫洞白名单**；
+两处共用同一实现，避免"只改一份副本"（本文件 334-338 行记过同类事故）。
 
 #### 原因二：8 个同样能标记的虫巢类型不在清单里（裁剪 J）
 

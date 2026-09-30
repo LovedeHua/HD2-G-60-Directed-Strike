@@ -41,6 +41,12 @@ function M.step(now,own,goal,terminal,key,previous,region)
         --   高度够低的(dz=-0.03/-0.48)水平距离又是 1.79/2.22（超出 1.75）。
         --   **两个条件互斥 ⇒ G-60 在洞口绕圈 250 帧也从不引爆**（structure_stalled）。
         --   现在允许在洞口**上方** above 米以内引爆；不配 above 时行为与上游一致。
+        --
+        -- ★★ 2026-09-30：球形判定（`dx²+dy²+dz²<=radius²`）**试过一版，实机效果很差，
+        --   已回滚**为下面这个圆柱。教训：圆柱"水平/垂直各自独立"在纸面上看反直觉
+        --   （水平 1.9+dz 1.15 通过、水平 0.2+dz 0.9 被拒），但它是**上游按泰坦体型
+        --   标定过的**；擅自改成各向同性会连带改变 G-60 的接近姿态与引爆时机，
+        --   用户实测判定为明显变差 ⇒ 形状不再动，只调数值。
         local above=region.above or 0
         assert(type(above)=='number' and above>=0 and above<=2,'arrival region above')
         arrived=dx*dx+dy*dy<=region.radius^2 and dz<=above and dz>=-region.depth

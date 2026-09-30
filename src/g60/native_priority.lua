@@ -148,6 +148,45 @@ function M.new(env)
                 end
                 row.unit=unit;return true
             end
+            -- ★★★ 通用目标的统一复核（2026-09-30）★★★
+            --
+            -- 通用目标有**两个**进入点：
+            --   ① 新标记    —— structure_mark 分支（本文件下方）
+            --   ② sticky 复用 —— previous.generic（本轮新增）
+            -- 两条路必须用**同一套**判据。本文件 334-338 行记过同类事故
+            -- （两个 sticky 分支只给一份加白名单复核 ⇒ 越界溜进来），
+            -- 所以这里抽成单一实现，两处都调它，杜绝"只改一份副本"。
+            --
+            -- 与虫洞路径的**刻意差别**：
+            --   · `target_valid` 是**硬门槛**（false 直接拒）。通用目标不需要绕过
+            --     索敌，正好用它排除友方（引擎索敌不锁友方）。虫洞那边因为没有
+            --     HealthComponent 被它判 false，只能降级成软信号 —— 两者不同源。
+            --   · **不查虫洞白名单**（env.structure_profiles）。通用目标本来就不在
+            --     里面；旧 sticky 只认白名单 ⇒ 通用锁每轮都被判"不在白名单"而丢弃，
+            --     实机表现为 66 次 `structure_lock_lost;RESOURCE_NOT_IN_WHITELIST`。
+            -- 返回：row（成功）/ nil + detail（失败原因，用于日志与 diagnostic）。
+            local function generic_validate(e)
+                if not e then return nil,'ENTITY_GONE' end
+                local ok_valid,valid_now=pcall(function()
+                    return scope.calls.target_valid(nil,e.id,
+                        ffi.cast('const void *',e.address))
+                end)
+                if not ok_valid then return nil,'TARGET_VALID_QUERY_FAILED' end
+                if not valid_now then return nil,'NOT_VALID_TARGET' end
+                local ok_unit,unit=pcall(d.unit,e)
+                local ok_ro,ro_why=readonly_alive(e.id,e.identity)
+                if not ok_unit or not unit then return nil,'UNIT_MISSING' end
+                if not ok_ro then return nil,tostring(ro_why) end
+                local ok_pos,p=pcall(d.position,e)
+                if not ok_pos or not p then return nil,'POSITION_UNREADABLE' end
+                local distance=0
+                for k=1,3 do distance=distance+(p[k]-own[k])^2 end
+                if distance>=40000 then return nil,'OUT_OF_RANGE' end
+                local raw=ffi.new('uint8_t[80]',record:sub(0x19,0x68))
+                ffi.cast('uint32_t *',raw)[0]=e.id
+                return {entity=e,raw=ffi.string(raw,80),score=1,unit=unit,
+                    marked_structure=true,generic=true,point=p}
+            end
             local chosen,reason,mark_candidate,chosen_mark_index
             -- An explicit structure mark may interrupt an existing enemy lock.
             -- Never discover structures from the automatic candidate list.
@@ -165,23 +204,39 @@ function M.new(env)
             -- 只有该虫洞确实不可用（实体消失/已爆/被摧毁）时才允许改投别的标记。
             if previous and previous.marked_structure then
                 local e=d.entity(previous.id)
-                -- ★ sticky 复用也必须过白名单 ★
-                -- 虫洞被摧毁后，实体 id 可能被引擎复用给另一个对象
-                -- （2026-09-27 发生过 id 复用导致写错目标的实机事故）。
-                -- 若只靠 previous.marked_structure 这个**历史标志**就复用，
-                -- 就可能把非虫洞当成"原目标"继续接管 ⇒ 越界。
-                -- 所以每次复用都重新核对当前实体的 resource。
-                local whitelisted=e and env.structure_profiles
-                    and env.structure_profiles[e.resource]
-                local row=whitelisted and {entity=e,raw=previous.raw,score=previous.score,
-                    unit=previous.unit,marked_structure=true,
-                    point=previous.point,point_bytes=previous.point_bytes}
-                if row and eligible(row,previous) then chosen,reason=row,'LOCKED' end
-                if not chosen and env.emit then
-                    env.emit('structure_lock_lost;target='..tostring(previous.id)
-                        ..';detail='..(whitelisted
-                            and 'NO_LONGER_ELIGIBLE'
-                            or (e and 'RESOURCE_NOT_IN_WHITELIST' or 'ENTITY_GONE')))
+                if previous.generic then
+                    -- ★ 通用目标的 sticky（2026-09-30）★
+                    -- 与虫洞走**不同**的复核：通用目标不在虫洞白名单里，
+                    -- 旧逻辑每轮都把它判成 RESOURCE_NOT_IN_WHITELIST 而丢锁
+                    -- （实机 66 次 `structure_lock_lost;RESOURCE_NOT_IN_WHITELIST`），
+                    -- 表现为"通用目标不忠实 + 每轮重锁"。
+                    -- 现在走 generic_validate —— 与新标记路径**同一套**判据，
+                    -- 既保住 id 复用 / 友方 / 死亡复核，又让通用锁真正 sticky。
+                    local row,detail=generic_validate(e)
+                    if row then chosen,reason=row,'LOCKED'
+                    elseif env.emit then
+                        env.emit('structure_lock_lost;target='..tostring(previous.id)
+                            ..';detail='..tostring(detail)..';generic=true')
+                    end
+                else
+                    -- ★ sticky 复用也必须过白名单 ★
+                    -- 虫洞被摧毁后，实体 id 可能被引擎复用给另一个对象
+                    -- （2026-09-27 发生过 id 复用导致写错目标的实机事故）。
+                    -- 若只靠 previous.marked_structure 这个**历史标志**就复用，
+                    -- 就可能把非虫洞当成"原目标"继续接管 ⇒ 越界。
+                    -- 所以每次复用都重新核对当前实体的 resource。
+                    local whitelisted=e and env.structure_profiles
+                        and env.structure_profiles[e.resource]
+                    local row=whitelisted and {entity=e,raw=previous.raw,score=previous.score,
+                        unit=previous.unit,marked_structure=true,
+                        point=previous.point,point_bytes=previous.point_bytes}
+                    if row and eligible(row,previous) then chosen,reason=row,'LOCKED' end
+                    if not chosen and env.emit then
+                        env.emit('structure_lock_lost;target='..tostring(previous.id)
+                            ..';detail='..(whitelisted
+                                and 'NO_LONGER_ELIGIBLE'
+                                or (e and 'RESOURCE_NOT_IN_WHITELIST' or 'ENTITY_GONE')))
+                    end
                 end
             end
             if not chosen and structure_mark and env.structure_profiles then
@@ -228,37 +283,13 @@ function M.new(env)
                         -- ▸ 引爆位置**交给引擎**（arrival 段在 goal=nil 时调 calls.aim），
                         --   这里只提供点用于距离判定与 setter。
                         if env.generic_takeover_enabled~=false and e then
-                            local detail
-                            local ok_valid,valid=pcall(function()
-                                return scope.calls.target_valid(nil,e.id,
-                                    ffi.cast('const void *',e.address))
-                            end)
-                            if not ok_valid then detail='TARGET_VALID_QUERY_FAILED'
-                            elseif not valid then detail='NOT_VALID_TARGET'
-                            else
-                                local ok_unit,unit=pcall(d.unit,e)
-                                local ok_pos,p=pcall(d.position,e)
-                                local ok_ro,ro_why=readonly_alive(e.id,e.identity)
-                                if not ok_unit or not unit then detail='UNIT_MISSING'
-                                elseif not ok_ro then detail=tostring(ro_why)
-                                elseif not ok_pos or not p then detail='POSITION_UNREADABLE'
-                                else
-                                    local distance=0
-                                    for k=1,3 do distance=distance+(p[k]-own[k])^2 end
-                                    if distance>=40000 then detail='OUT_OF_RANGE'
-                                    else
-                                        local raw=ffi.new('uint8_t[80]',record:sub(0x19,0x68))
-                                        ffi.cast('uint32_t *',raw)[0]=e.id
-                                        return {entity=e,raw=ffi.string(raw,80),score=1,
-                                            unit=unit,marked_structure=true,generic=true,
-                                            point=p}
-                                    end
-                                end
-                            end
+                            -- 走统一复核（与 sticky 的通用分支同一实现）。
+                            local grow,gdetail=generic_validate(e)
+                            if grow then return grow end
                             if env.emit and not M.rejected_targets[structure_mark.id] then
                                 M.rejected_targets[structure_mark.id]=true
                                 env.emit('generic_rejected;target='..tostring(structure_mark.id)
-                                    ..';resource='..tostring(e.resource)..';detail='..detail)
+                                    ..';resource='..tostring(e.resource)..';detail='..tostring(gdetail))
                             end
                         end
                         if env.emit and not M.rejected_targets[structure_mark.id] then

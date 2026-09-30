@@ -134,11 +134,21 @@ function M.new(env)
                     -- titan_route 的净空判定是**硬拒绝**：
                     --     blast_z(=p_z-standoff) >= floor_z(=origin_z+1.25)
                     -- ⇒ 要求 p_z >= origin_z + 1.25 + standoff
+                    --   ★ 2026-09-30：离地余量**保持上游原值 1.25**（不动）——
+                    --     降它只会让爆点更低、更远离腹部（实机：离腹部远、贴地、炸不死泰坦）。
+                    --     真正该放宽的是**下限 `lo`**：让 standoff 能缩到更小，
+                    --     即爆点贴近腹部（伤害集中）。现已收到 0.5。
                     -- 泰坦站姿/坡度稍变就踩线（实测 4 次接管有 1 次因此放弃 = 25%）。
                     --
                     -- 用户授权把 standoff 从 2.5 收到 1.5 ⇒ 在**调用方**算出
                     -- "刚好能清空地板"的值再传进去。`titan_route.lua` 因此保持
                     -- 逐字节不变（它是 tests/test_bughole_scope.py 的 `untouched:` 安全层）。
+                    --
+                    -- ★ 2026-09-30：曾把 floor 余量（1.25）与 standoff 下限（→0/0.5）
+                    --   先后调小试验，**实机效果都不好，已全部回滚到本行这一版**：
+                    --   floor 余量回到上游的 1.25（titan_route 逐字节恢复），
+                    --   standoff 自适应范围回到用户授权的 1.5~2.5。
+                    --   ⇒ 教训：这条净空链上的数值是上游按泰坦体型标定的，别再逐项试小。
                     --
                     -- ⚠️ 与上游意图的取舍（必须记录）：上游有一条测试写明
                     --   "refuses instead of moving the blast back against the belly"，
@@ -147,7 +157,7 @@ function M.new(env)
                     --   max_standoff 连 1.5 都不到时 Route.step 依然拒绝 —— 硬底线保留。
                     local max_standoff=target.point[3]-(target.origin[3]+1.25)
                     if route_standoff and route_standoff>0 and max_standoff<route_standoff then
-                        local lo=env.titan_standoff_min or 1.5
+                        local lo=env.titan_standoff_min or 0.5
                         route_standoff=math.max(lo,max_standoff)
                         local tag=tostring(target.id)..'|'..string.format('%.2f',route_standoff)
                         if env.emit and not standoff_logged[tag] then
