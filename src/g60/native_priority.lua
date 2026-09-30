@@ -449,8 +449,14 @@ function M.new(env)
                 end
                 return {kind='lock',reason=reason,changed=mutated,
                     record=after,resource=chosen.entity.resource,
+                    -- ★ generic 必须带下去（2026-10-01）★
+                    --   这就是运行时存进 `old.lock` 的那张表 ⇒ 漏了它，
+                    --   下一帧 `previous.generic` 恒 nil ⇒ 通用 sticky 分支永不执行。
+                    --   （另一处同类构造在下方主路径，两处必须一起改 ——
+                    --     本文件 366-370 行记过"只给一份加复核 ⇒ 越界溜进来"的教训。）
                     track={id=chosen.entity.id,identity=chosen.entity.identity,unit=chosen.unit,
                         raw=chosen.raw,score=chosen.score,marked_structure=true,
+                        generic=chosen.generic,
                         point=chosen.point,point_bytes=point_bytes}}
             end
             local same_selection=c.selection.has_target and c.selection.id==chosen.entity.id
@@ -478,9 +484,22 @@ function M.new(env)
                 -- marked_structure 不会阻止它被存进 old.lock，于是这个"锁"
                 -- 既不受 take_gate 的 no_mark_no_hold 保护，也不受白名单保护
                 -- （越界的另一半原因）。这里改成缺省即拒绝，fail-closed。
+                --
+                -- ★★ `generic` 必须一起带下去（2026-10-01 实机取证）★★
+                --   本表就是运行时存进 `old.lock` 的对象；漏掉 `generic` 会让
+                --   下一帧 `previous.generic` 恒为 nil ⇒ 上面那个"通用目标的 sticky"
+                --   分支**永不执行**（只有这一处读 `.generic`，也只有 generic_validate
+                --   一处写它）⇒ 通用目标每帧从当前标记重新派生、不忠实，
+                --   并把 `structure_lock_lost;RESOURCE_NOT_IN_WHITELIST` 刷成误导性日志
+                --   （它本就不该出现在虫洞白名单里）。
+                --   实机双重铁证（23:39 那局）：① 该分支的日志后缀 `;generic=true`
+                --   全日志 0 次；② 24 条 lock_lost **100% 落在非白名单目标**
+                --   （强袭虫 ×9 / 穿刺虫 ×3 / 抚育喷涌虫 ×2 / 孢子强袭虫 / 阿尔法指挥官），
+                --   而真虫洞 MK8/MK9 一次都没丢锁。
                 track=chosen.marked_structure and
                     {id=chosen.entity.id,identity=chosen.entity.identity,unit=chosen.unit,
-                     raw=chosen.raw,score=chosen.score,marked_structure=true} or nil}
+                     raw=chosen.raw,score=chosen.score,marked_structure=true,
+                     generic=chosen.generic} or nil}
         end)
         busy=false
         if not ok then

@@ -1180,6 +1180,36 @@ def test_no_lock_path_bypasses_whitelist():
           and "marked_structure=chosen.marked_structure" not in code,
           "★ marked_structure 缺省时直接不返回 lock（不存 nil 锁）")
 
+    # ★★ 2026-10-01：`generic` 必须随 `track` 一起带下去 ★★
+    #   `track` 就是运行时存进 `old.lock` 的那张表。漏掉 `generic` ⇒ 下一帧
+    #   `previous.generic` 恒为 nil ⇒ 上面那个「通用目标的 sticky」分支**永不执行**
+    #   （全仓只有一处读 `.generic`、也只有 generic_validate 一处写它）。
+    #
+    #   实机双重铁证（23:39 那局）：
+    #     ① 该分支独有的日志后缀 `;generic=true` —— 全日志 **0 次**；
+    #     ② 24 条 `structure_lock_lost;RESOURCE_NOT_IN_WHITELIST` **100% 落在
+    #        非白名单目标**（强袭虫 ×9 / 穿刺虫 ×3 / 抚育喷涌虫 ×2 / 孢子强袭虫 /
+    #        阿尔法指挥官），而真虫洞 MK8/MK9 **一次都没丢锁**。
+    #
+    #   这里做**穷举**断言：每一处 `track={` 表里都必须有 `generic=`，
+    #   不允许只改一份（本文件 366-370 行记过"只改一份 ⇒ 越界溜进来"的教训）。
+    #   ⚠ 锚点用 `{id=chosen.entity.id,identity=…`：第二处写的是
+    #     `track=chosen.marked_structure and\n    {id=…`（`track=` 与 `{` 之间隔了换行），
+    #     所以 `track=\{` 只能命中一处 —— 我第一版就踩了这个，断言反而"找到 1 处"。
+    tracks = [m.start() for m in
+              re.finditer(r"\{id=chosen\.entity\.id,identity=chosen\.entity\.identity", code)]
+    check("track_constructions_found", len(tracks) == 2,
+          f"track 构造 {len(tracks)} 处（早期路径 + 主路径，两处都要带 generic）")
+    missing = []
+    for i, at in enumerate(tracks):
+        end = tracks[i + 1] if i + 1 < len(tracks) else len(code)
+        if "generic=" not in code[at:end][:700]:
+            missing.append(at)
+    check("track_never_drops_generic", not missing,
+          "★ 每处 track 都带 generic（否则通用锁永不 sticky，"
+          "且 lock_lost 打出误导性的 RESOURCE_NOT_IN_WHITELIST）"
+          + (f"，缺: {missing}" if missing else ""))
+
     # 反向断言：**每个** LOCKED / chosen 赋值点之前必须有**对应**的复核。
     # 窗口取到上一个锚点为止（不固定字符数 —— 注释多几行就误判，踩过）。
     _i_gs = code.index("if previous.generic then")

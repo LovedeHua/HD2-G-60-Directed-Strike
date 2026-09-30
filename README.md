@@ -194,6 +194,7 @@ ef04cb84d097a497 → content/fac_bugs/cha_strider/cha_strider_gloom
 | `arrival_detonated;entity=…;distance=…` | **到达并引爆** |
 | `titan_aim;…;point=…` | 虫洞瞄准点（结构 profile 换算出来的爆点） |
 | `arrival_quarantined;entity=…;detail=…` | **只放弃这一颗**：那次写入与引擎原生写重叠（瞬时竞争），该 G-60 交回引擎，其余照常接管 |
+| `structure_lock_lost;target=…;detail=…` | 已持有的锁被放弃。`RESOURCE_NOT_IN_WHITELIST` 只应出现在**资源真的变了**（实体 id 被引擎复用）时 |
 | `disabled;applied=N` | **已用完的熔断**：N = 停手前完成的接管数。只在**结构性**失败（版本漂移）或同帧多颗竞争时出现 |
 
 > ★ **2026-09-30 修掉的一个致命 bug**：`arrival` 段原先沿用上游那句
@@ -684,7 +685,42 @@ G-60 #1116: 锁定567 -> 锁定561 -> 炸561
 **巢已被炸塌**后的正常失效。只有 `559` 那次不同：它和 `560` 挨得太近，
 `560` 被引爆时把 `559` 一起带走了 —— **连锁殉爆，属于合理行为**。
 
-### 关于虫洞清单（历史说明）
+### ★ 通用目标的锁"每帧重锁"：`generic` 标志被 `track` 丢掉（2026-10-01）
+
+**症状**：通用（非虫洞）目标锁不住 —— 日志刷 `structure_lock_lost;target=…;detail=RESOURCE_NOT_IN_WHITELIST`。
+
+2026-09-30 就为这件事写过一段"通用目标的 sticky"代码（`if previous.generic then …`，
+注释写"让通用锁真正 sticky"），但**那段分支从未执行过**：
+
+```lua
+-- native_priority.lua：这张表就是运行时存进 old.lock 的对象
+track={id=…,identity=…,unit=…,raw=…,score=…,marked_structure=true}   -- ← 少了 generic
+```
+
+`generic=true` 只在 `generic_validate` 返回的 row 上，而 `track` **重建**时没把它带下去
+⇒ 下一帧 `previous.generic` 恒为 `nil` ⇒ 通用目标落进"虫洞白名单复核"那一支 ⇒
+既丢锁（每帧从当前标记重新派生，**不忠实**），又打出**误导性**日志
+（通用目标本来就不该出现在虫洞白名单里）。
+
+**实机双重铁证**（23:39 那局）：
+
+1. 该分支独有的日志后缀 `;generic=true` —— 全日志 **0 次**；
+2. 24 条 `structure_lock_lost;RESOURCE_NOT_IN_WHITELIST` **100% 落在非白名单目标**
+   （巨兽级强袭虫 ×9 / 穿刺虫 ×3 / 抚育喷涌虫 ×2 / 孢子强袭虫 / 阿尔法指挥官…），
+   而真虫洞 MK8 / MK9 **一次都没丢锁**。
+
+**修法**：两处 `track` 构造（早期 state2/3 路径 + 主路径）都补上 `generic=chosen.generic`。
+守门做了**穷举**断言 —— 每一处 `track` 都必须带 `generic`（不允许只改一份，
+本仓库已因"只改一份副本"出过两次越界事故）；并做过**变异测试**验证守门真能报警。
+
+> ⚠ **行为变化（知情）**：修好后通用锁会像虫洞锁一样**忠实** —— 一旦锁上某个被标记的
+> 敌人，之后 ping 别的目标**不会**把它抢走（只在该实体失效/死亡时释放）。
+> 这与上游英文注释 `An explicit structure mark may interrupt an existing enemy lock`
+> 有出入（上游允许"结构标记打断敌人锁"）。当前按本工程既有注释的意图实现
+> （"已经在飞行的 G-60 保持忠实"）；若你希望"标记虫洞能抢回被敌人锁住的 G-60"，
+> 需要额外加一条**结构标记抢占**判据 —— 那是独立的一次改动，未做。
+
+## 关于虫洞清单（历史说明）
 
 离线核对（`generated_entities.dl_bin` 全表 + 107,744 条资源名）：
 
