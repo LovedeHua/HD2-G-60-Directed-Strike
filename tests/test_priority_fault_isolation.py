@@ -1134,8 +1134,11 @@ def test_no_lock_path_bypasses_whitelist():
     # 反向断言：每个 chosen 赋值点之前必须有白名单检查。
     # 窗口取到**上一个 chosen 赋值点**为止（而不是固定字符数）——
     # 固定窗口会因代码里多几行注释就误判（我第一版取 2500 就误报了一次）。
+    # 2026-09-30：通用接管引入后，playermark 那处多了 `row.generic and ... or ...`
+    # 三元（区分 PLAYER_MARK_GENERIC / PLAYER_MARK_STRUCTURE）⇒ 锚点随之更新。
+    # 断言的是**位置**（每个 chosen 赋值点之前必须有白名单检查），不关心后半段怎么写。
     spots = [("sticky", "chosen,reason=row,'LOCKED'"),
-             ("playermark", "chosen,reason=row,'PLAYER_MARK_STRUCTURE'")]
+             ("playermark", "chosen,reason=row,row.generic")]
     for idx, (tag, spot) in enumerate(spots):
         i = code.index(spot)
         start = code.index(spots[idx - 1][1]) if idx else 0
@@ -1143,6 +1146,93 @@ def test_no_lock_path_bypasses_whitelist():
         check(f"whitelist_before_{tag}",
               "structure_profiles" in window,
               f"{tag} 锁路径之前必须有白名单检查（窗口 {len(window)} 字符）")
+
+
+def test_generic_takeover():
+    print()
+    print("=== ㉓ ★ 通用标记目标接管（任意目标 / 友方靠 target_valid 硬门槛排除）===")
+    r = RUNTIME.read_text(encoding="utf-8")
+    pr = (ROOT / "src/g60" / "native_priority.lua").read_text(encoding="utf-8")
+    e = (ROOT / "addon" / "entry.lua.in").read_text(encoding="utf-8")
+
+    # 1) 认领放行
+    check("generic_claimed_exists",
+          "local function generic_claimed(resource)" in r,
+          "runtime 有通用认领函数")
+    check("generic_claimed_respects_exclusion_table",
+          "Filter.excluded and Filter.excluded(resource)" in r,
+          "★ 排除表仍然生效（否则\"不追踪运输船\"会被这条新路径反过来接管）")
+    check("generic_claimed_respects_switch",
+          "if env.generic_takeover_enabled==false then return false end" in r,
+          "开关关闭 ⇒ 整体退回\"只管虫洞/泰坦/变体\"")
+    check("mark_entry_admits_generic",
+          "return claim_profile(resource)~=nil or generic_claimed(resource)" in r,
+          "★ 标记入口放行任意目标（claim_profile 或 generic_claimed）")
+    check("position_falls_back_to_d_position",
+          "local d=TargetData.new(read,base,env.exe)\n            return d.position(e)" in r,
+          "★ 无 profile 的目标用 d.position 取位置（titan_context 强依赖 profile，用不了）")
+
+    # 2) 通用接管分支
+    code_pr = "\n".join(l for l in pr.splitlines() if not l.strip().startswith("--"))
+    check("generic_branch_gated_by_switch",
+          "if env.generic_takeover_enabled~=false and e then" in code_pr,
+          "priority 里有受开关控制的通用分支")
+    # ★★ 最核心的安全属性：友方排除靠 target_valid 硬门槛 ★★
+    check("generic_uses_target_valid_as_hard_gate",
+          "scope.calls.target_valid(nil,e.id," in code_pr
+          and "elseif not valid then detail='NOT_VALID_TARGET'" in code_pr,
+          "★ 用 calls.target_valid 作硬门槛（引擎索敌的\"能不能当锁定目标\"）")
+    # 与虫洞路径**相反**：不做只读兜底，否则友方会被放过
+    _i = code_pr.index("if env.generic_takeover_enabled~=false and e then")
+    _j = code_pr.index("generic_rejected;target=", _i)
+    _blk = code_pr[_i:_j]
+    # ★ 精确区分两件事（第一版断言写太粗，把两者混为一谈 ⇒ 误报）：
+    #   ✗ 软信号兜底 = target_valid 返回 false 时用只读复核**推翻**它（会放过友方）
+    #   ✓ 额外校验   = target_valid 为 true 之后，再做实体/identity 复核（防 id 复用）
+    #   ⇒ 断言"readonly_alive 不得出现在 `not valid` 分支之前/之中"。
+    _vi = _blk.index("elseif not valid then detail='NOT_VALID_TARGET'")
+    check("generic_target_valid_false_is_terminal",
+          "readonly_alive" not in _blk[:_vi] and "check_alive(" not in _blk[:_vi],
+          "★ target_valid=false ⇒ 直接拒，不得用只读复核推翻（那正是虫洞路径的做法，"
+          "会放过友方）")
+    check("generic_still_rechecks_entity_after_valid",
+          "readonly_alive" in _blk[_vi:],
+          "valid=true 后仍做实体/identity 复核（防实体 id 被复用）")
+    check("generic_uses_d_position_not_context_capture",
+          "Context.capture" not in _blk and "d.position" in _blk,
+          "★ 通用分支用 d.position，不调 Context.capture（后者强依赖 profile）")
+    check("generic_builds_setter_payload",
+          "ffi.cast('uint32_t *',raw)[0]=e.id" in _blk,
+          "构造 setter 载荷（前 4 字节 = 目标 id）")
+    check("generic_marks_row_as_generic",
+          "generic=true" in _blk,
+          "row 带 generic 标记，便于日志与后续区分")
+    check("generic_rejects_with_diagnostic",
+          "generic_rejected;target=" in code_pr,
+          "不满足条件时打 generic_rejected（含 detail）")
+    check("generic_reason_distinct",
+          "row.generic and 'PLAYER_MARK_GENERIC' or 'PLAYER_MARK_STRUCTURE'" in code_pr,
+          "★ 日志能区分\"通用接管\"与\"虫洞接管\"（reason 不同）")
+
+    # 3) 配置面 + 日志
+    check("generic_switch_declared",
+          "generic_takeover_enabled=true," in e
+          and "generic_takeover_enabled=state.generic_takeover_enabled" in e,
+          "entry 有开关并传入 env")
+    check("generic_logged_in_version_line",
+          "generic_takeover_enabled='..tostring(state.generic_takeover_enabled)" in e,
+          "启动日志打出开关")
+    for ev in ("generic_takeover", "generic_rejected"):
+        check(f"throttle_whitelists_{ev}",
+              f"line:match('^{ev};')" in e,
+              f"★ {ev} 必须常驻写日志（诊断被节流掉 = 诊断不存在）")
+
+    # 4) 回归防护：原三条专门路径未被破坏
+    check("specialized_paths_intact",
+          "env.structure_profiles[resource]" in r
+          and "resource==env.titan_profile.resource" in r
+          and "resource==env.dragonroach_resource" in r,
+          "虫洞 / 泰坦 / 蟑龙 的专门认领仍在（通用路径是追加，不是替换）")
 
 
 def test_stuck_grenade_breakers():
@@ -1728,10 +1818,14 @@ def test_takeover_scope_is_bughole_and_titan_only():
           and re.search(r"and not retry_search and not mark_is_wormhole", r) is not None,
           "★ 虫洞标记优先于泰坦，但泰坦标记不阻止泰坦接管")
     # ★ 标记入口必须与 has_weakpoint 共用同一判定（这是本轮 bug 的根因）
+    # 2026-09-30：标记入口从"只认 claim_profile"扩展为
+    #   `claim_profile(...) or generic_claimed(...)`（通用目标接管）。
+    #   断言的是**单一入口**这个结构属性：两个判据都在同一个 allowed 里，
+    #   不允许再出现第二处分散的标记入口判定。
     check("mark_entry_shares_claim_profile",
           r.count("claim_profile") >= 4
-          and "allowed=function(resource) return claim_profile(resource)~=nil end" in r,
-          "★ 标记入口用 claim_profile（收敛成唯一判定点）")
+          and "allowed=function(resource)\n            return claim_profile(resource)~=nil or generic_claimed(resource)" in r,
+          "★ 标记入口是唯一判定点（claim_profile 或 generic_claimed）")
     check("claim_profile_is_single_source",
           r.count("local function claim_profile(resource)") == 1,
           "claim_profile 只定义一次")
@@ -1762,6 +1856,7 @@ def main():
     test_dragonroach_takeover()
     test_titan_variant_borrow()
     test_stuck_grenade_breakers()
+    test_generic_takeover()
     test_link_diagnostics()
     test_priority_wiring()
 

@@ -136,14 +136,47 @@ function M.new(env)
         return nil
     end
     local function has_weakpoint(resource) return claim_profile(resource)~=nil end
+    -- ★★ 通用标记目标认领（2026-09-30，用户要求）★★
+    --
+    -- 除 虫洞 / 泰坦 / 泰坦变体（走 claim_profile 的专门路径）外，
+    -- **玩家标记的任意目标**也认领 —— 强制 G-60 飞向它并引爆。
+    --
+    -- 三条边界（都必要）：
+    --   1. `generic_takeover_enabled=false` ⇒ 整体退回"只管虫洞/泰坦/变体"
+    --   2. **排除表必须仍然生效** —— 否则刚加进去的"不追踪运输船"会被这条路径
+    --      反过来接管（自相矛盾）。`Filter.excluded` 与 veto 用的是同一张表。
+    --   3. **友方不在这里排除** —— 靠 priority 里 `calls.target_valid` 硬门槛
+    --      （引擎索敌系统的"能不能把它当锁定目标"）。放这里会让"读标记"阶段
+    --      就要跑一遍索敌查询，而那时还没有受保护的 scope。
+    local function generic_claimed(resource)
+        if env.generic_takeover_enabled==false then return false end
+        if not resource then return false end
+        if Filter and Filter.excluded and Filter.excluded(resource) then return false end
+        return true
+    end
     local ping=env.priority_catalog and env.mark_priority_enabled~=false and Ping.new(env)
     local structure_ping=env.structure_profiles and Ping.new(env,{
         diagnostic=function(detail) env.emit('structure_mark;'..detail) end,
-        -- ★ 与 has_weakpoint 共用 claim_profile（虫洞 + 泰坦）★
-        allowed=function(resource) return claim_profile(resource)~=nil end,
+        -- ★ 认领判定（收敛到唯一入口）★
+        --   claim_profile  = 虫洞 / 泰坦 / 蟑龙 / 泰坦变体（各有专门几何）
+        --   generic_claimed = 玩家标记的任意其它目标（2026-09-30 新增）
+        --   ⇒ 两者都不认 ⇒ RESOURCE_NOT_SUPPORTED（交还引擎原生）
+        allowed=function(resource)
+            return claim_profile(resource)~=nil or generic_claimed(resource)
+        end,
         position=function(e)
-            local pose=TargetContext.capture(read,base,env.exe,e.id,claim_profile(e.resource))
-            assert(pose.validate(),'structure Ping pose changed');return pose.point
+            local profile=claim_profile(e.resource)
+            if profile then
+                local pose=TargetContext.capture(read,base,env.exe,e.id,profile)
+                assert(pose.validate(),'structure Ping pose changed');return pose.point
+            end
+            -- ★ 通用目标：没有几何 profile ⇒ 用实体的 motion 位置（d.position）。
+            --   这是**唯一**可用的通用位置来源（`titan_context.capture` 强依赖
+            --   profile 的 resource/getters/nodes，对任意目标直接断言失败）。
+            --   读不到就让它抛 —— 上层 pcall 会记 POSE_READ_FAILED，标记被判无效。
+            --   **不假装成功**：位置不明的目标不该被接管。
+            local d=TargetData.new(read,base,env.exe)
+            return d.position(e)
         end})
     if ping or structure_ping then env.forget_mark=function(identity)
         if ping then ping:forget(identity) end

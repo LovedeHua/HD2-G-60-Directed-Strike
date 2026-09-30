@@ -70,6 +70,18 @@ local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets
     --      MurmurHash64A 反查到资源路径 ⇒ "它=运输船"未经独立验证。
     --      若日志显示它在别的东西上触发，置 false 即可。
     enemy_veto_enabled=true,
+    -- ★★ 通用标记目标接管（2026-09-30，用户要求）★★
+    --   除 虫洞 / 泰坦 / 泰坦变体（走各自的专门路径）外，**玩家标记的任意目标**
+    --   都接管：强制 G-60 飞向它并引爆。
+    --
+    --   ▸ 引爆位置**由引擎决定**（calls.aim）—— 不自己算几何，符合"优先调用原生函数"。
+    --   ▸ 友方排除**靠硬门槛** `calls.target_valid`（game.dll+0x8858a0 =
+    --     引擎索敌系统的"能不能把它当锁定目标"判定）。引擎不锁友方 ⇒ 友方自然被排除。
+    --     这与项目既有分析一致（README「追踪虫巢被拒」一节：虫洞因没有 HealthComponent
+    --     被它判 false —— 本 mod 对**虫洞**才需要绕过它，通用目标不必）。
+    --   ▸ 排除表（small_filter）仍然生效（运输船等）。
+    --   设为 false 可完全退回"只管虫洞/泰坦/变体"。
+    generic_takeover_enabled=true,
     -- ★ 到达区域按**虫洞**重新标定（2026-09-28 实机几何反推）
     --   上游的 {radius=1.75,depth=0.8} 是给**泰坦**（20m 高）标定的，
     --   arrival_policy 的 `dz<=0` 要求"必须在目标点下方才算到达"。
@@ -138,7 +150,10 @@ local ok,why=pcall(function()
             and not line:match('^titan_standoff_adapted;')
             -- ★ 否决与其只读诊断必须常驻：诊断被节流掉 = 诊断不存在
             and not line:match('^enemy_veto;')
-            and not line:match('^enemy_selection;') then return end
+            and not line:match('^enemy_selection;')
+            -- ★ 通用接管与其诊断必须常驻（诊断被节流掉 = 诊断不存在）
+            and not line:match('^generic_takeover;')
+            and not line:match('^generic_rejected;') then return end
         if written+#line+1>262144 then close();return end
         local good=pcall(function() assert(log:write(line..'\n'));assert(log:flush()) end)
         if not good then close() else written=written+#line+1 end
@@ -225,6 +240,7 @@ local ok,why=pcall(function()
         titan_standoff=state.titan_standoff,titan_standoff_min=state.titan_standoff_min,
         dragonroach_enabled=state.dragonroach_enabled,dragonroach_resource=state.dragonroach_resource,
         enemy_veto_enabled=state.enemy_veto_enabled,
+        generic_takeover_enabled=state.generic_takeover_enabled,
         titan_arrival_region=state.titan_arrival_region,
         thread=function() return tonumber(k.GetCurrentThreadId()) end,
         engine=assert(rawget(_G,'stingray'),'engine API unavailable'),emit=emit})
@@ -246,6 +262,7 @@ local ok,why=pcall(function()
         ..';dragonroach_enabled='..tostring(state.dragonroach_enabled)
         ..';dragonroach_resource='..tostring(state.dragonroach_resource)
         ..';titan_variants_enabled='..tostring(state.titan_variants_enabled)
+        ..';generic_takeover_enabled='..tostring(state.generic_takeover_enabled)
         -- ★ 引擎选择否决：开关 + 实际排除的资源，便于日志确认是否生效
         ..';enemy_veto_enabled='..tostring(state.enemy_veto_enabled)
         -- ★ 必须从 Filter.excluded_resources() 派生，**不得硬编码哈希**：

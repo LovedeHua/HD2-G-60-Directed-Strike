@@ -214,6 +214,53 @@ function M.new(env)
                             and e and e.resource==env.titan_profile.resource then
                             return
                         end
+                        -- ★★★ 通用标记目标接管（2026-09-30，用户要求）★★★
+                        --
+                        -- 除 虫洞/泰坦/蟑龙/泰坦变体（claim_profile 的专门路径）外，
+                        -- 玩家标记的**任意目标**也接管：强制 G-60 飞向它并引爆。
+                        --
+                        -- ▸ **友方靠硬门槛排除**：`calls.target_valid`
+                        --   （game.dll+0x8858a0 = 引擎索敌系统的"能不能把它当锁定目标"）。
+                        --   引擎索敌不锁友方 ⇒ 返回 false ⇒ 这里直接不收。
+                        --   ⚠ 这与**虫洞路径相反**：虫洞因为没有 HealthComponent 被它判 false，
+                        --     所以虫洞那边把它降级为**软信号** + 只读复核；
+                        --     通用目标不需要绕过索敌，正好用它当硬门槛。
+                        -- ▸ 引爆位置**交给引擎**（arrival 段在 goal=nil 时调 calls.aim），
+                        --   这里只提供点用于距离判定与 setter。
+                        if env.generic_takeover_enabled~=false and e then
+                            local detail
+                            local ok_valid,valid=pcall(function()
+                                return scope.calls.target_valid(nil,e.id,
+                                    ffi.cast('const void *',e.address))
+                            end)
+                            if not ok_valid then detail='TARGET_VALID_QUERY_FAILED'
+                            elseif not valid then detail='NOT_VALID_TARGET'
+                            else
+                                local ok_unit,unit=pcall(d.unit,e)
+                                local ok_pos,p=pcall(d.position,e)
+                                local ok_ro,ro_why=readonly_alive(e.id,e.identity)
+                                if not ok_unit or not unit then detail='UNIT_MISSING'
+                                elseif not ok_ro then detail=tostring(ro_why)
+                                elseif not ok_pos or not p then detail='POSITION_UNREADABLE'
+                                else
+                                    local distance=0
+                                    for k=1,3 do distance=distance+(p[k]-own[k])^2 end
+                                    if distance>=40000 then detail='OUT_OF_RANGE'
+                                    else
+                                        local raw=ffi.new('uint8_t[80]',record:sub(0x19,0x68))
+                                        ffi.cast('uint32_t *',raw)[0]=e.id
+                                        return {entity=e,raw=ffi.string(raw,80),score=1,
+                                            unit=unit,marked_structure=true,generic=true,
+                                            point=p}
+                                    end
+                                end
+                            end
+                            if env.emit and not M.rejected_targets[structure_mark.id] then
+                                M.rejected_targets[structure_mark.id]=true
+                                env.emit('generic_rejected;target='..tostring(structure_mark.id)
+                                    ..';resource='..tostring(e.resource)..';detail='..detail)
+                            end
+                        end
                         if env.emit and not M.rejected_targets[structure_mark.id] then
                             M.rejected_targets[structure_mark.id]=true
                             env.emit('structure_not_taken_over;target='
@@ -280,7 +327,8 @@ function M.new(env)
                     return {entity=e,raw=ffi.string(raw,80),score=1,unit=structure_mark.unit,marked_structure=true,
                         point=pose.point}
                 end)
-                if good and row then chosen,reason=row,'PLAYER_MARK_STRUCTURE'
+                if good and row then
+                    chosen,reason=row,row.generic and 'PLAYER_MARK_GENERIC' or 'PLAYER_MARK_STRUCTURE'
                 elseif not good and env.emit then env.emit('structure_unavailable;detail='..tostring(row)) end
             end
             -- ★★ 敌人锁分支整段删除，理由见文件下方同名注释 ★★
