@@ -3,6 +3,7 @@
   "runtime_version": "0.5.20",
   "aliases": {
     "util": "U",
+    "priority_faults": "Faults",
     "take_gate": "TakeGate",
     "small_filter": "Filter",
     "target_allowlist": "Allowlist",
@@ -28,7 +29,6 @@
     "explosive_context": "ExplosiveContext",
     "native_arrival": "Arrival",
     "native_disposal": "Disposal",
-    "priority_faults": "Faults",
     "geometry": "Geometry",
     "native_priority": "Priority",
     "experimental_runtime": "Runtime"

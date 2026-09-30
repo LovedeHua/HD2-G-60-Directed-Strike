@@ -138,7 +138,14 @@ ef04cb84d097a497 → content/fac_bugs/cha_strider/cha_strider_gloom
 >
 > | 目标 | 参数 | 来源 |
 > |---|---|---|
-> | 吐酸泰坦 / 孢子泰坦 | `radius=2.0` / `depth=1.2` / `above=1.2` | `env.titan_arrival_region`（`entry`） |
+> | 吐酸泰坦 / 孢子泰坦 | `radius=**2.25**` / `depth=1.2` / `above=1.2` | `env.titan_arrival_region`（`entry`） |
+>
+> ★ **2026-09-30：泰坦半径 2.0 → 2.25**（用户报"G-60 到达引爆点耗时久"）。
+> 实测瓶颈是**绕行几何**（12 m 外圈 / 20° 步长；捷径②放宽到数学上限后仍 0 命中）
+> ⇒ 改用"提前判定到达"。本值**同时**是 `titan_route` 的 `terminal_radius`，
+> 调大后 `under` 段里 `radius<=terminal_radius` 更早成立 ⇒ **更早切 `attack` 直冲**。
+> 代价：爆点离腹部略远（+0.25 m，小幅）⇒ 需实测确认仍"炸得死"。
+> （实测仍看日志 `titan_started;…;stage=` 与 `arrival_detonated` 的 `distance`。）
 > | 蟑龙（thorax） | `radius=1.75` / `depth=0.8` / 无 `above` | `weakpoint_profiles` 的 `960b48a421a3faaa.region` |
 >
 > 虫洞走 `kind='entrance'` 盒状分支，**不受影响**。
@@ -186,6 +193,17 @@ ef04cb84d097a497 → content/fac_bugs/cha_strider/cha_strider_gloom
 | `search_applied;entity=…` | 已让该手雷进入"朝虫洞飞"的状态 |
 | `arrival_detonated;entity=…;distance=…` | **到达并引爆** |
 | `titan_aim;…;point=…` | 虫洞瞄准点（结构 profile 换算出来的爆点） |
+| `arrival_quarantined;entity=…;detail=…` | **只放弃这一颗**：那次写入与引擎原生写重叠（瞬时竞争），该 G-60 交回引擎，其余照常接管 |
+| `disabled;applied=N` | **已用完的熔断**：N = 停手前完成的接管数。只在**结构性**失败（版本漂移）或同帧多颗竞争时出现 |
+
+> ★ **2026-09-30 修掉的一个致命 bug**：`arrival` 段原先沿用上游那句
+> `if mutated then disabled=true end`，而 `priority` 段早已改成"瞬时竞争只放弃一颗"。
+> 结果一次普通的**写后回读不符**（引擎原生 TargetLock 同帧后写覆盖）就把
+> **整个 mod 停手并当场关闭日志** —— 症状是"玩着玩着虫洞标记失效了"，日志却停在那一刻
+> 不再增长（而其它 mod 的日志仍在更新 ⇒ 游戏没崩，是它自己关了）。
+> 现在两条链路共用 `g60.priority_faults` 的**同一份**判定：
+> 竞争态（`arrival proximity suppression failed` / `arrival clear failed`）
+> 只放弃这一颗；`explode()` 之后的消息、计时器被动、结构性校验仍 fail-closed。
 
 启动时那行会明确打印本包的能力边界：
 `build=BUGHOLE_ONLY;scope=marked_bughole_only;bughole_profiles=16;enemy_priority=REMOVED;weakpoints=REMOVED;shrieker_spewer_egg=REMOVED;unmarked_behavior=VANILLA`
@@ -200,16 +218,23 @@ ef04cb84d097a497 → content/fac_bugs/cha_strider/cha_strider_gloom
   | 旋钮 | 位置 | 作用 | 调大的后果 |
   |---|---|---|---|
   | `FLOOR_MARGIN`（**保持上游 1.25**） | `titan_route`，守卫文件 | 爆点相对**泰坦根部**的最低高度 | 更严（更早放弃） |
-  | `titan_standoff_min`（**2026-09-30: 1.5 → 0.5**） | `entry`，调用方 | `standoff` 最小能缩到多少 | 爆点离腹部更远 |
+  | `titan_standoff_min`（**2026-09-30: 1.5 → 0.5 → 0.75 → 1.0 → 0.85**） | `entry`，调用方 | `standoff` 最小能缩到多少 | 爆点离腹部更远 |
   **用户真正要的是"爆点贴近腹部"** ⇒ 该放的是 `standoff` 下限，**不是** `FLOOR_MARGIN`。
   （曾误降 `FLOOR_MARGIN` 到 0.5：那只会允许爆点更低，而腹部在高处 ⇒
   实测"离腹部太远、离地面太近、炸不死泰坦"，已回滚；`titan_route.lua` 也**恢复逐字节上游**。）
-  现在的行为：净空充足用 `standoff=2.5`；受限时收到"刚好清空地板"的值，**最低 0.5**
-  （爆点贴着腹部 ⇒ 伤害集中）；连 0.5 都放不下（泰坦几乎贴地）时仍拒绝。
+  现在的行为：净空充足用 `standoff=2.5`；受限时收到"刚好清空地板"的值，**最低 0.85**
+  （爆点贴近腹部 ⇒ 伤害集中）；连 0.85 都放不下（泰坦几乎贴地）时仍拒绝。
+  > **为什么是 0.85**：逐级试过 0.5 / 0.75 / 1.0 —— 贴太近**小概率吃不到弱点、炸不死**，
+  > 太保守则又回到"离腹部远"。**0.85 是实机试出来的取值，别随手改。**
   接管门槛由 `p_z−origin_z ≥ 2.75` 降到 **`≥ 1.75`**。
   日志：`titan_standoff_adapted`（实际用的 standoff）/ `titan_clearance`（差多少）。
 - **多颗 G-60 同时锁定同一目标**：先到的炸掉后，后来的会识别为"爆炸已触发"并收尾
   （`arrival_already_exploded`），不会无限盘旋。
+- **同类残留（未修，待评估）**：`if mutated then disabled=true end` 这句上游收尾仍存在于
+  `native_disposal` / `native_minimal` / `native_titan_aim` / `search_return` 四处。
+  它们写的是导航/movement 结构，失败更可能是真结构性 ⇒ **暂时保持 fail-closed**；
+  `priority` 与 `arrival` 两处（"写后回读"型）已改为瞬时竞争只放弃一颗。
+  若实机再出现"玩着玩着整个 mod 停手 + 日志停止增长"，按同一思路逐个评估。
 - **⚠ 虫洞附近没有敌人时炸不了虫洞** —— 本 mod 是"改写引擎已分配的目标"，
   而引擎的原生追踪要有目标才激活 ⇒ 空地上扔 G-60 不会有反应。
   详见上文 **「使用前提：虫洞附近必须有敌人」**。

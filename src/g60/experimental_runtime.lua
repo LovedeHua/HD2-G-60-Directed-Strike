@@ -1011,13 +1011,35 @@ function M.new(env)
                             end
                         end
                         if ok_arr and result then
-                            old.arrival_progress=result.progress;old.force_search=nil
-                            if result.blocked then old.blocked=result.blocked end
-                            if result.kind=='search' then old.lock=nil;old.titan=nil end
-                            if result.kind=='detonate' then
-                                retired[m.id]=retired_key
-                                release_hold(m.id)
-                                env.emit('arrival_detonated;entity='..m.id..';target='..result.target..';distance='..result.distance)
+                            if result.kind=='quarantine' then
+                                -- ★ 竞争态（2026-09-30，判定见 g60.priority_faults）★
+                                --   与 priority 段同一套语义：**只放弃这一颗** G-60 ——
+                                --   清掉它的锁/航点/进度并置 old.quarantined，交回引擎原生
+                                --   逻辑；其余 G-60 与后续标记照常接管（上游在这里是整个
+                                --   mod 一起死，22:10 那局就是那个后果）。
+                                --   ⚠ 不置 abandoned：本段在 structure/titan 写入**之后**
+                                --     才跑，那两个写入本帧已经发生，置了也没有效果。
+                                --     真正生效的是 old.quarantined —— 下一帧
+                                --     TakeGate.decide 直接返回 why='quarantined'，不再写它。
+                                old.quarantined=true;old.lock=nil;old.titan=nil
+                                old.force_search=nil;old.arrival_progress=nil;old.blocked=nil
+                                env.emit('arrival_quarantined;entity='..m.id
+                                    ..';detail='..tostring(result.contended))
+                                -- 同一帧里**多颗**都竞争态失败 ⇒ 不是单点时序，是我们对引擎
+                                -- 状态的理解出问题了 ⇒ 这时停手才对（与 priority 段共用计数）。
+                                if note_contention() then
+                                    self.disabled=true
+                                    error('arrival contention limit reached: '..tostring(result.contended))
+                                end
+                            else
+                                old.arrival_progress=result.progress;old.force_search=nil
+                                if result.blocked then old.blocked=result.blocked end
+                                if result.kind=='search' then old.lock=nil;old.titan=nil end
+                                if result.kind=='detonate' then
+                                    retired[m.id]=retired_key
+                                    release_hold(m.id)
+                                    env.emit('arrival_detonated;entity='..m.id..';target='..result.target..';distance='..result.distance)
+                                end
                             end
                         else
                             local why=tostring(ok_arr and reason or result)
@@ -1028,7 +1050,13 @@ function M.new(env)
                             note_already_exploded(why)
                         end
                     end
-                    if arrival and arrival:disabled() then self.disabled=true;error('arrival operation disabled') end
+                    -- ★ 2026-09-30：竞争态已在 native_arrival 内部转成 kind='quarantine'
+                    --   （**不**置 disabled）⇒ 走到这里还 disabled 的只可能是结构性漂移，
+                    --   必须停手。`not (…quarantine)` 与 priority 段同款（防御性写法）。
+                    if arrival and arrival:disabled()
+                        and not (ok_arr and type(result)=='table' and result.kind=='quarantine') then
+                        self.disabled=true;error('arrival operation disabled')
+                    end
                 end
             end
             for id,t in pairs(tracked) do

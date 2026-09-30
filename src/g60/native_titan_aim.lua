@@ -157,7 +157,7 @@ function M.new(env)
                     --   max_standoff 连 1.5 都不到时 Route.step 依然拒绝 —— 硬底线保留。
                     local max_standoff=target.point[3]-(target.origin[3]+1.25)
                     if route_standoff and route_standoff>0 and max_standoff<route_standoff then
-                        local lo=env.titan_standoff_min or 0.5
+                        local lo=env.titan_standoff_min or 0.85
                         route_standoff=math.max(lo,max_standoff)
                         local tag=tostring(target.id)..'|'..string.format('%.2f',route_standoff)
                         if env.emit and not standoff_logged[tag] then

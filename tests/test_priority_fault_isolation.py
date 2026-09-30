@@ -33,6 +33,7 @@ RUNTIME = ROOT / "src/g60" / "experimental_runtime.lua"
 RESERVATIONS = ROOT / "src/g60" / "target_reservations.lua"
 GEOMETRY = ROOT / "src/g60" / "geometry.lua"
 TITAN = ROOT / "src/g60" / "native_titan_aim.lua"
+ARRIVAL = ROOT / "src/g60" / "native_arrival.lua"
 FAULTS = ROOT / "src/g60" / "priority_faults.lua"
 
 failures = []
@@ -71,6 +72,16 @@ def test_fault_classification(rt):
           bool(competitive("priority setter metadata mismatch")),
           "元数据不符 -> 局部放弃")
 
+    # ★ 2026-09-30：arrival 段的**同族**消息也必须纳入竞争态。
+    #   此前这道隔离只治了 priority，arrival 漏了 ⇒ 实机 22:10 那局
+    #     一次 `arrival proximity suppression failed` 就把整局打死
+    #     （`disabled;applied=49`，日志当场关闭，用户只看到"虫洞标记失效一次"）。
+    #   两条都是"写完回读不符"的形状（写的是 record 自身字节 + 清一个 uint32）。
+    for msg in ("arrival proximity suppression failed", "arrival clear failed"):
+        check("arrival_competitive_" + msg.split()[1],
+              bool(competitive(msg)),
+              f"{msg[:34]}… -> 只放弃这一颗")
+
     # 版本漂移：这些继续乱写会让游戏崩，必须保持全局 fail-closed
     structural = [
         "priority scope changed",
@@ -86,6 +97,27 @@ def test_fault_classification(rt):
         "pointer bound",
         "snapshot budget",
         "entity hash capacity",
+        # ★ 2026-09-30：arrival 段的**非**竞争态消息必须继续 fail-closed
+        #   —— 逐个评估的结论写在这里，防止以后被"顺手"加进 COMPETITIVE：
+        #   · `explode(...)` **之后**的断言：失败时爆炸请求可能已发出，重试会重复
+        #     触发引爆，风险等级与"写后回读不符"不同。
+        "arrival request not committed",
+        "arrival trigger changed",
+        "arrival request changed flight state",
+        #   · 两次读之间 record 被改 ⇒ 行为观测漂移。
+        "arrival source changed",
+        "arrival behavior changed",
+        "arrival preflight changed",
+        "arrival aim observation changed",
+        #   · 飞行计时器被动 —— 上游明确警告过别重置它，是真正的行为异常。
+        "arrival changed flight timer",
+        "arrival orbit changed timer",
+        #   · 结构性校验（版本漂移）。
+        "arrival ABI",
+        "arrival call ABI",
+        "arrival source",
+        "arrival scope unavailable",
+        "arrival experimental scope",
     ]
     leaked = [m for m in structural if competitive(m)]
     check("structural_drift_not_competitive", not leaked,
@@ -530,8 +562,8 @@ def test_arrival_region_geometry(rt):
           "上游那句必须已在")
     e = (ROOT / "addon" / "entry.lua.in").read_text(encoding="utf-8")
     check("entry_retunes_region",
-          "titan_arrival_region={radius=2.0,depth=1.2,above=1.2}" in e,
-          "★ 到达区域（泰坦/变体专用，球形 radius=2.0 / above=1.2）")
+          "titan_arrival_region={radius=2.25,depth=1.2,above=1.2}" in e,
+          "★ 到达区域（泰坦/变体专用，**圆柱** radius=2.25 / depth=1.2 / above=1.2）")
 
 
 def lua_table(rows):
@@ -1514,7 +1546,7 @@ def test_adaptive_standoff():
     #            即爆点**贴近腹部**（伤害集中，才炸得死）。
     #   组合效果：接管门槛由 `p_z-origin_z ≥ 2.75` 降到 `≥ 1.75`，
     #             且净空不足时爆点会**贴着腹部**而不是被推到地面附近。
-    LO, HI, MARGIN = 0.5, 2.5, 1.25
+    LO, HI, MARGIN = 0.85, 2.5, 1.25
 
     def adapt(pz, oz, target=HI, lo=LO):
         max_s = pz - (oz + MARGIN)
@@ -1572,7 +1604,7 @@ def test_adaptive_standoff():
           "route_standoff=env.titan_standoff" in code,
           "上限取 env.titan_standoff（配置值 2.5），不是硬编码")
     check("adapt_lower_bound_is_config",
-          "env.titan_standoff_min or 0.5" in code and "titan_standoff_min=0.5" in e,
+          "env.titan_standoff_min or 0.85" in code and "titan_standoff_min=0.85" in e,
           "★ 下限取 env.titan_standoff_min（2026-09-30 定为 0.5：让爆点能贴近腹部），可调")
     check("adapt_caller_keeps_hard_reject_in_route",
           "max_standoff" not in route_code and "insufficient blast standoff clearance" in route,
@@ -1902,6 +1934,65 @@ def test_takeover_scope_is_bughole_and_titan_only():
           "★ 泰坦点已建立时 arrival 提前返回（不会被虫洞到达区域误伤）")
 
 
+def test_arrival_fault_isolation():
+    """★ 2026-09-30：arrival 段也必须做故障域隔离（与 priority **同一份**判定）。
+
+    实机事故（22:10 那局，根因就是缺这道隔离）::
+
+        arrival_skipped;entity=4194657;detail=…:2348: arrival proximity suppression failed
+        frame_error;detail=…:5904: arrival operation disabled
+        disabled;applied=49          ← 整局 mod 停手 + 日志当场关闭
+        （同一时刻 SmoothBoot/EpochLifetime 还在更新 ⇒ 游戏在跑，是 mod 把自己关了）
+
+    触发场景：同场另一颗 G-60 的泰坦目标被引爆后，引擎给它重新分配了敌人目标，
+    它的 arrival 从 `titan/` 段退回非 titan 段，走进 proximity 抑制块 ⇒ 回读不符。
+
+    修复四处，逐一静态守门（这类错误 luac 过、单测过，只有实机炸）：
+      ① priority_faults 分类里必须有 arrival 的两条（上面 test_fault_classification 已验）
+      ② native_arrival 必须在 `disabled=true` **之前**先问 competitive()
+      ③ runtime 收到 kind='quarantine' 只放弃这一颗，且不因它全局 disable
+      ④ build.json 里 Faults 别名必须排在 native_arrival **之前** —— 构建期
+         `local competitive=Faults.competitive` 的右值若还是 nil，隔离就是空转
+         （与 2026-09-28「Geometry 排在使用者之后」完全同型的一种静默失效）
+    """
+    print()
+    print("=== ㉑ arrival 段故障域隔离（2026-09-30 事故）===")
+    arr = ARRIVAL.read_text(encoding="utf-8")
+    r = RUNTIME.read_text(encoding="utf-8")
+
+    check("arrival_uses_shared_classifier",
+          "local competitive=require('g60.priority_faults').competitive" in arr,
+          "★ 复用 g60.priority_faults（不复制一份自己的名单）")
+    check("arrival_check_before_disable",
+          "if competitive(result) then" in arr
+          and arr.index("if competitive(result) then") < arr.index("then disabled=true end"),
+          "★ 先问 competitive()，再考虑 disabled=true（顺序即语义）")
+    check("arrival_returns_quarantine",
+          "return {kind='quarantine',contended=tostring(result)}" in arr,
+          "竞争态返回 kind='quarantine'（不是 nil + 置 disabled）")
+
+    check("runtime_handles_arrival_quarantine",
+          "result.kind=='quarantine'" in r and "arrival_quarantined" in r,
+          "★ runtime 有 arrival 的 quarantine 分支 + 专用日志")
+    check("runtime_arrival_quarantine_clears_hold",
+          "old.quarantined=true;old.lock=nil;old.titan=nil" in r,
+          "只放弃这一颗：清锁/航点并置 quarantined（下一帧 TakeGate 不再驱动它）")
+    check("runtime_arrival_quarantine_not_global",
+          "arrival contention limit reached" in r,
+          "★ 只有同帧多颗都失败才全局停手（共用 note_contention 计数）")
+    check("runtime_arrival_disable_guards_quarantine",
+          "and not (ok_arr and type(result)=='table' and result.kind=='quarantine') then" in r,
+          "`arrival operation disabled` 不再被竞争态触发（与 priority 段同款防御）")
+
+    # ④ 构建期别名顺序（与 test_fault_classification 里的 priority/runtime 三处同源）
+    import json
+    aliases = list(json.loads((ROOT / "compat/build.json").read_text(encoding="utf-8"))["aliases"])
+    check("faults_alias_before_native_arrival",
+          aliases.index("priority_faults") < aliases.index("native_arrival"),
+          f"Faults(pos {aliases.index('priority_faults')}) 在 "
+          f"native_arrival(pos {aliases.index('native_arrival')}) 之前定义")
+
+
 def main():
     rt = lupa.LuaRuntime(encoding=None, unpack_returned_tuples=True)
     test_fault_classification(rt)
@@ -1926,6 +2017,7 @@ def main():
     test_generic_takeover()
     test_link_diagnostics()
     test_priority_wiring()
+    test_arrival_fault_isolation()
 
     print()
     if failures:

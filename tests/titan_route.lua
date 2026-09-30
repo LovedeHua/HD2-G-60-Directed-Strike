@@ -104,6 +104,17 @@ test('insufficient standoff clearance refuses instead of moving the blast back a
     assert(Route.step({0,0,5},t,nil,2.5)==nil)
     assert(not pcall(Route.step,{0,0,5},target(),nil,0/0))
 end)
+test('side corridor entry tolerates up to under+2.5 (2026-09-30 捷径②放宽,安全上限)',function()
+    -- 默认 target：point={0,0,6} origin={0,0,0} standoff=2.5
+    --   blast_z=3.5；under = max(6−3.5, 1.25) = 2.5
+    --   ★ 门槛 own[3] ≤ 5.0（= under+2.5，安全上限：再高会被 own[3]>p[3]+0.5 退回线打回）
+    --   4.2 ∈ (3.0, 5.0] ⇒ 只有放宽后的代码才命中 ⇒ 兼作"放宽确实生效"的守门。
+    local p=Route.step({8,0,4.2},target(),nil,2.5)
+    assert(p.route.stage=='under')
+    -- 5.1 > 5.0 ⇒ 超出新上限，仍走默认绕行（钉住 +2.5 这个数值本身）
+    local q=Route.step({8,0,5.1},target(),nil,2.5)
+    assert(q.route.stage~='under')
+end)
 test('wider final region enters attack before perfect horizontal alignment but never above the body',function()
     local t=target();local p=Route.step({1.5,0,3},t,nil,2.5,1.75)
     assert(p.terminal and p.point[3]==3.5)

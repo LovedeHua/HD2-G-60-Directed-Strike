@@ -4,6 +4,11 @@ local L=require('g60.native_observer')
 local Data=require('g60.native_target_data')
 local Policy=require('g60.arrival_policy')
 local Explosive=require('g60.explosive_context')
+-- ★ 竞争态判定（2026-09-30）：与 native_priority 共用**同一份**分类，见 g60.priority_faults。
+--   不写 `local Faults=require(...)`：build.py 会把 require 文本换成 chunk 别名，同名
+--   local 就成了 `local Faults=Faults`（可读性差、易被误读成自引用），所以只取函数 ——
+--   与 experimental_runtime 取 CONTENTION_LIMIT 的写法一致。
+local competitive=require('g60.priority_faults').competitive
 local M={}
 local explode_type=ffi.typeof('void (*)(void *, uint32_t, uint32_t, void *)')
 local setter_type=ffi.typeof('void (*)(void **, const void *)')
@@ -90,6 +95,23 @@ function M.new(env)
         end)
         busy=false
         if not ok then
+            -- ★★ 故障域隔离（2026-09-30 实机事故的直接修复）★★
+            --   判定与 native_priority **完全同一份**（分类见 g60.priority_faults）。
+            --   写后回读不符**不是**内存布局漂移，而是：引擎原生 TargetLock 在同一帧
+            --   后写覆盖了同一块 record，或 clear 的效果落到 record 上有延迟。
+            --   我们写进去的是**观测到的合法值**（proximity 抑制只是把 record 自身
+            --   字节复制一份、把一个 uint32 清零），不会破坏内存 ⇒
+            --   **只放弃这一颗 G-60，绝不 disabled**。
+            --
+            --   不做隔离的后果（22:10 那局实测，`grep proximity` 全文只有这一次）：
+            --     arrival_skipped;…:2348: arrival proximity suppression failed
+            --   ⇒ 下面一句 `if mutated … then disabled=true` 把 arrival 段永久关掉
+            --   ⇒ runtime 下一帧 `error('arrival operation disabled')` ⇒ on_fatal
+            --   ⇒ `disabled;applied=49` + close()：**整局 mod 停手、日志当场关闭**。
+            --   用户看到的只是"虫洞标记失效了一次"，而根因是全局熔断。
+            if competitive(result) then
+                return {kind='quarantine',contended=tostring(result)}
+            end
             -- ★ 早期接管（state 2/3）的失败**不计入**永久禁用：
             --   引擎对早期 state 的行为与 state 4 不同，失败很可能是正常现象
             --   （例如还没到可引爆的窗口），不该把 state-4 的引爆也一起废掉。

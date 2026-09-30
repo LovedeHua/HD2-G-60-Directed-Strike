@@ -39,8 +39,22 @@ function M.step(own,target,previous,standoff,terminal_radius)
         if radius<=terminal_radius and own[3]<=p[3]-0.6 then route.stage='attack' end
         -- Already below the belly and inside the side corridor: go inward,
         -- without first travelling out to the full twelve-metre ring.
+        --
+        -- ★ 2026-09-30（锚点例外）：高度门槛 `under+0.5` → **`under+2.5`**。
+        --   实机证据：4 次泰坦接管的 `titan_started;…;stage=` **全是 `around`**
+        --   ⇒ 这条捷径**从未命中过**，每次都得绕 12 m 外圈（实测单次绕行 3.0~4.7 s，
+        --   还常因 `under → out` 退回重来，最坏 ~14 s）。
+        --   ★ **2.5 是数学上的安全上限**，不是拍脑袋：
+        --     下方有兜底"高于 `p[3]+0.5` 就退回 out 重绕" ⇒ 门槛**最高只能到 `p[3]+0.5`**，
+        --     再高就是"命中即被退回"，白改。由 `under = max(p_z − max(2, standoff+1), floor)`：
+        --       standoff=0.85（自适应下限，最坏）: under=p_z−2.0 ⇒ **X ≤ 2.5**
+        --       standoff=2.5（名义值）:           under=p_z−3.5 ⇒ X ≤ 4.0
+        --     ⇒ 取 **X=2.5** 覆盖所有 standoff；此时门槛恰贴退回线（等于不算高于 ⇒ 不退）。
+        --   门槛效果：standoff=2.5 ⇒ 低于腹部 **1.0 m**；standoff=0.85 ⇒ **腹部上方 0.5 m 以内**。
+        --   安全性：进入点最高 `p[3]+0.5`，仍低于泰坦身体上半部，且退回兜底保留；
+        --   `forward<=2.5` **有意保持不变**（一次只动一个变量）。
         local forward=math.abs(-dx*ry+dy*rx)
-        if radius>terminal_radius and radius<=RADIUS and forward<=2.5 and own[3]<=under+0.5 then
+        if radius>terminal_radius and radius<=RADIUS and forward<=2.5 and own[3]<=under+2.5 then
             route.stage='under'
         end
     end

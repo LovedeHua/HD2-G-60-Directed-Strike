@@ -17,12 +17,47 @@
 --
 -- 真正的版本漂移是另一批消息：scope/read/identity/record 前缀被换、Unit 索引越界、
 -- 指针越界 —— 那些继续乱写才会让游戏崩，必须保持全局 fail-closed。
+--
+-- ★ 2026-09-30：同样的收尾（`if mutated then disabled=true end`）当时**只治了 priority，
+--   漏了 arrival**（`native_arrival.lua`）。结果同一类瞬时竞争在 arrival 段把整局打死了
+--   —— 见 M.COMPETITIVE 处的详细事故记录。现在两条链路共用这一份判定。
 local M={}
 
 -- 竞争态：只放弃**这一颗** G-60，交回引擎；不动全局 disabled。
 M.COMPETITIVE={
     ['priority setter target mismatch']=true,
     ['priority setter metadata mismatch']=true,
+    -- ★★ 2026-09-30 实机事故：arrival 段也有同族问题，补齐（此前只治了 priority）★★
+    --
+    -- 事故现场（22:10 那局）：`entity=4194657` 在 proximity 抑制块里回读不符
+    --     arrival_skipped;…:2348: arrival proximity suppression failed
+    -- 而该块在断言**前**已 `mutated=true` ⇒ `native_arrival` 的收尾
+    -- `if mutated and not early then disabled=true end` 把 arrival 段永久关掉
+    -- ⇒ 下一帧 runtime `if arrival:disabled() then error('arrival operation disabled')`
+    -- ⇒ on_fatal：`disabled;applied=49` + `close()` —— **整局 mod 停手、日志当场关闭**
+    -- （症状：用户报"虫洞标记失效了一次"；日志从此不再增长，而游戏仍在跑）。
+    --
+    -- 为什么这两条属于**竞争态**（与上面两条同型）：
+    --   · `arrival proximity suppression failed` —— `calls.clear(pair,raw)` 写回后回读；
+    --     `raw` 是 record **自身字节的副本**、只把一个 uint32 清零 ⇒ 参数合法。
+    --     不符的现实原因同上：引擎原生 TargetLock 同帧后写覆盖，或 clear 落盘有延迟。
+    --   · `arrival clear failed` —— `calls.clear(pair,nil)` 后回读 selection 应为
+    --     invalid；同帧被引擎重新选中即不符。形状完全一致（写 + 回读）。
+    -- 两条的重试都**不危险**（写的是观测到的合法值），所以只跳过这一颗。
+    ['arrival proximity suppression failed']=true,
+    ['arrival clear failed']=true,
+
+    -- ⚠ 有意**不**列入竞争态（保持 fail-closed，逐个评估的结论）：
+    --   · `arrival request not committed` / `arrival trigger changed` /
+    --     `arrival request changed flight state` —— 都在 `explode(...)` **之后**，
+    --     失败时爆炸请求可能已经发出；重试会重复触发引爆，风险等级与"写后回读不符"
+    --     不同，不能混进来。
+    --   · `arrival source changed` / `arrival behavior changed` / `arrival preflight changed` /
+    --     `arrival aim observation changed` —— 两次读之间 record 变了，属于**行为观测**漂移。
+    --   · `arrival changed flight timer` / `arrival orbit changed timer` —— 飞行计时器被动，
+    --     是真正的行为异常（上游明确警告过别重置它），必须停手。
+    --   · `arrival ABI` / `arrival call ABI` / `arrival source` / `arrival scope unavailable` /
+    --     `arrival experimental scope` —— 结构性校验，属于版本漂移。
 }
 
 -- 同一帧里多颗 G-60 全部竞争态失败，说明不是单点时序而是我们对引擎状态的理解

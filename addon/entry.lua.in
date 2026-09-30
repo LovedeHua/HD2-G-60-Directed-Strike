@@ -16,15 +16,16 @@ if existing then return existing end
 --   置 false ⇒ target_allowed=nil ⇒ `not allowed` 恒真 ⇒ 永不 veto ⇒ 敌人侧完全原生，
 --   虫洞则只由 structure_profiles（9 个虫洞）单独决定接管。
 -- ★ titan_standoff = 目标爆点距离（泰坦腹部下方几米引爆），titan_standoff_min = 自适应下限。
---   ★ 2026-09-30：**下限 1.5 → 0.5**。用户实测"泰坦腹部引爆点离腹部太远、离地面太近、
---     炸不死泰坦" ⇒ 真正该放宽的是**这个下限**（让爆点能收得离腹部更近、伤害集中在腹部），
---     而不是 titan_route 的离地余量（降它只会让爆点更低更远离腹部）。
+--   ★ 2026-09-30：**下限 1.5 → 0.5 → 0.75 → 1.0 → 0.85（最终）**，全部来自实机试错。
+--     起点 1.5 的问题：爆点离腹部太远、贴地 ⇒ 该放宽的是**这个下限**（让爆点收向腹部），
+--     而不是 titan_route 的离地余量（降后者只会让爆点更低、**更远离**腹部）。
+--     0.5 贴太近会**小概率吃不到弱点、炸不死**；1.0 偏保守 ⇒ 最终取 **0.85**。
 --     · 净空充足 ⇒ 仍用 titan_standoff(2.5)，行为不变
---     · 净空受限 ⇒ standoff 收到"刚好清空地板"的值，最低 0.5（旧值 1.5 会过早放弃）
---     · `titan_route` 的离地余量保持上游的 1.25 不变（该文件已恢复逐字节守卫）
+--     · 净空受限 ⇒ standoff 收到"刚好清空地板"的值，最低 0.85（旧值 1.5 会过早放弃）
+--     · `titan_route` 的离地余量保持上游的 1.25 不变（该文件是逐字节守卫）
 --   自适应在**调用方** native_titan_aim 完成，titan_route.lua 保持逐字节不变。
 --   把 titan_standoff_min 设为与 titan_standoff 相等即可关闭自适应、退回"宁可放弃"行为。
-local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets_only=false,titan_standoff=2.5,titan_standoff_min=0.5,
+local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets_only=false,titan_standoff=2.5,titan_standoff_min=0.85,
     mark_priority_enabled=false,exclusive_targets=true,marked_structures=true,
     -- ★ 吐酸泰坦接管开关（2026-09-29）
     --   本 mod 接管的���标只有两类：玩家标记的虫洞 + 吐酸泰坦。其余全部交还引擎原生
@@ -86,7 +87,8 @@ local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets
     --   ▸ 排除表（small_filter）仍然生效（运输船等）。
     --   设为 false 可完全退回"只管虫洞/泰坦/变体"。
     generic_takeover_enabled=true,
-    -- ★ 到达区域（**泰坦/变体专用**）—— 2026-09-30 先收到 1.75，随后回到 2.0
+    -- ★ 到达区域（**泰坦/变体专用**）—— 判定形状 = **圆柱**（2026-09-30 试过球形，
+    --   实机效果差 ⇒ 已回滚；公式见 arrival_policy: `dx²+dy²<=r² 且 -depth<=dz<=above`）。
     --   历史：这段原本按**虫洞**标定过（2026-09-28：上游 {radius=1.75,depth=0.8}
     --   的 `dz<=0` 要求"必须在目标点下方"，而 G-60 绕洞口飞时恒在**上方** ⇒
     --   实机 target=529 的 5 个采样点 **0/5**；放宽到 above=1.2/radius=2.0 ⇒ **4/5**，
@@ -94,13 +96,17 @@ local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets
     --   但**现状已不同**：虫洞改走 `structure_route` 的 `kind='entrance'` 盒状区域，
     --   而 `allow_state3=false` ⇒ early_drive 关闭 ⇒ 本 region 只剩
     --   **泰坦专用路径**（native_titan_aim，stage 前缀 `'titan/'`）在用。
-    --   ⇒ 2026-09-30 用户要求：泰坦/孢子泰坦的**球形**判定半径先 2.0 → 1.75（收紧水平），
-    --     紧接着要求"放宽侧面/斜上" ⇒ **回到 2.0**（above 保持 1.2）。
-    --     现在三个方向：水平 2.0（=改球形前）/ 下方 2.0（比改球形前的 1.2 放宽）/
-    --     上方 1.2（不变）；斜上 dz=1.2 处水平 1.6（改球形前圆柱是 2.0）。
-    --   同值还用作 titan_route 的 `terminal_radius`（路线进入 attack 的门槛）。
-    --   注：`depth` 在球形判定里已不参与（下方交给球半径），保留只为配置兼容与断言。
-    titan_arrival_region={radius=2.0,depth=1.2,above=1.2},bughole_only=true,bughole_profiles=16,
+    --   ⇒ 2026-09-30 取值轨迹：2.0 →（球形试验）1.75 → 回 2.0 → **2.25（当前）**。
+    --     ★ 2.0 → 2.25 的理由：用户报"G-60 到达引爆点耗时久"，而实测瓶颈是**绕行几何**
+    --       （12m 外圈 / 20°/步，单次 3.0~4.7s；捷径②放宽到数学上限后仍 0 命中）。
+    --       本值**同时**是 titan_route 的 `terminal_radius` ⇒ 调大后：
+    --         · `under` 段里 `radius<=terminal_radius` 更早成立 ⇒ **更早切 attack 直冲**（本轮目的）
+    --         · 绕过默认绕行的门槛更宽
+    --       代价：爆点离腹部略远（2.0→2.25 只多 0.25m，属小幅），需实机确认"炸得死"。
+    --       注：捷径②要求 `radius>terminal_radius` ⇒ 调大本值会**略收窄**那条走廊，
+    --       但该捷径实测 0 命中，无实际影响。
+    --   配置断言范围：radius ∈ (0, 3]。
+    titan_arrival_region={radius=2.25,depth=1.2,above=1.2},bughole_only=true,bughole_profiles=16,
     experimental=true,native_lifetime_verified=false,state='starting'}
 rawset(_G,'G60BugholeLock',state)
 local log,host

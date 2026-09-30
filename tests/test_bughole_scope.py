@@ -176,12 +176,46 @@ ROUTE_REQUIRED = (
     "along>0 and flat<=approach",       # 只在入口侧且已在进场半径内
     "M.on_direct_entrance",             # 纯函数保持：不直接依赖 env
 )
+# ★ titan_route 不再逐字节等于上游：**捷径②的高度门槛** `under+0.5` → `under+2.0`
+#   （2026-09-30：实机 4 次接管 `titan_started` 的 stage 全是 `around` ⇒ 捷径②从未命中，
+#   每次都要绕 12 m 外圈。计算：原 +0.5 在 standoff=2.5 时要求 G-60 低于腹部 3.0 m，
+#   实战几乎不可能；放宽到 +2.0 后只需 1.5 m，净空受限（standoff→0.85）时与腹部同高即可。）
+#   上游的路线几何断言与**捷径②的其余条件**（forward≤2.5 有意不动）一条都不能少 ⇒ 锚点 pin 死。
+TITAN_ROUTE_ANCHORS = (
+    "assert(finite(terminal_radius) and terminal_radius>0 and terminal_radius<=3,'invalid terminal radius')",
+    "assert(finite(standoff) and standoff>=0 and standoff<=10,'invalid Titan standoff')",
+    "assert(finite(rx) and finite(ry),'invalid route heading')",
+    "assert(norm>0.5 and norm<2,'Titan body heading unavailable')",
+    "assert(route.side==1 or route.side==-1,'invalid route side')",
+    "assert(finite(route.cruise_offset),'invalid route cruise height')",
+    "'Titan has insufficient blast standoff clearance'",
+    "'Titan has insufficient observed belly clearance'",
+    "'unknown Titan route stage'",
+    # 捷径②：上游意图注释 + forward 条件（**有意保持上游值** —— 一次只动一个变量）
+    "Already below the belly and inside the side corridor: go inward,",
+    "local forward=math.abs(-dx*ry+dy*rx)",
+    "forward<=2.5",
+)
+TITAN_ROUTE_REQUIRED = (
+    "target.origin[3]+1.25",      # 离地余量保持上游 1.25（恢复后未动）
+    "own[3]<=under+2.5",          # ★ 高度门槛放宽到 +2.5（安全上限，2026-09-30）
+)
+TITAN_ROUTE_FORBIDDEN = (
+    "own[3]<=under+2.0",          # ★ 旧门槛（+2.5 为安全上限，禁止回退到它或更低）
+)
+
 SAFETY_ANCHORS = {
     'src/g60/native_ping.lua': PING_ANCHORS,
     'src/g60/arrival_policy.lua': ARRIVAL_ANCHORS,
     'src/g60/native_search_context.lua': SEARCH_CTX_ANCHORS,
     'src/g60/native_arrival.lua': ARR_EARLY_ANCHORS,
     'src/g60/structure_route.lua': ROUTE_ANCHORS,
+    'src/g60/titan_route.lua': TITAN_ROUTE_ANCHORS,
+}
+SAFETY_FORBIDDEN = {
+    'src/g60/native_ping.lua': PING_FORBIDDEN,
+    'src/g60/arrival_policy.lua': ARRIVAL_FORBIDDEN,
+    'src/g60/titan_route.lua': TITAN_ROUTE_FORBIDDEN,
 }
 SAFETY_REQUIRED = {
     'src/g60/native_ping.lua': PING_REQUIRED,
@@ -199,6 +233,7 @@ SAFETY_REQUIRED = {
     'src/g60/arrival_policy.lua': ARRIVAL_REQUIRED,
     'src/g60/native_search_context.lua': SEARCH_CTX_REQUIRED,
     'src/g60/native_arrival.lua': ARR_EARLY_REQUIRED,
+    'src/g60/titan_route.lua': TITAN_ROUTE_REQUIRED,
 }
 
 # ★ compat/build.json 里 88 条 game.dll 签名 + exe 引擎签名必须与上游**逐条**相同。
