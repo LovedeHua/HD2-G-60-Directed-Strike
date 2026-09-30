@@ -155,12 +155,20 @@ ef04cb84d097a497 → content/fac_bugs/cha_strider/cha_strider_gloom
 
 ## 安装
 
+> ### 📦 成品包下载
+> **[GitHub Releases › 最新版](https://github.com/LovedeHua/HD2-G60-BugHole-Lock/releases/latest)**
+> —— 下载 `G60-BugHole-Lock-0.1.0.zip` 直接导入 mod 管理器。
+> （本仓库里只有**源码**，成品包放在 Releases 的附件里。）
+
 1. 关闭游戏，安装 [Bingus Shared Loader](https://github.com/CowboyBingus/BingusSharedLoader)
    （**API 1，v15+**，需 addon discovery）。
 2. 把 `G60-BugHole-Lock-0.1.0.zip` 导入 mod 管理器。
 3. **与上游官方包二选一**——两个包都会改 G-60 的决策，同时启用会打架。
    本包 GUID `9c1d4e77-…`，官方包 GUID `58a16a67-…`。
 4. Purge / Deploy 后重启游戏。
+
+> ⚠ 装完先看 `G60BugholeLock.log` 的**第一行**——有 `version=0.5.20-bughole;…` 才算加载成功。
+> 一行都没有 = 没生效（可能是没进 addon 发现列表，或产物编译失败），**此时任何"调参"都无意义**。
 
 卸载：禁用本包 → Purge / Deploy → 重启。
 
