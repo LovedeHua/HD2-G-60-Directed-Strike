@@ -226,6 +226,7 @@ ef04cb84d097a497 → content/fac_bugs/cha_strider/cha_strider_gloom
 | `arrival_quarantined;entity=…;detail=…` | **只放弃这一颗**：那次写入与引擎原生写重叠（瞬时竞争），该 G-60 交回引擎，其余照常接管 |
 | `structure_lock_lost;target=…;detail=…` | 已持有的锁被放弃。`RESOURCE_NOT_IN_WHITELIST` 只应出现在**资源真的变了**（实体 id 被引擎复用）时 |
 | `disabled;applied=N` | **已用完的熔断**：N = 停手前完成的接管数。只在**结构性**失败（版本漂移）或同帧多颗竞争时出现 |
+| `point_marker;slot=…;pos=x/y/z;dist=…` | ★ 你 ping 到**空地**（空白标记）时，槽里那个**世界坐标**（2026-10-01 新增，**只读诊断**）。实测：一次 ping 写一个槽、坐标就是 ping 的那一点 |
 
 > ★ **2026-09-30 修掉的一个致命 bug**：`arrival` 段原先沿用上游那句
 > `if mutated then disabled=true end`，而 `priority` 段早已改成"瞬时竞争只放弃一颗"。
@@ -238,6 +239,31 @@ ef04cb84d097a497 → content/fac_bugs/cha_strider/cha_strider_gloom
 
 启动时那行会明确打印本包的能力边界：
 `build=BUGHOLE_ONLY;scope=marked_bughole_only;bughole_profiles=16;enemy_priority=REMOVED;weakpoints=REMOVED;shrieker_spewer_egg=REMOVED;unmarked_behavior=VANILLA`
+
+## ping 槽结构（逆向笔记，2026-10-01 实测）
+
+你按一下 ping，游戏会往一个 **128 槽的环形缓冲**（每槽 `0x58` 字节，`head/tail` 在头部）写一条。
+本 mod 只认 **owner = 本机玩家** 且在活窗口 `head..tail` 内的那些槽。
+
+| 偏移 | 类型 | 含义 | 证据 |
+|---|---|---|---|
+| `+0x00` | u32 | 恒 0 | 8 槽全 0 |
+| **`+0x04/+0x08/+0x0c`** | float3 | **世界坐标** | 各槽不同、量级合理、Z≈地形高度；**三边定位自洽**（8 组 (坐标,距离) 解出同一公共点，残差 ~0.7m RMS） |
+| `+0x10` | float | 8.0（像标记存活时长） | 常量 |
+| `+0x14` | float | ⚠ **不是"存活时间"** | 同帧各槽几乎相同（差 1e-6~1e-5 s）⇒ 更像**每帧刷新**的量（值≈帧长） |
+| `+0x18` | u32 | 创建者实体 id（本机玩家） | 同局常量 |
+| **`+0x20`** | u32 | **目标实体 id；`0` = 空白标记**（ping 到空地） | `NO_ENTITY_MARK` 时读到的就是 0 |
+| `+0x28` | float | **到玩家/相机的距离（米）** | 与上面坐标三边定位自洽 |
+| `+0x2c/+0x30` | float | 屏幕坐标（≈ `960,600` = 准星中心） | ping 落在准星上，故恒在中心 |
+| `+0x44..+0x50` | float | 像颜色/透明度 `(1,1,1,0.93)` | — |
+
+> **一次 ping 写一个槽**；取活窗口里**最后一项**即最新 ping（实测：两次 ping ⇒ 恰好两个槽，
+> 两坐标间距 **37.3 m**，与"走开约 30m 再 ping"吻合）。
+> ⚠ 因为 `+0x14` 不是时间戳，**不能用它挑"最新"**；上游那句 `age>=0 and age<duration`
+> 实际只起 owner 匹配的作用。
+>
+> 目前该坐标**只用于诊断日志**（`point_marker;`）——「ping 一个位置 ⇒ G-60 飞过去炸」
+> 所需的引导通路尚未实现（前提仍是**有敌人**、G-60 处于 state 4）。
 
 ## 已知限制
 
