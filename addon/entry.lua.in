@@ -87,6 +87,18 @@ local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets
     --   ▸ 排除表（small_filter）仍然生效（运输船等）。
     --   设为 false 可完全退回"只管虫洞/泰坦/变体"。
     generic_takeover_enabled=true,
+    -- ★★★ 早期导航探测（2026-10-01，用户要求"无敌人时也能炸虫洞"）★★★
+    --   目的：测出 state 2/3（附近无敌人）时**能否拿到 movement 组件地址** ——
+    --   这是"绕过 selection、直接用 orbit 写导航目的地"这条路的前提。
+    --   · `early_nav_probe=true`  —— **纯只读**（每颗 G-60 探一次，打一行
+    --     `early_nav_probe;` 日志）。零风险：不写内存、不碰 take_gate、
+    --     不改变任何现有行为（allow_state3 仍为 false）。默认**开**。
+    --   · `early_nav_orbit=false` —— 第二级：探测成功后额外调**一次**引擎自己的
+    --     `calls.orbit` 试写 `movement+0x60`，再回读比对（日志 `early_nav_orbit;`）。
+    --     比裸写内存安全（引擎自己处理结构），但仍是写操作 ⇒ 默认**关**，
+    --     需要时再打开。
+    --   ⇒ 只看日志就能回答：早期能不能拿到 movement、orbit 在早期是否被采纳。
+    early_nav_probe=true,early_nav_orbit=false,
     -- ★ 到达区域（**泰坦/变体专用**）—— 判定形状 = **圆柱**（2026-09-30 试过球形，
     --   实机效果差 ⇒ 已回滚；公式见 arrival_policy: `dx²+dy²<=r² 且 -depth<=dz<=above`）。
     --   历史：这段原本按**虫洞**标定过（2026-09-28：上游 {radius=1.75,depth=0.8}
@@ -173,6 +185,9 @@ local ok,why=pcall(function()
             -- ★ 2026-10-01：玩家点名标记运输船/增援飞船时，索敌硬门槛被放行的证据行
             --   （没有它就无法确认"是这条例外让它飞过去的"）
             and not line:match('^generic_native_invalid_allowed;')
+            -- ★ 2026-10-01：早期导航探测（每颗 G-60 一条，是"无敌人能否驱动"的唯一判据）
+            and not line:match('^early_nav_probe;')
+            and not line:match('^early_nav_orbit;')
             -- ★ perf 窗口行必须常驻：它是"优化有没有效"的唯一判据，
             --   被节流掉就等于没测（同日 arrival_already_exploded 已栽过一次）。
             and not line:match('^perf;') then return end
@@ -263,6 +278,7 @@ local ok,why=pcall(function()
         dragonroach_enabled=state.dragonroach_enabled,dragonroach_resource=state.dragonroach_resource,
         enemy_veto_enabled=state.enemy_veto_enabled,
         generic_takeover_enabled=state.generic_takeover_enabled,
+        early_nav_probe=state.early_nav_probe,early_nav_orbit=state.early_nav_orbit,
         titan_arrival_region=state.titan_arrival_region,
         thread=function() return tonumber(k.GetCurrentThreadId()) end,
         engine=assert(rawget(_G,'stingray'),'engine API unavailable'),emit=emit})

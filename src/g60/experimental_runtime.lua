@@ -588,6 +588,79 @@ function M.new(env)
                 --   门槛：至少飞够 EARLY_MIN_AGE 帧才碰它 —— 刚出膛那几帧
                 --   movement 还没建立，此时写入风险最高（游戏崩过一次）。
                 --   state 5 是过期/待回收，也不碰。
+                -- ★★★ 早期导航探测（2026-10-01，用户要求"无敌人时也能炸虫洞"）★★★
+                --
+                -- 目的：回答一个**纯观测**问题 —— G-60 停在 state 2/3（附近无敌人、
+                --   引擎没给它目标）时，我们**能不能拿到它的 movement 组件地址**？
+                --
+                -- 为什么这是分水岭：
+                --   · **已实测否掉**的路：state 2/3 用 **setter**（`calls.clear` 设目标）——
+                --     v1 实体模式 / v2 点目标模式两轮实验：写入回读一致，但 G-60 行为不变
+                --     （停在 state 3 上千帧）⇒ state 2/3 的导航**不读 selection**。
+                --   · **还没试过、原理不同**的路：`calls.orbit` —— 它直接写
+                --     `movement+0x60`（导航目的地），**不经过 selection**；在 state 4 已被
+                --     证明有效（native_minimal 的搜索链路断言 destination 变化）。
+                --   · 而 orbit 需要 `pair={entity,state}` 与 movement 地址，**全部来自
+                --     `Search.capture`** ⇒ 它能否在早期 state 跑成功，就是分水岭。
+                --
+                -- 本段特性（三条都很重要）：
+                --   ① **纯只读** —— 只有 `env.early_nav_orbit=true` 时才多调一次 orbit；
+                --   ② **独立于 take_gate** —— 不碰 allow_state3，不改变任何现有行为
+                --      （打开 allow_state3 的已知副作用是 priority 早期 setter 每帧
+                --        `pointer bound`，这里完全不走那条路）；
+                --   ③ 按 `flight_start` 去重 ⇒ 每颗 G-60 只探一次，不刷屏。
+                --   ⚠ 传 `allow_early_state=true` 是**必须的**：否则 capture 会以
+                --     'not active state-4 G60' 直接拒绝，那样就分不清"策略拒绝"与
+                --     "结构未就绪"了 —— 而后者才是我们要测的。
+                if env.early_nav_probe and env.emit and m.behavior_id==4
+                    and (m.state==2 or m.state==3) then
+                    P.probe=P.probe or {}
+                    local pk=m.identity_bytes..m.flight_start
+                    if not P.probe[pk] then
+                        P.probe[pk]=true
+                        local ok_c,cap=pcall(Search.capture,read,base,m,env.engine,
+                            {matches={},allow_early_state=true})
+                        if not ok_c or type(cap)~='table' then
+                            -- 失败原因本身就是证据：
+                            --   'missing movement component' ⇒ 早期还没建 movement（mod 侧无解）
+                            --   'pointer bound' / 'read bound' ⇒ 结构未就绪
+                            --   'native update excluded'      ⇒ 该位为 1（引擎在原生更新）
+                            env.emit('early_nav_probe;entity='..m.id..';state='..m.state
+                                ..';result=CAPTURE_FAILED;detail='..tostring(cap))
+                        else
+                            local buf=ffi.new('uint8_t[12]',cap.movement_bytes:sub(0x61,0x6c))
+                            local f=ffi.cast('float *',buf)
+                            local before=string.format('%.2f,%.2f,%.2f',f[0],f[1],f[2])
+                            env.emit('early_nav_probe;entity='..m.id..';state='..m.state
+                                ..';result=OK;movement='..string.format('%x',cap.movement_address)
+                                ..';path_agent='..tostring(cap.path_agent_present)
+                                ..';dest='..before)
+                            -- 第二阶段（默认关闭）：用引擎自己的 orbit 试写导航目的地。
+                            --   它比裸写内存安全（引擎自己处理结构），但仍需用户明确开启。
+                            if env.early_nav_orbit and env.calls and env.calls.orbit then
+                                local pair=ffi.new('void *[2]',
+                                    {ffi.cast('void *',cap.entity_address),
+                                     ffi.cast('void *',cap.state_address)})
+                                local ok_o,why=pcall(function()
+                                    env.calls.orbit(pair,10.0,2.5,1.2000000476837158)
+                                end)
+                                local after='nil'
+                                if ok_o then
+                                    local ok_r,raw=pcall(read,cap.movement_address+0x60,12)
+                                    if ok_r then
+                                        local b2=ffi.new('uint8_t[12]',raw)
+                                        local f2=ffi.cast('float *',b2)
+                                        after=string.format('%.2f,%.2f,%.2f',f2[0],f2[1],f2[2])
+                                    end
+                                end
+                                env.emit('early_nav_orbit;entity='..m.id..';state='..m.state
+                                    ..';ok='..tostring(ok_o)..';why='..tostring(why)
+                                    ..';before='..before..';after='..after
+                                    ..';changed='..tostring(after~=before))
+                            end
+                        end
+                    end
+                end
                 local early_fp=m.identity_bytes..m.flight_start
                 local drive3=env.allow_state3 and not state3_blocked
                     and (m.state==2 or m.state==3)

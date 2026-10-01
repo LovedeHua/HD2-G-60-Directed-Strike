@@ -2047,6 +2047,53 @@ def test_arrival_fault_isolation():
           f"native_arrival(pos {aliases.index('native_arrival')}) 之前定义")
 
 
+def test_early_nav_probe():
+    print()
+    print("=== ㉔ 早期导航探测（无敌人时能否驱动 G-60 —— 2026-10-01 用户要求）===")
+    r = RUNTIME.read_text(encoding="utf-8")
+    e = (ROOT / "addon" / "entry.lua.in").read_text(encoding="utf-8")
+
+    # 1) 探测段存在，且**只读**（emit 为 nil 时不进）
+    check("early_nav_probe_exists",
+          "if env.early_nav_probe and env.emit and m.behavior_id==4" in r,
+          "runtime 有早期导航探测分支（env.emit 缺失时不进）")
+    check("early_nav_probe_readonly_by_default",
+          "if env.early_nav_orbit and env.calls and env.calls.orbit then" in r,
+          "★ orbit 试探受**独立开关**保护（默认关）⇒ 探测本身纯只读")
+    # 2) 必须传 allow_early_state，否则 capture 会以策略理由拒绝、
+    #    分不清"策略拒绝"与"结构未就绪"（后者才是要测的）
+    check("early_nav_probe_allows_early_capture",
+          "{matches={},allow_early_state=true}" in r,
+          "★ 探测显式放行早期 state（否则测不出真因）")
+    # 3) 关键定位断言：探测段必须**独立于 take_gate 门控**
+    #    （放在 `local early_fp=` 之前 ⇒ 不受 allow_state3/early_state_disabled 影响）
+    _p = r.index("if env.early_nav_probe and env.emit and m.behavior_id==4")
+    _e = r.index("local early_fp=m.identity_bytes..m.flight_start")
+    check("early_nav_probe_independent_of_gate",
+          _p < _e,
+          "★ 探测在 take_gate 门控之前 ⇒ 不依赖 allow_state3，不改变现有行为")
+    # 4) 失败原因必须原样打出来（'missing movement component' 与 'pointer bound'
+    #    是两种不同结论，不能被压成同一句）
+    check("early_nav_probe_reports_failure_detail",
+          "';result=CAPTURE_FAILED;detail='..tostring(cap)" in r,
+          "失败原因原样上报（区分'组件未建立'与'结构未就绪'）")
+    # 5) 开关与白名单
+    check("early_nav_probe_default_on_readonly",
+          "early_nav_probe=true,early_nav_orbit=false," in e,
+          "★ 默认：只读探测开、orbit 试探关")
+    check("early_nav_flags_passed_to_runtime",
+          "early_nav_probe=state.early_nav_probe,early_nav_orbit=state.early_nav_orbit," in e,
+          "两个开关传入 Runtime.new")
+    check("early_nav_lines_whitelisted",
+          "and not line:match('^early_nav_probe;')" in e
+          and "and not line:match('^early_nav_orbit;')" in e,
+          "★ 探测日志进节流白名单（否则等于没测）")
+    # 6) 不得偷开 allow_state3（那会引入 priority 早期 setter 的每帧 pointer bound）
+    check("early_nav_probe_does_not_enable_state3",
+          "allow_state3=false," in e,
+          "★ allow_state3 仍为 false（探测独立于它，不引入已知副作用）")
+
+
 def main():
     rt = lupa.LuaRuntime(encoding=None, unpack_returned_tuples=True)
     test_fault_classification(rt)
@@ -2070,6 +2117,7 @@ def main():
     test_stuck_grenade_breakers()
     test_generic_takeover()
     test_link_diagnostics()
+    test_early_nav_probe()
     test_priority_wiring()
     test_arrival_fault_isolation()
 
