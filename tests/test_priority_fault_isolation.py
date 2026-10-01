@@ -2191,8 +2191,8 @@ def test_early_nav_probe():
     # ★★ 诊断表必须放进 P（复用既有 local）：host:tick 的匿名函数 upvalue 已吃满 60
     #   （Lua 5.1 上限）⇒ 新开 local 可能让整个 chunk 编译失败（"mod 没生效"）。
     check("point_marker_state_inside_P",
-          "pmark={},pmark_n=0," in r and "pt={token=nil,frame=-1000000000}}" in r
-          and "local point_mark_logged" not in r,
+          "pmark={},pmark_n=0," in r and "pt={token=nil,frame=-1000000000}," in r
+          and "pg={}}" in r and "local point_mark_logged" not in r,
           "★ 去重表与点目标新鲜度状态都放进 P（不新增 upvalue，避免 60 上限）")
     check("point_marker_switch_and_whitelist",
           "point_marker_enabled=true," in e and "and not line:match('^point_marker;')" in e
@@ -2244,7 +2244,22 @@ def test_point_target(rt):
     check("runtime_point_drive_priority",
           "local point_drive=not abandoned and point_marker~=nil and not titan_selected" in r,
           "★ 优先级：虫洞标记 > 泰坦/弱点 > ping 地面点（不抢既有行为）")
-    check("runtime_point_hold_and_start_log",
+    # ★★★ 本轮实机事故的回归守门（2026-10-01）★★★
+    #   分支后面有一段**公共**的引导失败熔断：`if result then 清零 else fail_count+1`。
+    #   第一版 point_drive 分支没给 result 赋值 ⇒ 每帧被记成失败 ⇒
+    #   **30 帧（约 0.5 秒）后 guide_give_up 把这颗 G-60 退休** ⇒ 半路停手、再也跑不到引爆。
+    #   实机日志：point_taken → skipped;reason=nil;detail=nil ×30 → guide_give_up;after=30
+    #   （用户报"G60 飞过去了，但没爆炸"）。
+    _pb_start = r.index("elseif point_drive then")
+    _pb_end = r.index("\n                        else", _pb_start)
+    _pb = r[_pb_start:_pb_end]
+    check("point_branch_reports_success",
+          "result={kind='point'}" in _pb,
+          "★ point_drive 分支必须给 result 赋值（否则被公共熔断段记成失败、30 帧后退休）")
+    check("point_branch_does_not_step_runner",
+          "runner:step" not in _pb and "runner:release(old.ref)" in _pb,
+          "点目标分支只释放 runner（不让它改写我们写的点目标）")
+    check("point_hold_and_start_log",
           "old.point={x=point_marker.x" in r and "'point_taken;entity=%s" in r,
           "登记持有 + 首次接管打一行 point_taken")
     check("runtime_point_released_on_marker_loss",
@@ -2274,7 +2289,7 @@ def test_point_target(rt):
     # 6) 配置与日志白名单
     check("point_target_config",
           "point_target_enabled=true,point_target_ttl_frames=1200," in e
-          and "point_arrival_region={radius=2.0,depth=1.5,above=1.5}," in e,
+          and "point_arrival_region={radius=2.5,depth=2.0,above=2.0}," in e,
           "★ 开关 / TTL / 到达区域都有配置（above 必须留量：G-60 会悬在地面点上方）")
     check("point_target_config_passed",
           "point_target_enabled=state.point_target_enabled," in e
@@ -2283,12 +2298,20 @@ def test_point_target(rt):
           "三个配置都传进 Runtime.new")
     check("point_target_lines_whitelisted",
           "and not line:match('^point_taken;')" in e
-          and "and not line:match('^point_released;')" in e,
-          "★ point_taken / point_released 进节流白名单（否则等于没测）")
+          and "and not line:match('^point_released;')" in e
+          and "and not line:match('^point_guide;')" in e
+          and "and not line:match('^point_stalled;')" in e,
+          "★ point_taken / point_released / point_guide / point_stalled 都进节流白名单")
+    # 点目标的 guide/search 原本**完全静默**（只有 detonate/quarantine 打日志）
+    #   ⇒ 实机"飞过去没炸"时日志里只有 point_taken，无从判断卡在哪。
+    check("point_guidance_diagnostics",
+          "'point_stalled;entity='" in r and "'point_guide;entity='" in r
+          and "frame-(P.pg[m.id] or -1000)>=60" in r,
+          "★ 补引导/停滞诊断（停滞=到达判定没满足；guide 每 60 帧报一次距离）")
 
     # 7) 只读边界与既有路径不受影响
     check("point_region_within_policy_bounds",
-          "radius=2.0,depth=1.5,above=1.5" in e,
+          "radius=2.5,depth=2.0,above=2.0" in e,
           "到达区域落在 arrival_policy 断言范围内（radius<=3 / depth<=2 / above<=2）")
     check("point_does_not_change_veto_path",
           "run_veto(m,veto_resource,'no_mark')" in r,

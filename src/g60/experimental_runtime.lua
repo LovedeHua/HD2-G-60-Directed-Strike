@@ -51,7 +51,9 @@ function M.new(env)
         pmark={},pmark_n=0,
         -- ★ 点目标（ping 地面）的"新鲜度"状态：`token` = 当前标记，`frame` = 它出现的帧。
         --   同一个 token 只在 TTL 内作数（见 point_target_ttl_frames）。
-        pt={token=nil,frame=-1000000000}}
+        pt={token=nil,frame=-1000000000},
+        -- ★ 点目标"每 60 帧报一次距离"的节流表（见 point_guide 诊断）
+        pg={}}
     local frame_errors={}
     local structure_issue_counts={}
     local last_structure_issue
@@ -1071,9 +1073,17 @@ function M.new(env)
                         elseif point_drive then
                             -- ★ 点目标：**本段不写内存** —— 真正的点目标写入在 arrival 段
                             --   （native_arrival 的 `options.point_target`，与泰坦同款写法）。
-                            --   这里只做两件事：登记持有 + 交回 runner
-                            --   （runner 会按原生搜索改写选择，必须先释放，
-                            --     否则它会每帧把我们刚写的点目标清掉）。
+                            --   这里只做三件事：登记持有 + 交回 runner + 标记"本帧成功"。
+                            --
+                            --   ★★ 必须给 result 赋值（2026-10-01 实机事故）★★
+                            --   分支后面有一段公共的**引导失败熔断**：
+                            --       if result then 清零计数 else 记一次失败（fail_count+1）
+                            --   第一版没赋值 ⇒ 每帧都被记成失败 ⇒ **30 帧（约 0.5 秒）后
+                            --   guide_give_up 把这颗 G-60 退休**，于是在半路停手，
+                            --   再也跑不到引爆判定。
+                            --   实机日志正是：point_taken → skipped;reason=nil;detail=nil ×30
+                            --                 → guide_give_up;after=30（G-60 飞过去了但没炸）。
+                            result={kind='point'}
                             old.titan=nil;old.lock=nil
                             local starting=old.point==nil
                             old.point={x=point_marker.x,y=point_marker.y,z=point_marker.z,
@@ -1232,6 +1242,25 @@ function M.new(env)
                             else
                                 old.arrival_progress=result.progress;old.force_search=nil
                                 if result.blocked then old.blocked=result.blocked end
+                                -- ★ 点目标的两条诊断（2026-10-01）★
+                                --   为什么必须打：点目标的 'guide'/'search' 原本**完全静默**
+                                --   （只有 detonate/quarantine 才打日志）⇒ 第一版实机
+                                --   "飞过去了但没炸"时日志里只有 point_taken，什么线索都没有。
+                                --   · point_stalled：到达判定 4 秒内没满足 ⇒ 交回引擎（要调区域）
+                                --   · point_guide  ：每 60 帧报一次当前距离（看它到底靠没靠近）
+                                if old.point then
+                                    if result.kind=='search' then
+                                        env.emit('point_stalled;entity='..m.id
+                                            ..';dist='..tostring(result.distance)..';frame='..frame)
+                                    elseif result.kind=='guide' and env.emit then
+                                        if frame-(P.pg[m.id] or -1000)>=60 then
+                                            P.pg[m.id]=frame
+                                            env.emit('point_guide;entity='..m.id
+                                                ..';dist='..string.format('%.2f',result.distance or -1)
+                                                ..';frame='..frame)
+                                        end
+                                    end
+                                end
                                 if result.kind=='search' then old.lock=nil;old.titan=nil;old.point=nil end
                                 if result.kind=='detonate' then
                                     retired[m.id]=retired_key

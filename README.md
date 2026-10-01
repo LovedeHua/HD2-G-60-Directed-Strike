@@ -251,6 +251,8 @@ ef04cb84d097a497 → content/fac_bugs/cha_strider/cha_strider_gloom
 | `point_marker;slot=…;pos=x/y/z;dist=…` | ★ 你 ping 到**空地**（空白标记）时，槽里那个**世界坐标**（2026-10-01 新增，**只读诊断**）。实测：一次 ping 写一个槽、坐标就是 ping 的那一点 |
 | `point_taken;entity=…;pos=…` | ★ **点目标接管**（2026-10-01）：本 mod 把 ping 的地面点写成"点目标"，G-60 正飞过去炸（见"ping 空地 ⇒ 指哪打哪"） |
 | `point_released;entity=…` | 点目标释放（ping 标记被引擎淘汰 / TTL 到期 / 你标记了虫洞）——该 G-60 交回引擎 |
+| `point_guide;entity=…;dist=…` | 点目标引导中，每 60 帧报一次**当前到目标点的距离**（看它有没有在靠近） |
+| `point_stalled;entity=…;dist=…` | ★ 到达判定 4 秒内没满足 ⇒ 交回引擎。**看到这条就是"飞过去没炸"** ⇒ 调 `point_arrival_region` |
 
 > ★ **2026-09-30 修掉的一个致命 bug**：`arrival` 段原先沿用上游那句
 > `if mutated then disabled=true end`，而 `priority` 段早已改成"瞬时竞争只放弃一颗"。
