@@ -93,12 +93,17 @@ local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets
     --   · `early_nav_probe=true`  —— **纯只读**（每颗 G-60 探一次，打一行
     --     `early_nav_probe;` 日志）。零风险：不写内存、不碰 take_gate、
     --     不改变任何现有行为（allow_state3 仍为 false）。默认**开**。
-    --   · `early_nav_orbit=false` —— 第二级：探测成功后额外调**一次**引擎自己的
-    --     `calls.orbit` 试写 `movement+0x60`，再回读比对（日志 `early_nav_orbit;`）。
-    --     比裸写内存安全（引擎自己处理结构），但仍是写操作 ⇒ 默认**关**，
-    --     需要时再打开。
+    --   · `early_nav_orbit=true` —— 第二级：探测成功后额外调**一次**引擎自己的
+    --     `calls.orbit` 试写 `movement+0x60`，再回读 destination 与 path_agent
+    --     （日志 `early_nav_orbit;`）。
+    --     ★ 2026-10-01 用户拍板开启 ★ 实测前提：state 3 探测 `result=OK` 但
+    --       `path_agent=false` + `dest=0.00,0.00,0.00`（引擎压根没给目的地）⇒
+    --       orbit 是**唯一的写途径**（mod 只绑了**读**内存的 API，无任何写内存 API）。
+    --     安全边界：**每颗 G-60 只调一次**（按 flight_start 去重，不是每帧）；
+    --       orbit 是已在 state 4 每帧调用的同一函数；但 `path_agent=false` 是新条件，
+    --       最坏情况是游戏崩溃（重开即可，不写盘）。
     --   ⇒ 只看日志就能回答：早期能不能拿到 movement、orbit 在早期是否被采纳。
-    early_nav_probe=true,early_nav_orbit=false,
+    early_nav_probe=true,early_nav_orbit=true,
     -- ★ 到达区域（**泰坦/变体专用**）—— 判定形状 = **圆柱**（2026-09-30 试过球形，
     --   实机效果差 ⇒ 已回滚；公式见 arrival_policy: `dx²+dy²<=r² 且 -depth<=dz<=above`）。
     --   历史：这段原本按**虫洞**标定过（2026-09-28：上游 {radius=1.75,depth=0.8}

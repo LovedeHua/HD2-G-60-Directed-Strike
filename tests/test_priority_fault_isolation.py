@@ -2057,9 +2057,13 @@ def test_early_nav_probe():
     check("early_nav_probe_exists",
           "if env.early_nav_probe and env.emit and m.behavior_id==4" in r,
           "runtime 有早期导航探测分支（env.emit 缺失时不进）")
-    check("early_nav_probe_readonly_by_default",
+    check("early_nav_orbit_behind_own_switch",
           "if env.early_nav_orbit and env.calls and env.calls.orbit then" in r,
-          "★ orbit 试探受**独立开关**保护（默认关）⇒ 探测本身纯只读")
+          "★ orbit 试探受**独立开关**保护（2026-10-01 用户拍板开启为实验）")
+    check("early_nav_orbit_probes_once_per_grenade",
+          "local pk=m.identity_bytes..m.flight_start" in r
+          and "P.probe[pk]=true" in r,
+          "★ 每颗 G-60 只探一次（按 flight_start 去重）—— orbit 不是每帧调用")
     # 2) 必须传 allow_early_state，否则 capture 会以策略理由拒绝、
     #    分不清"策略拒绝"与"结构未就绪"（后者才是要测的）
     check("early_nav_probe_allows_early_capture",
@@ -2078,9 +2082,20 @@ def test_early_nav_probe():
           "';result=CAPTURE_FAILED;detail='..tostring(cap)" in r,
           "失败原因原样上报（区分'组件未建立'与'结构未就绪'）")
     # 5) 开关与白名单
-    check("early_nav_probe_default_on_readonly",
-          "early_nav_probe=true,early_nav_orbit=false," in e,
-          "★ 默认：只读探测开、orbit 试探关")
+    check("early_nav_switches_values",
+          "early_nav_probe=true,early_nav_orbit=true," in e,
+          "★ 2026-10-01 用户拍板：只读探测 + orbit 试探都开（实验）")
+    # ★ 构建守门（build.py）扫描的是**整个 entry 文本（含注释）** ⇒ 注释里出现
+    #   WriteProcessMemory 之类的字面量会直接让构建失败（本次就踩了）。
+    #   这里在源码层再钉一道，免得以后在注释里"顺手"写出来。
+    for _word in ("WriteProcessMemory", "VirtualAlloc", "VirtualProtect", "MinHook", "ffi.copy"):
+        check("no_forbidden_capability_word_" + _word.replace(".", "_"),
+              _word not in r and _word not in e,
+              f"★ 源码（含注释）不得出现 {_word}（build.py 的守门会拒绝出包）")
+    check("early_nav_orbit_reports_path_agent",
+          "';agent_before='..tostring(cap.path_agent_present)" in r
+          and "';agent_after='..agent_after" in r,
+          "★ 回读 path_agent 变化（'引擎真的开始导航'的信号，比 dest 更硬）")
     check("early_nav_flags_passed_to_runtime",
           "early_nav_probe=state.early_nav_probe,early_nav_orbit=state.early_nav_orbit," in e,
           "两个开关传入 Runtime.new")

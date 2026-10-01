@@ -635,8 +635,12 @@ function M.new(env)
                                 ..';result=OK;movement='..string.format('%x',cap.movement_address)
                                 ..';path_agent='..tostring(cap.path_agent_present)
                                 ..';dest='..before)
-                            -- 第二阶段（默认关闭）：用引擎自己的 orbit 试写导航目的地。
-                            --   它比裸写内存安全（引擎自己处理结构），但仍需用户明确开启。
+                            -- 第二阶段（2026-10-01 用户拍板开启）：用引擎**自己的**
+                            --   `orbit` 试写导航目的地 —— 这是本工程唯一的写途径
+                            --   （mod 只绑了**读**内存的 API，**没有任何写内存的 API** —— 写一律走引擎函数）。
+                            --   回读三件事：destination 是否变化、**path_agent 是否从
+                            --   0xffffffff 变成有效值**（后者才是"引擎真的开始导航"
+                            --   的信号）、以及调用是否抛错。
                             if env.early_nav_orbit and env.calls and env.calls.orbit then
                                 local pair=ffi.new('void *[2]',
                                     {ffi.cast('void *',cap.entity_address),
@@ -644,7 +648,7 @@ function M.new(env)
                                 local ok_o,why=pcall(function()
                                     env.calls.orbit(pair,10.0,2.5,1.2000000476837158)
                                 end)
-                                local after='nil'
+                                local after,agent_after='nil','nil'
                                 if ok_o then
                                     local ok_r,raw=pcall(read,cap.movement_address+0x60,12)
                                     if ok_r then
@@ -652,11 +656,17 @@ function M.new(env)
                                         local f2=ffi.cast('float *',b2)
                                         after=string.format('%.2f,%.2f,%.2f',f2[0],f2[1],f2[2])
                                     end
+                                    local ok_p,pa=pcall(read,cap.movement_address+8,4)
+                                    if ok_p then
+                                        agent_after=tostring(Layout.u32(pa,0)~=0xffffffff)
+                                    end
                                 end
                                 env.emit('early_nav_orbit;entity='..m.id..';state='..m.state
                                     ..';ok='..tostring(ok_o)..';why='..tostring(why)
                                     ..';before='..before..';after='..after
-                                    ..';changed='..tostring(after~=before))
+                                    ..';changed='..tostring(after~=before)
+                                    ..';agent_before='..tostring(cap.path_agent_present)
+                                    ..';agent_after='..agent_after)
                             end
                         end
                     end
