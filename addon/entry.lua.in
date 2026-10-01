@@ -125,6 +125,16 @@ local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets
     --
     --   要重启实验：把下面两个值改回 true 即可（early_nav_orbit 是**写操作**，谨慎）。
     early_nav_probe=false,early_nav_orbit=false,
+    -- ★★ "空白标记"探查（2026-10-01，**只读**）★★
+    --   用户问：「无目标的空白标记（ping 到空地）是否也能接管？」
+    --   第一步先回答客观问题：**ping 空地时那个 88 字节的槽里有没有世界坐标**
+    --   （本 mod 只解出了 +0x10/14/18/20 四个字段，其余 ~68 字节从没看过）。
+    --   行为：**只在读不到实体**（NO_ENTITY_MARK）时把整槽 dump 出来
+    --        （hex 全量 + 扫描出的"疑似坐标三元组"），每槽一次。
+    --   ⇒ 纯读、零风险；ping 到实体时完全不产生日志。
+    --   ⚠ 注意：这**不解决**"无敌人时 G-60 不被驱动"的问题（那受 state 约束），
+    --     它只回答"玩家 ping 的位置能不能被读到"。
+    ping_slot_dump=true,
     -- ★ 到达区域（**泰坦/变体专用**）—— 判定形状 = **圆柱**（2026-09-30 试过球形，
     --   实机效果差 ⇒ 已回滚；公式见 arrival_policy: `dx²+dy²<=r² 且 -depth<=dz<=above`）。
     --   历史：这段原本按**虫洞**标定过（2026-09-28：上游 {radius=1.75,depth=0.8}
@@ -214,6 +224,8 @@ local ok,why=pcall(function()
             -- ★ 2026-10-01：早期导航探测（每颗 G-60 一条，是"无敌人能否驱动"的唯一判据）
             and not line:match('^early_nav_probe;')
             and not line:match('^early_nav_orbit;')
+            -- ★ 2026-10-01：ping 槽全字段 dump（"空白标记"探查，每槽一次）
+            and not line:match('^ping_slot;')
             -- ★ perf 窗口行必须常驻：它是"优化有没有效"的唯一判据，
             --   被节流掉就等于没测（同日 arrival_already_exploded 已栽过一次）。
             and not line:match('^perf;') then return end
@@ -305,6 +317,7 @@ local ok,why=pcall(function()
         enemy_veto_enabled=state.enemy_veto_enabled,
         generic_takeover_enabled=state.generic_takeover_enabled,
         early_nav_probe=state.early_nav_probe,early_nav_orbit=state.early_nav_orbit,
+        ping_slot_dump=state.ping_slot_dump,
         titan_arrival_region=state.titan_arrival_region,
         thread=function() return tonumber(k.GetCurrentThreadId()) end,
         engine=assert(rawget(_G,'stingray'),'engine API unavailable'),emit=emit})

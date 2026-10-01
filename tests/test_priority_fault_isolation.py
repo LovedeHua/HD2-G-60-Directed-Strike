@@ -2108,6 +2108,32 @@ def test_early_nav_probe():
           "allow_state3=false," in e,
           "★ allow_state3 仍为 false（探测独立于它，不引入已知副作用）")
 
+    # ── ⑦ "空白标记"探查：ping 槽全字段 dump（2026-10-01，只读）──
+    #   用户问「无目标的空白标记是否也能接管」⇒ 先回答客观问题：
+    #   ping 到空地时那个 88 字节的槽里有没有世界坐标。
+    pg = (ROOT / "src/g60" / "native_ping.lua").read_text(encoding="utf-8")
+    check("ping_slot_dump_exists",
+          "local function dump_slot(slot,bytes)" in pg,
+          "native_ping 有槽 dump 实现")
+    check("ping_slot_dump_only_on_missing_entity",
+          "if not e then\n                            diagnose(id,nil,'NO_ENTITY_MARK')\n"
+          "                            -- \u2605 \"空白标记\"（读不到实体）" in pg
+          or "if options.slot_dump then dump_slot(slot,r) end" in pg,
+          "★ 只在读不到实体（NO_ENTITY_MARK）时 dump —— 聚焦「空白标记」且天然不刷屏")
+    check("ping_slot_dump_readonly_and_deduped",
+          "local slot_seen={}" in pg and "if slot_seen[key] then return end" in pg,
+          "★ 每槽只 dump 一次（去重）⇒ 不会刷屏")
+    check("ping_slot_dump_reports_candidates",
+          "cand[#cand+1]=string.format('0x%x=%.2f/%.2f/%.2f'" in pg,
+          "同时扫描并报告「疑似坐标三元组」候选（便于人工比对）")
+    check("ping_slot_dump_wired_through_runtime",
+          "slot_dump=env.ping_slot_dump," in r
+          and "slot_dump_diagnostic=function(detail) env.emit('ping_slot;'..detail) end" in r,
+          "runtime 把开关与诊断通道接进 structure_ping")
+    check("ping_slot_dump_switch_and_whitelist",
+          "ping_slot_dump=true," in e and "and not line:match('^ping_slot;')" in e,
+          "★ entry 开关 + 日志进节流白名单（否则等于没测）")
+
 
 def main():
     rt = lupa.LuaRuntime(encoding=None, unpack_returned_tuples=True)

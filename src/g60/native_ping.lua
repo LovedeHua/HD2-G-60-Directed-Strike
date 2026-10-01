@@ -40,6 +40,38 @@ function M.new(env,options)
         diagnosed[detail]=true;diagnostic_count=diagnostic_count+1;options.diagnostic(detail)
     end
     local api={}
+    -- ★★ ping 槽**全字段** dump（2026-10-01，**只读**）★★
+    --
+    -- 背景：ping 环每槽 0x58 字节，而本文件只解出 4 个字段
+    --   （+0x10 duration / +0x14 age / +0x18 owner / +0x20 目标实体 id）。
+    -- 用户提出：「无目标的**空白标记**（ping 到空地）是否也能接管？」
+    --   ⇒ 要先回答一个客观问题：**ping 空地时槽里到底有没有世界坐标**。
+    -- 设计（三条）：
+    --   ① 只在**读不到实体**（NO_ENTITY_MARK）时才 dump —— 那正是"空白标记"的形态，
+    --      既聚焦又天然不刷屏（ping 到实体时槽里是什么我们并不需要）；
+    --   ② 每槽只 dump 一次（用 `slot:前4字节` 去重）；
+    --   ③ **纯读**：只 read + 格式化，不写任何内存。
+    -- 输出两样：88 字节的 hex（全量证据）+ 扫描出的"疑似 float 三元组"候选
+    --   （连续 3 个小量级有限浮点，可能就是坐标 —— 但会有误报，需人工比对）。
+    local slot_seen={}
+    local function dump_slot(slot,bytes)
+        local key=tostring(slot)..':'..bytes:sub(1,4)
+        if slot_seen[key] then return end
+        slot_seen[key]=true
+        if not options.slot_dump_diagnostic then return end
+        local hex=(bytes:gsub('.',function(ch) return string.format('%02x',string.byte(ch)) end))
+        local cand={}
+        for off=0,0x58-12,4 do
+            local a,b,c=Data.float(bytes,off),Data.float(bytes,off+4),Data.float(bytes,off+8)
+            if a==a and b==b and c==c and math.abs(a)<100000 and math.abs(b)<100000
+                and math.abs(c)<100000 and (a~=0 or b~=0 or c~=0) then
+                cand[#cand+1]=string.format('0x%x=%.2f/%.2f/%.2f',off,a,b,c)
+            end
+        end
+        options.slot_dump_diagnostic('slot='..slot..';id='..tostring(L.u32(bytes,0x20))
+            ..';age='..tostring(Data.float(bytes,0x14))
+            ..';hex='..hex..';f3='..table.concat(cand,'|'))
+    end
     function api:reset()
         memory:reset();diagnosed={};diagnostic_count=0
         last_selected=nil;failed_frames=0
@@ -83,7 +115,10 @@ function M.new(env,options)
                     local id=L.u32(r,0x20)
                     local good,mark=pcall(function()
                         local e=id~=d.invalid and d.entity(id)
-                        if not e then diagnose(id,nil,'NO_ENTITY_MARK')
+                        if not e then
+                            diagnose(id,nil,'NO_ENTITY_MARK')
+                            -- ★ "空白标记"（读不到实体）⇒ 把整槽 dump 出来（见 dump_slot 说明）
+                            if options.slot_dump then dump_slot(slot,r) end
                         elseif not allowed(e.resource) then diagnose(id,e.resource,'RESOURCE_NOT_SUPPORTED') end
                         if e and (not allowed or allowed(e.resource)) then
                             local unit=d.unit(e)

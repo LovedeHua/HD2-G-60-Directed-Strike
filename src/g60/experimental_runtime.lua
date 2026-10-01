@@ -203,7 +203,13 @@ function M.new(env)
             --   **不假装成功**：位置不明的目标不该被接管。
             local d=TargetData.new(read,base,env.exe)
             return d.position(e)
-        end})
+        end,
+        -- ★★ "空白标记"探查（2026-10-01，**只读**）★★
+        --   用户问：「无目标的空白标记是否也能接管？」—— 先回答客观问题：
+        --   **ping 到空地时，那个 88 字节的槽里到底有没有世界坐标**。
+        --   只在读不到实体（NO_ENTITY_MARK）时 dump，每槽一次（见 native_ping.dump_slot）。
+        slot_dump=env.ping_slot_dump,
+        slot_dump_diagnostic=function(detail) env.emit('ping_slot;'..detail) end})
     if ping or structure_ping then env.forget_mark=function(identity)
         if ping then ping:forget(identity) end
         if structure_ping then structure_ping:forget(identity) end
