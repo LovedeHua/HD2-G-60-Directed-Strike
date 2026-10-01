@@ -140,7 +140,14 @@ def assemble():
         modules.insert(-1, 'local ' + alias + '=(function()\n' + source + '\nend)()'
                        + ('(TitanProfile)' if factory else ''))
     text = (ROOT / 'addon/entry.lua.in').read_text().replace('@@MODULES@@', '\n'.join(modules))
-    text = text.replace('@@VERSION@@', CONFIG['runtime_version'])
+    text = text.replace('@@VERSION@@', VERSION)
+    # ★ 两个占位符语义不同，别混（2026-10-01）：
+    #   @@VERSION@@          = **本裁剪版的发布版本**（RELEASE_VERSION）—— "这是哪一版 mod"
+    #   @@RUNTIME_BASELINE@@ = **上游运行时基线**（build.json 的 runtime_version，0.5.20）
+    #                          —— "基于哪一版上游运行时"
+    #   以前 @@VERSION@@ 填的是 runtime_version，日志写 `version=0.5.20-bughole`，
+    #   与本 mod 的版本（当时已到 0.1.2）完全不是一回事，排查时容易误判。
+    text = text.replace('@@RUNTIME_BASELINE@@', CONFIG['runtime_version'])
     text = text.replace('@@GAME_GUARDS@@', CONFIG['game_guards_lua'])
     text = text.replace('@@ENGINE_CODE@@', CONFIG['engine_code'])
     for forbidden in ('VirtualAlloc', 'VirtualProtect', 'WriteProcessMemory', 'LoadLibrary',

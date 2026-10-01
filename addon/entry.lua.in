@@ -267,7 +267,8 @@ local ok,why=pcall(function()
         state.filter_enabled=false;state.state='disabled';emit('disabled;applied='..host.applied);close()
     end)
     state.stats=host;state.filter_enabled=true;state.state='experimental filtering active'
-    emit('version=@@VERSION@@-bughole;build=BUGHOLE_PLUS_TITAN;scope=marked_bughole_and_bile_titan;'
+    emit('version=@@VERSION@@-bughole;runtime_baseline=@@RUNTIME_BASELINE@@'
+        ..';build=BUGHOLE_PLUS_TITAN;scope=marked_bughole_and_bile_titan;'
         ..'bughole_profiles=16;enemy_priority=REMOVED;weakpoints=REMOVED;'
         ..'hole_variants=INCLUDED;spore_spewer_egg=REMOVED;target_valid=SOFT_SIGNAL;'
         ..'selection_veto=DISABLED;unmarked_behavior=VANILLA;filter_enabled=true;'

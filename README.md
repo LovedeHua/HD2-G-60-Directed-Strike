@@ -178,7 +178,8 @@ ef04cb84d097a497 → content/fac_bugs/cha_strider/cha_strider_gloom
    本包 GUID `9c1d4e77-…`，官方包 GUID `58a16a67-…`。
 4. Purge / Deploy 后重启游戏。
 
-> ⚠ 装完先看 `G60BugholeLock.log` 的**第一行**——有 `version=0.5.20-bughole;…` 才算加载成功。
+> ⚠ 装完先看 `G60BugholeLock.log` 的**第一行**——有 `version=0.1.2-bughole;…` 才算加载成功。
+> 那一行同时给出 `runtime_baseline=0.5.20`（**上游运行时基线**，与本 mod 的版本不是一回事）。
 > 一行都没有 = 没生效（可能是没进 addon 发现列表，或产物编译失败），**此时任何"调参"都无意义**。
 
 卸载：禁用本包 → Purge / Deploy → 重启。

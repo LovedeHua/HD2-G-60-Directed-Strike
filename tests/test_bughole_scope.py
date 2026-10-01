@@ -682,6 +682,7 @@ def main():
         names = z.namelist()
         manifest = json.loads(z.read('manifest.json'))
         build_info = json.loads(z.read('BUILD-INFO.json'))
+        packaged_source = z.read('Source/g60_bughole_lock.lua').decode('utf-8', 'replace')
         patch = z.read('Addon/9ba626afa44a3aa3.patch_0')
 
     check('manifest_guid', manifest['Guid'] == GUID, manifest['Guid'])
@@ -728,6 +729,20 @@ def main():
     check('derived_from_still_references_upstream_baseline',
           '0.1-beta.1' in _bi.get('derived_from', ''),
           f"derived_from={_bi.get('derived_from')}")
+
+    # ★ 日志首行必须**同时**给出两件事（2026-10-01）：
+    #     version          = 本裁剪版的版本（以前错填成 runtime_version，写着 0.5.20 让人误判）
+    #     runtime_baseline = 上游运行时基线
+    _rt = json.loads((ROOT / 'compat' / 'build.json').read_text(encoding='utf-8'))['runtime_version']
+    check('log_line_reports_release_version',
+          f"version={_RELEASE_VERSION}-bughole" in packaged_source,
+          f'日志首行 version={_RELEASE_VERSION}-bughole')
+    check('log_line_reports_runtime_baseline',
+          f'runtime_baseline={_rt}' in packaged_source,
+          f'日志首行 runtime_baseline={_rt}（上游运行时基线）')
+    check('no_unsubstituted_placeholder',
+          '@@' not in packaged_source,
+          '★ 产物里不得残留 @@ 占位符（build.py 也有同名断言）')
 
     check('manifest_mentions_bughole_only', 'bug hole' in manifest['Description'].lower())
     check('manifest_warns_mutually_exclusive',
