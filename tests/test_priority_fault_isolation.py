@@ -2122,7 +2122,21 @@ def test_early_nav_probe():
           "★ 只在读不到实体（NO_ENTITY_MARK）时 dump —— 聚焦「空白标记」且天然不刷屏")
     check("ping_slot_dump_readonly_and_deduped",
           "local slot_seen={}" in pg and "if slot_seen[key] then return end" in pg,
-          "★ 每槽只 dump 一次（去重）⇒ 不会刷屏")
+          "★ 有去重（不刷屏）")
+    # ★★ 去重键必须是**位置字节**（2026-10-01 第二次迭代）★★
+    #   第一版用 `slot:前4字节`（那 4 字节恒为 0）⇒ 每槽一生只 dump 一次
+    #   ⇒ 实测一次把 8 个槽打完，之后再 ping 新位置不再出日志，
+    #     根本无法回答"哪一次 ping 对应哪个坐标"（探测目的落空）。
+    check("ping_slot_dump_dedupes_by_position",
+          "local key=tostring(slot)..':'..bytes:sub(5,16)" in pg,
+          "★ 去重键含**位置 12 字节**（0x04..0x0f）⇒ 同槽坐标变了才再 dump")
+    check("ping_slot_dump_has_cap",
+          "local DUMP_CAP=80" in pg and "dump_capped;limit=" in pg,
+          "★ 有总条数上限（槽内容每帧都变时也不会刷爆日志）")
+    check("ping_slot_dump_reports_pos_and_dist",
+          "..';pos='..string.format('%.2f/%.2f/%.2f',f[1],f[2],f[3])" in pg
+          and "..';dist='..string.format('%.2f',f[10])" in pg,
+          "★ 直接打出解出的 pos(0x04) 与 dist(0x28)，便于与 hex 交叉核对")
     check("ping_slot_dump_reports_candidates",
           "cand[#cand+1]=string.format('0x%x=%.2f/%.2f/%.2f'" in pg,
           "同时扫描并报告「疑似坐标三元组」候选（便于人工比对）")

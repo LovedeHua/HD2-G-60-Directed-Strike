@@ -55,11 +55,27 @@ function M.new(env,options)
     -- 输出两样：88 字节的 hex（全量证据）+ 扫描出的"疑似 float 三元组"候选
     --   （连续 3 个小量级有限浮点，可能就是坐标 —— 但会有误报，需人工比对）。
     local slot_seen={}
+    local dump_count=0
+    local DUMP_CAP=80                  -- 防刷屏上限（超了只再打一行 dump_capped）
     local function dump_slot(slot,bytes)
-        local key=tostring(slot)..':'..bytes:sub(1,4)
+        -- ★★ 去重键 = **位置 12 字节**（2026-10-01 第二次迭代）★★
+        --   第一版用 `slot:前4字节`，而那 4 字节恒为 0 ⇒ **每槽一生只 dump 一次**。
+        --   实测后果：一次就把 8 个槽全打完，之后再 ping 新位置**不再出日志**
+        --   ⇒ 无法回答"哪一次 ping 落到哪个槽 / 哪个坐标"（而那正是本探测的目的）。
+        --   现在改为 `slot:位置字节` ⇒ 只有**同一个槽里的坐标真的变了**才再 dump
+        --   （= 玩家在同一个槽上 ping 了新位置时刚好命中）；坐标不变则完全静默。
+        local key=tostring(slot)..':'..bytes:sub(5,16)
         if slot_seen[key] then return end
         slot_seen[key]=true
         if not options.slot_dump_diagnostic then return end
+        if dump_count>=DUMP_CAP then
+            if dump_count==DUMP_CAP then
+                dump_count=dump_count+1
+                options.slot_dump_diagnostic('dump_capped;limit='..DUMP_CAP)
+            end
+            return
+        end
+        dump_count=dump_count+1
         -- ⚠ 本函数在 structure_mark 的 pcall **内部**被调用 ⇒ 一旦抛错会被记成
         --   `ENTITY_READ_FAILED`，把这次观测一起废掉（2026-10-01 实测就是这么踩的：
         --   日志里只有 ENTITY_READ_FAILED:…:nonfinite target data，dump 一行没出）。
@@ -81,8 +97,16 @@ function M.new(env,options)
                     cand[#cand+1]=string.format('0x%x=%.2f/%.2f/%.2f',i*4,a,b,c)
                 end
             end
+            -- ★ 2026-10-01 实测解码（8 槽 + 三边定位交叉验证自洽）：
+            --   +0x04/+0x08/+0x0c = **世界坐标 float3**（各槽不同、量级合理、Z≈地形高度）
+            --   +0x10 = 8.0 常量（像标记存活时长）· +0x14 = 0.0222（原解为 age，见下注）
+            --   +0x18 = 457 常量（像创建者/本地玩家实体 id）· +0x20 = 0（= 无实体，即"空白标记"）
+            --   +0x28 = **到某个公共点的距离**（三边定位：8 点解得公共点，残差 ~0.7m RMS）
+            --   +0x2c/+0x30 ≈ (960, 600) 常量附近（像屏幕/UI 投影）· +0x44..0x50 ≈ (1,1,1,0.933)
             return 'slot='..slot..';id='..tostring(L.u32(bytes,0x20))
                 ..';age='..string.format('%.2f',f[5])
+                ..';pos='..string.format('%.2f/%.2f/%.2f',f[1],f[2],f[3])
+                ..';dist='..string.format('%.2f',f[10])
                 ..';hex='..hex..';f3='..table.concat(cand,'|')
         end)
         options.slot_dump_diagnostic(ok and detail
