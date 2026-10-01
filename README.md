@@ -4,6 +4,10 @@
 只接管**玩家标记的虫洞** 与 **吐酸泰坦 / 孢子泰坦 / 蟑龙**。其余全部交还游戏原生 ——
 唯一例外是"不让 G-60 追踪运输船"（见下文"唯一例外"一节，可一键关闭）。
 
+> **当前版本：v0.1.2** —— 版本号的**唯一来源**是 `compat/build.json` 的 `public_version`，
+> `TITLE`（manifest 里的显示名）、成品包文件名、`BUILD-INFO.json` 全部由它派生。
+> 发新版**只改那一个地方**（`scripts/build.py` 里不再有硬编码的版本串）。
+>
 > 本工程是 [`etxp/HD2-G60-Smart-Targeting`](https://github.com/etxp/HD2-G60-Smart-Targeting)
 > 0.1-beta.1 的**裁剪派生版**（源码 MIT / AI-assisted）。裁剪只动"决策层"，
 > **签名守卫、持锁窗口、状态机白名单、身份复验等安全机制全部原样保留**。
@@ -164,12 +168,12 @@ ef04cb84d097a497 → content/fac_bugs/cha_strider/cha_strider_gloom
 
 > ### 📦 成品包下载
 > **[GitHub Releases › 最新版](https://github.com/LovedeHua/HD2-G60-BugHole-Lock/releases/latest)**
-> —— 下载 `G60-BugHole-Lock-0.1.0.zip` 直接导入 mod 管理器。
+> —— 下载 `G60-BugHole-Lock-0.1.2.zip` 直接导入 mod 管理器。
 > （本仓库里只有**源码**，成品包放在 Releases 的附件里。）
 
 1. 关闭游戏，安装 [Bingus Shared Loader](https://github.com/CowboyBingus/BingusSharedLoader)
    （**API 1，v15+**，需 addon discovery）。
-2. 把 `G60-BugHole-Lock-0.1.0.zip` 导入 mod 管理器。
+2. 把 `G60-BugHole-Lock-0.1.2.zip` 导入 mod 管理器。
 3. **与上游官方包二选一**——两个包都会改 G-60 的决策，同时启用会打架。
    本包 GUID `9c1d4e77-…`，官方包 GUID `58a16a67-…`。
 4. Purge / Deploy 后重启游戏。
@@ -291,7 +295,7 @@ perf;frame=N;frames=K;ready=R;observe=O;layout_reads=L;layout_bytes=B
 ## 构建
 
 ```sh
-python -B scripts/build.py       # 出包 -> dist/G60-BugHole-Lock-0.1.0.zip
+python -B scripts/build.py       # 出包 -> dist/G60-BugHole-Lock-0.1.2.zip
 python -B scripts/run_tests.py   # 跑测试（本机无 luajit/lua，用 lupa 跑）
 python -B tests/test_bughole_scope.py           # 裁剪点 + 产物级验证
 python -B tests/lua_syntax.py                   # 40 个模块语法（lupa/Lua 5.5）

@@ -31,7 +31,15 @@ UPSTREAM_COMMIT = '2879ef7'
 NAME = 'mods/hd2test/g60_bughole_lock'
 GUID = '9c1d4e77-2b83-4f6a-91e5-0d7b3a6c8f42'
 UPSTREAM_GUID = '58a16a67-a72b-474a-ad05-adbaaa99da78'
-ZIP = ROOT / 'dist' / 'G60-BugHole-Lock-0.1.0.zip'
+# ★ 包名从 build.json 的 `release_version` 派生，不再硬编码（2026-10-01）：
+#   版本号只允许有一个来源，否则发版时这里会留在旧名字上，测试直接"找不到文件"
+#   而不是报版本不一致。
+#   ⚠ 注意区分：`public_version` 是**上游基线**（被 build_json_pinned:* 钉死），
+#     `release_version` 才是本裁剪版的发布版本。
+_BUILD_PY = (ROOT / 'scripts' / 'build.py').read_text(encoding='utf-8')
+_release_defs = re.findall(r"^RELEASE_VERSION\s*=\s*'([^']+)'", _BUILD_PY, re.M)
+_RELEASE_VERSION = _release_defs[0] if _release_defs else '<missing>'
+ZIP = ROOT / 'dist' / f'G60-BugHole-Lock-{_RELEASE_VERSION}.zip'
 
 # 上游 13 条里的 9 条 structure_hole（顺序即上游文件顺序）
 UPSTREAM_HOLE_IDS = (
@@ -673,11 +681,54 @@ def main():
     with zipfile.ZipFile(ZIP) as z:
         names = z.namelist()
         manifest = json.loads(z.read('manifest.json'))
+        build_info = json.loads(z.read('BUILD-INFO.json'))
         patch = z.read('Addon/9ba626afa44a3aa3.patch_0')
 
     check('manifest_guid', manifest['Guid'] == GUID, manifest['Guid'])
     check('manifest_guid_differs_from_upstream', manifest['Guid'] != UPSTREAM_GUID)
     check('manifest_include_addon', manifest['Options'][0]['Include'] == ['Addon'])
+
+    # ★★ 版本号单一来源（2026-10-01）★★
+    #   事故：发 v0.1.2 时包还叫 G60-BugHole-Lock-0.1.0.zip（TITLE/ZIP_NAME 把 '0.1.0'
+    #   写死在 build.py 里，而 public_version 又是上游基线 '0.1-beta.1'，Release 标签是 v0.1.2
+    #   —— 三处互相脱节）。现在三者都必须从 `scripts/build.py` 的 **RELEASE_VERSION** 派生，
+    #   这里把"只允许一处定义 + 只允许派生"钉住。
+    #   ⚠ `public_version`（build.json）是上游基线，另被 build_json_pinned:* 钉死，
+    #      **不能**拿它当我们的版本号；build.json 也不允许新增顶层 key。
+    _bp = _BUILD_PY
+    check('release_version_declared_exactly_once', len(_release_defs) == 1,
+          f'★ 发布版本只允许一处定义（找到 {len(_release_defs)} 处：{_release_defs}）')
+    check('release_version_format', re.fullmatch(r"\d+\.\d+\.\d+", _RELEASE_VERSION) is not None,
+          f'RELEASE_VERSION={_RELEASE_VERSION}（应为 X.Y.Z）')
+    check('build_py_derives_name_from_version',
+          "TITLE = f'G-60 Bug Hole Lock {VERSION}'" in _bp
+          and "ZIP_NAME = f'G60-BugHole-Lock-{VERSION}.zip'" in _bp,
+          '★ TITLE / ZIP_NAME 必须从 VERSION 派生，不得再硬编码版本串')
+    check('build_py_has_no_hardcoded_version',
+          "TITLE = 'G-60 Bug Hole Lock 0.1" not in _bp
+          and "ZIP_NAME = 'G60-BugHole-Lock-0.1" not in _bp,
+          '★ build.py 里不得出现硬编码的版本串')
+    check('zip_name_matches_release_version',
+          ZIP.name == f'G60-BugHole-Lock-{_RELEASE_VERSION}.zip',
+          f'{ZIP.name} == release_version {_RELEASE_VERSION}')
+    check('manifest_title_matches_release_version',
+          manifest['Name'] == f'G-60 Bug Hole Lock {_RELEASE_VERSION}'
+          and manifest['Options'][0]['Name'] == manifest['Name'],
+          f"显示名 {manifest['Name']}（含 release_version）")
+    _bi = build_info
+    check('build_info_version_matches',
+          _bi['version'] == _RELEASE_VERSION,
+          f"BUILD-INFO version {_bi['version']}")
+    # 反向：**上游基线** key 必须原封不动（release_version 是新增的，不是替换）
+    check('upstream_baseline_version_untouched',
+          json.loads((ROOT / 'compat' / 'build.json').read_text(encoding='utf-8'))
+          .get('public_version') == '0.1-beta.1',
+          '★ public_version（上游基线）不得被当成我们的版本号改掉')
+    # 反向：derived_from 记的是**上游基线**，不许跟着版本号一起改
+    check('derived_from_still_references_upstream_baseline',
+          '0.1-beta.1' in _bi.get('derived_from', ''),
+          f"derived_from={_bi.get('derived_from')}")
+
     check('manifest_mentions_bughole_only', 'bug hole' in manifest['Description'].lower())
     check('manifest_warns_mutually_exclusive',
           'Mutually exclusive' in manifest['Description'])

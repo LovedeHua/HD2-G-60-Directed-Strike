@@ -10,12 +10,31 @@ from zipfile import ZipFile, ZipInfo, ZIP_DEFLATED
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = json.loads((ROOT / 'compat/build.json').read_text())
-VERSION = CONFIG['public_version']
+
+# ★★ 发布版本的**唯一来源**（2026-10-01）★★
+#   发新版**只改这一行**，下面三处自动跟随：
+#     manifest.json 的 Name / Options[0].Name  -> TITLE
+#     dist/ 下的成品包文件名                    -> ZIP_NAME
+#     BUILD-INFO.json 的 version                -> VERSION
+#
+#   为什么不放 compat/build.json：
+#     · 它的顶层 key 被 tests/test_bughole_scope.py 的 `build_json_no_new_top_key` 钉死
+#       （只允许 `aliases` 增加条目）⇒ 加不了我们自己的键；
+#     · 它的 `public_version` 是**上游基线**版本，被 `build_json_pinned:*` 钉死
+#       （必须与上游 0.1-beta.1 逐值相同）⇒ 不能拿它当我们的版本号。
+#
+#   事故背景：发 Release v0.1.2 时成品包还叫 `G60-BugHole-Lock-0.1.0.zip`
+#   —— 因为 TITLE / ZIP_NAME 把 '0.1.0' 硬编码在代码里，与 Release 标签完全脱节。
+RELEASE_VERSION = '0.1.2'
+VERSION = RELEASE_VERSION
 # ★ 裁剪版身份：独立 GUID + 独立资源名 + 独立标题，与上游官方包互不覆盖(管理器槽位二选一)。
 NAME = 'mods/hd2test/g60_bughole_lock'
 GUID = '9c1d4e77-2b83-4f6a-91e5-0d7b3a6c8f42'
-TITLE = 'G-60 Bug Hole Lock 0.1.0'
-ZIP_NAME = 'G60-BugHole-Lock-0.1.0.zip'
+TITLE = f'G-60 Bug Hole Lock {VERSION}'
+# ★ ZIP_NAME / TITLE 都从 `release_version` 派生（见文件头注释）。
+#   `derived_from` 里的 'etxp/HD2-G60-Smart-Targeting 0.1-beta.1' 指的是**上游基线**，
+#   与我们的版本号无关，**不要**跟着改。
+ZIP_NAME = f'G60-BugHole-Lock-{VERSION}.zip'
 ARCHIVE = 'Addon/9ba626afa44a3aa3.patch_0'
 
 
