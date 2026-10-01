@@ -495,6 +495,19 @@ def main():
     check('small_filter_unevidenced_warp_ships_not_excluded',
           '2ad2e055dad21f6e' not in entries and '01fe503dcd17847b' not in entries,
           '★ 无实机证据的穿梭舰变体不得凭名字加进来')
+    # ★★ 2026-10-01（用户要求）：同一张表的**反方向**函数 ★★
+    #   `M.marked_allowed(r)` = 玩家**点名标记** r 时允许接管
+    #     （运输船/增援飞船是载具 ⇒ 引擎索敌判 false ⇒ 原本标记了也不飞过去炸）。
+    #   与 excluded **共用同一集合**（同一个 `excluded` 表），所以两者不可能漂移；
+    #   若将来要解耦，必须拆成两张表 + 各配断言。
+    check('small_filter_has_marked_allowed_reverse_semantics',
+          'function M.marked_allowed(resource) return excluded[resource] == true end' in sf,
+          '★ marked_allowed 与 excluded 共用同一集合（反方向语义，结构上无法漂移）')
+    # 反向：友军撤离机（鹈鹕）绝不在"玩家可点名接管"的集合里 ——
+    #   它虽然索敌也可能判 false，但把友军当炸弹目标是严重错误。
+    check('marked_allowed_excludes_friendly_assets',
+          '7b0f8449ca9d2da0' not in entries,
+          '★ 友军撤离机（鹈鹕 MK2）不得进入排除/点名集合')
     # 反向：冗余的那个不得被加回来（除非日志真的出现它）
     check('small_filter_landed_dropship_not_readded',
           '98152772a72f7838' not in entries,

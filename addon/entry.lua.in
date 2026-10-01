@@ -170,6 +170,9 @@ local ok,why=pcall(function()
             -- ★ 通用接管与其诊断必须常驻（诊断被节流掉 = 诊断不存在）
             and not line:match('^generic_takeover;')
             and not line:match('^generic_rejected;')
+            -- ★ 2026-10-01：玩家点名标记运输船/增援飞船时，索敌硬门槛被放行的证据行
+            --   （没有它就无法确认"是这条例外让它飞过去的"）
+            and not line:match('^generic_native_invalid_allowed;')
             -- ★ perf 窗口行必须常驻：它是"优化有没有效"的唯一判据，
             --   被节流掉就等于没测（同日 arrival_already_exploded 已栽过一次）。
             and not line:match('^perf;') then return end

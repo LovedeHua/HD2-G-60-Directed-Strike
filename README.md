@@ -24,10 +24,11 @@
 | 你标记了下面 16 个虫洞之一 | **本 mod 接管**：打断 G-60 当前的敌人锁定，改为朝该虫洞飞去，到达后引爆 |
 | 你标记了**吐酸泰坦 / 孢子泰坦 / 蟑龙** | **本 mod 接管**：各走为体型标定的航路，在标定位置引爆（几何**不由引擎算**） |
 | **你标记了任何其它目标**（敌人 / 建筑…）| **★ 本 mod 接管**（2026-09-30 新增）：强制飞向它并引爆。**引爆位置由引擎决定**（`calls.aim`），本 mod 不算几何 |
-| 引擎自己选中了吐酸泰坦 / 蟑龙（你没标记） | 同上接管 |
+| **你标记了运输船 / 光能族增援飞船** | **★ 本 mod 接管**（2026-10-01 新增）：同上一行。它们虽然在"引擎自选要清掉"的排除表里，但**玩家点名**时照样飞过去炸（见"唯一例外"下半节） |
 | 虫洞与泰坦同时被标记 | **虫洞优先** |
-| **你标记了友方目标**（信标球 / 撤离机 / 载具…）| **不接管** —— 见下方"友方如何排除" |
-| 引擎给 G-60 选了**运输船 / 光能族增援飞船** | 清掉该选择（`enemy_veto_enabled`，见"唯一例外"） |
+| 引擎自己选中了吐酸泰坦 / 蟑龙（你没标记） | 同上接管 |
+| **你标记了友方目标**（信标球 / 撤离机 / 平民…）| **不接管** —— 见下方"友方如何排除" |
+| 引擎给 G-60 选了**运输船 / 光能族增援飞船**（**你没标记**） | 清掉该选择（`enemy_veto_enabled`，见"唯一例外"） |
 | 你没标记任何东西 | **本 mod 完全不插手**，G-60 按游戏原生 TargetLock 打敌人 |
 
 ### ★★ 使用前提：虫洞附近必须有**敌人**（引擎机制，不是 mod 故障）
@@ -54,7 +55,13 @@
 - ⚠ 这与**虫洞路径正好相反**：虫洞因为没有 `HealthComponent` 也被它判 `false`，
   所以虫洞那边把它降级为**软信号** + 只读复核（详见下文「追踪虫巢被拒」一节）。
   通用目标不需要绕过索敌 ⇒ 正好用它当硬门槛。
-- 排除表（`small_filter`，含运输船与光能族增援飞船）**仍然生效**。
+- ★ **唯一的例外（2026-10-01）**：玩家**点名标记**运输船 / 光能族增援飞船时放行 ——
+  它们是**载具**，索敌同样判 `false`，但用户要求"标记了就要飞过去炸"。
+  例外只对 `small_filter.marked_allowed`（当前恰好那两项）生效 ⇒
+  标记**信标球 / 鹈鹕撤离机 / 平民**照样被拒（它们的索敌结果同样是 `false`）。
+  详见「唯一例外」下半节。
+- 排除表（`small_filter`，含运输船与光能族增援飞船）**仍然生效** —— 但只针对
+  **引擎自己选中**的场景（玩家点名标记时走的是上面那条例外）。
 
 ### 三项能力可分别开关
 
@@ -468,6 +475,55 @@ enemy_veto;entity=..;resource=..;result=search;why=EXCLUDED_SELECTION;via=no_mar
 
 > ⚠️ `runner:step` 的返回契约是 **`(result, reason)`**。第一版我按 `(ok, result, why)` 取值，
 > 结果 145 条日志全打成 `result=nil;why=nil`，成功失败都看不出来 —— **诊断把自己骗了一次**。
+
+#### ★★ 与"不许追"互补的另一半：玩家**点名标记**这些载具 ⇒ 照样飞过去炸（2026-10-01）
+
+用户要求："标记了运输船和增援的飞船，G60 也会飞过去爆炸。"
+**这与上面的否决不冲突** —— 两条判据的方向不同，落点也不同：
+
+| 场景 | 判据 | 结果 |
+|---|---|---|
+| 引擎**自己**给 G-60 选了运输船（玩家没标记它） | `Filter.excluded` | **清掉**该选择（上面那节） |
+| 玩家**点名标记**运输船 / 增援飞船 | `Filter.marked_allowed` | **接管**：飞过去炸 |
+
+**原来为什么不生效（两道闸，都在"玩家标记"这条链上）**：
+
+1. **认领闸** —— `structure_ping` 的 `allowed` 走 `generic_claimed(resource)`，
+   而它对排除表资源**直接判否** ⇒ 标记连读都不读，日志是 `structure_mark;…;reason=RESOURCE_NOT_SUPPORTED`。
+2. **复核闸** —— 就算认领了，`priority` 的通用复核 `generic_validate` 拿
+   `calls.target_valid`（引擎索敌"能不能当锁定目标"）当**硬门槛**。
+   而运输船/增援飞船是**载具**，引擎索敌不把载具当合法目标 ⇒ 返回 false ⇒
+   `generic_rejected;…;detail=NOT_VALID_TARGET`。
+
+**改法**：`small_filter` 增加**同表反方向**的 `M.marked_allowed(resource)`，
+只在**两条玩家标记路径**上开例外：
+
+```lua
+-- small_filter.lua（与 excluded 共用同一个集合 ⇒ 结构上不可能漂移）
+function M.marked_allowed(resource) return excluded[resource] == true end
+
+-- experimental_runtime.generic_claimed（认领闸）
+if Filter.excluded(resource) then
+    return Filter.marked_allowed(resource) == true   -- 玩家点名 ⇒ 放行
+end
+
+-- experimental_runtime 的 arrival 段 target 构造仍按 target_allowed 判（默认 nil ⇒ 不拦）
+-- native_priority.generic_validate（复核闸）
+if not valid_now then
+    if not Filter.marked_allowed(e.resource) then return nil,'NOT_VALID_TARGET' end
+    -- 放行，日志 generic_native_invalid_allowed;…（进节流白名单）
+end
+```
+
+| 项 | 设计 |
+|---|---|
+| **只影响玩家点名** | 例外只写在"读标记/复核标记"这条链上；`take_gate` 的 veto、priority 之后的兜底 veto、`selection_veto.plan` **全部继续只看 `Filter.excluded`** ⇒ "引擎自选就清掉"的行为一字未变 |
+| **其余 false 仍拒** | 只对表里那两个资源放开 ⇒ 标记**友方信标球 / 鹈鹕撤离机 / 平民**照样被 `NOT_VALID_TARGET` 挡住（它们的索敌结果同样是 false） |
+| **仍要只读复核** | 放行不等于不检查：后面照旧要求实体可读 / identity 未变 / unit 未变 / 距离 < 200m ⇒ 真正已消失的实体照样被拒 |
+| **可一键回退** | `generic_takeover_enabled=false` ⇒ 认领闸直接返回 false，退回"只接管虫洞/泰坦/变体" |
+
+诊断：`generic_native_invalid_allowed;target=..;resource=..;context=GENERIC`
+（出现它 = 索敌判否但被"点名载具"例外放行，**进日志节流白名单**）。
 > 现在按正确顺序取（`result` = 结果表 `.kind`，`why` = reason），并加了 `frame` 便于量化频率。
 > 测试 `veto_log_reads_tuple_in_order` 会读 `native_minimal.lua` 的 `return result,reason`
 > 来钉住这个契约。

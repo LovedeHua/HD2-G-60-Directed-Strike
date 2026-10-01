@@ -1241,6 +1241,13 @@ def test_generic_takeover():
     check("generic_claimed_respects_exclusion_table",
           "Filter.excluded and Filter.excluded(resource)" in r,
           "★ 排除表仍然生效（否则\"不追踪运输船\"会被这条新路径反过来接管）")
+    # ★ 2026-10-01（用户要求）：**玩家点名标记**运输船 / 光能族增援飞船时，
+    #   认领路径要放行（"标记了就要飞过去炸"）。本函数只服务 structure_ping 的
+    #   allowed（= 玩家标记），所以这条例外**不**影响 take_gate / 兜底 veto 的
+    #   "引擎自选 ⇒ 清掉"（那两处只看 Filter.excluded）。
+    check("generic_claimed_allows_marked_vehicles",
+          "Filter.marked_allowed(resource) == true" in r,
+          "★ 排除表里的载具在**玩家标记**时仍被认领（引擎自选的清掉不受影响）")
     check("generic_claimed_respects_switch",
           "if env.generic_takeover_enabled==false then return false end" in r,
           "开关关闭 ⇒ 整体退回\"只管虫洞/泰坦/变体\"")
@@ -1264,24 +1271,33 @@ def test_generic_takeover():
     # ★★ 最核心的安全属性：友方排除靠 target_valid 硬门槛 ★★
     check("generic_uses_target_valid_as_hard_gate",
           "scope.calls.target_valid(nil,e.id," in code_pr
-          and "if not valid_now then return nil,'NOT_VALID_TARGET' end" in code_pr,
+          and "if not valid_now then" in code_pr,
           "★ 用 calls.target_valid 作硬门槛（引擎索敌的\"能不能当锁定目标\"）")
     # helper 本体 = 从定义处到下一个顶层 `end`（用 "local chosen,reason" 作右锚点）。
     _h0 = code_pr.index("local function generic_validate(e)")
     _h1 = code_pr.index("local chosen,reason,mark_candidate,chosen_mark_index", _h0)
     _blk = code_pr[_h0:_h1]
-    # ★ 精确区分两件事（第一版断言写太粗，把两者混为一谈 ⇒ 误报）：
-    #   ✗ 软信号兜底 = target_valid 返回 false 时用只读复核**推翻**它（会放过友方）
-    #   ✓ 额外校验   = target_valid 为 true 之后，再做实体/identity 复核（防 id 复用）
-    #   ⇒ 断言"readonly_alive 不得出现在 `not valid_now` 之前/之中"。
-    _vi = _blk.index("if not valid_now then return nil,'NOT_VALID_TARGET' end")
-    check("generic_target_valid_false_is_terminal",
-          "readonly_alive" not in _blk[:_vi] and "check_alive(" not in _blk[:_vi],
-          "★ target_valid=false ⇒ 直接拒，不得用只读复核推翻（那正是虫洞路径的做法，"
-          "会放过友方）")
+    # ★ 精确区分三件事（第一版断言写太粗，把前两者混为一谈 ⇒ 误报）：
+    #   ✗ 无条件软信号 = target_valid 返回 false 时**一律**用只读复核推翻（会放过友方）
+    #   ✓ 点名例外     = **只**对 small_filter.marked_allowed（运输船 / 光能族增援飞船，
+    #                    2026-10-01 用户要求"标记了就要飞过去炸"）放行，其余 false 仍拒
+    #   ✓ 额外校验     = target_valid 为 true 之后，再做实体/identity 复核（防 id 复用）
+    #   ⇒ 断言"例外块内只能看 marked_allowed，不得出现只读复核"。
+    _vi = _blk.index("if not valid_now then")
+    _ve = _blk.index("local ok_unit,unit=pcall(d.unit,e)", _vi)
+    _vblk = _blk[_vi:_ve]
+    check("generic_target_valid_false_gated_by_marked_allowed",
+          "Filter.marked_allowed(e.resource)" in _vblk
+          and "return nil,'NOT_VALID_TARGET' end" in _vblk,
+          "★ target_valid=false ⇒ 仅当资源在 small_filter.marked_allowed 里才放行"
+          "（点名标记的载具），其余仍直接拒")
+    check("generic_target_valid_false_has_no_readonly_override",
+          "readonly_alive" not in _vblk and "check_alive(" not in _vblk,
+          "★ 例外块内不得用只读复核推翻（那正是虫洞路径的做法，会放过友方）；"
+          "复核在下面统一做")
     check("generic_still_rechecks_entity_after_valid",
-          "readonly_alive" in _blk[_vi:],
-          "valid=true 后仍做实体/identity 复核（防实体 id 被复用）")
+          "readonly_alive" in _blk[_ve:],
+          "放行后仍做实体/identity 复核（防实体 id 被复用）")
     check("generic_uses_d_position_not_context_capture",
           "Context.capture" not in _blk and "d.position" in _blk,
           "★ 通用复核用 d.position，不调 Context.capture（后者强依赖 profile）")

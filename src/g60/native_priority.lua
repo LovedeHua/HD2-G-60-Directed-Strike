@@ -161,6 +161,11 @@ function M.new(env)
             --   · `target_valid` 是**硬门槛**（false 直接拒）。通用目标不需要绕过
             --     索敌，正好用它排除友方（引擎索敌不锁友方）。虫洞那边因为没有
             --     HealthComponent 被它判 false，只能降级成软信号 —— 两者不同源。
+            --   ⚠ **2026-10-01 唯一的例外**：`small_filter.marked_allowed` 里那两项
+            --     （机器人运输船 / 光能族增援飞船）是**载具**，引擎索敌对它们同样返回
+            --     false —— 但用户要求"**标记了就要飞过去炸**"（引擎自己选中时仍要清掉，
+            --     两件事不冲突）。⇒ 只对这两个资源把硬门槛降级为软信号（+只读复核），
+            --     其余 false 仍然直接拒 ⇒ "标记友方信标球 / 鹈鹕 / 平民"依旧被挡住。
             --   · **不查虫洞白名单**（env.structure_profiles）。通用目标本来就不在
             --     里面；旧 sticky 只认白名单 ⇒ 通用锁每轮都被判"不在白名单"而丢弃，
             --     实机表现为 66 次 `structure_lock_lost;RESOURCE_NOT_IN_WHITELIST`。
@@ -172,7 +177,26 @@ function M.new(env)
                         ffi.cast('const void *',e.address))
                 end)
                 if not ok_valid then return nil,'TARGET_VALID_QUERY_FAILED' end
-                if not valid_now then return nil,'NOT_VALID_TARGET' end
+                if not valid_now then
+                    -- ★★★ 2026-10-01（用户要求）：玩家**点名标记**运输船 / 光能族增援飞船时，
+                    --   这条硬门槛必须让路 —— 否则"标记了也不会飞过去炸"。
+                    --
+                    --   为什么它们会是 false：这两项是**载具**，引擎索敌
+                    --   （game.dll+0x8858a0）不把载具当合法锁定目标
+                    --   （与虫洞没有 HealthComponent 同类）。
+                    --   而本 mod 的引爆**本来就不依赖索敌** —— 自己算 aim 点、
+                    --   自己调 explode（见 native_arrival）。所以这个 false 在本场景
+                    --   是**障碍**而不是判据 —— 与虫洞路径（裁剪 K）同理。
+                    --
+                    --   ⚠ 只对 `small_filter.marked_allowed` 里的资源放开（当前恰好两项）。
+                    --     其余 false **仍然直接拒** ⇒ "标记友方信标球 / 鹈鹕 / 平民"
+                    --     依旧被挡住（它们的索敌结果也是 false）。
+                    --   ⚠ 放行后仍要求下面的只读复核（readonly_alive）通过，
+                    --     真正已消失的实体照样被拒。
+                    if not Filter.marked_allowed(e.resource) then return nil,'NOT_VALID_TARGET' end
+                    if env.emit then env.emit('generic_native_invalid_allowed;target='..e.id
+                        ..';resource='..e.resource..';context=GENERIC') end
+                end
                 local ok_unit,unit=pcall(d.unit,e)
                 local ok_ro,ro_why=readonly_alive(e.id,e.identity)
                 if not ok_unit or not unit then return nil,'UNIT_MISSING' end

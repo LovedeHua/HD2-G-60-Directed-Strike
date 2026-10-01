@@ -92,6 +92,31 @@ local excluded = {
     ['74e2285c01da4f71'] = true,   -- ★ 光能族增援飞船 illuminate_dropship / 增援穿梭舰（实机日志证据）
 }
 function M.excluded(resource) return excluded[resource] == true end
+-- ★★★ 2026-10-01（用户要求）：同一张表的**反方向**用途 ★★★
+--
+--   `M.excluded(r)`       = 引擎**自己选中** r 时要清掉（不让 G-60 去追载具）
+--   `M.marked_allowed(r)` = 玩家**点名标记** r 时反而要接管（绕过引擎索敌的否决）
+--
+--   为什么是"两个函数共用一张表"，而不是"取反"或"两张表"：
+--     · 方向相反，函数名必须自解释 —— 读代码的人不能只看表名去猜方向
+--       （本仓库因为"同一判据两处副本"出过事故，所以**共用同一个集合**，
+--        将来若真的要解耦，再拆成两张表 + 各配断言）。
+--     · 两张内容相同的表必然漂移。
+--
+--   为什么"引擎要排除的"正好就是"玩家点名要放的"：
+--     这两项都是**载具**（机器人运输船 / 光能族增援飞船）。
+--     引擎索敌（game.dll+0x8858a0）不把载具当合法锁定目标 ⇒ 返回 false ⇒
+--       · 引擎"误选"它们时我们要清（排除表）；
+--       · 玩家点名它们时，priority 的通用复核（原本拿同一个 target_valid 当
+--         硬门槛）会**误杀**，标记了也不飞过去炸。
+--     ⇒ 本函数就是给"玩家点名"这条例外开的门。
+--
+--   ⚠ **只对玩家标记路径生效**：
+--       · structure_ping 的认领判定（runtime 的 generic_claimed）
+--       · priority 的通用复核（native_priority 的 generic_validate）
+--     **不**参与 selection_veto / take_gate / 兜底 veto 的"引擎自选 ⇒ 清掉"判据
+--     —— 那三处继续只看 `M.excluded`，行为完全不变。
+function M.marked_allowed(resource) return excluded[resource] == true end
 -- 只读：把排除表如实列出来（**排序后**，保证启动日志稳定可比）。
 --   存在的意义：启动日志的 `enemy_veto_resources=` 必须由这里生成，
 --   而不是在 entry 里再抄一份哈希 —— 2026-09-29 就是因为日志里硬编码了

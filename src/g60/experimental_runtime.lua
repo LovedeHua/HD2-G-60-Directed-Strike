@@ -163,10 +163,21 @@ function M.new(env)
     --   3. **友方不在这里排除** —— 靠 priority 里 `calls.target_valid` 硬门槛
     --      （引擎索敌系统的"能不能把它当锁定目标"）。放这里会让"读标记"阶段
     --      就要跑一遍索敌查询，而那时还没有受保护的 scope。
+    --
+    --   ★★ 2026-10-01（用户要求）：玩家**点名标记**运输船 / 光能族增援飞船时，
+    --      这条路径要**认领**它（"标记了就要飞过去炸"），而不是因为它在排除表里
+    --      就被 RESOURCE_NOT_SUPPORTED 挡掉。
+    --      本函数**只服务 structure_ping 的 allowed 判据**（= 玩家主动标记），
+    --      所以在这里放行恰好只影响"玩家点名"；take_gate / 兜底 veto 的
+    --      "引擎自选 ⇒ 清掉"走的是 `Filter.excluded`，完全不受影响。
     local function generic_claimed(resource)
         if env.generic_takeover_enabled==false then return false end
         if not resource then return false end
-        if Filter and Filter.excluded and Filter.excluded(resource) then return false end
+        if Filter and Filter.excluded and Filter.excluded(resource) then
+            -- 排除表里的载具：只有"玩家点名允许接管"的才放行（见 small_filter.marked_allowed，
+            -- 当前就是表里那两项：机器人运输船 / 光能族增援飞船）。
+            return Filter.marked_allowed ~= nil and Filter.marked_allowed(resource) == true
+        end
         return true
     end
     local ping=env.priority_catalog and env.mark_priority_enabled~=false and Ping.new(env)
