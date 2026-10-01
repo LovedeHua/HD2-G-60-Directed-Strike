@@ -35,6 +35,11 @@ GEOMETRY = ROOT / "src/g60" / "geometry.lua"
 TITAN = ROOT / "src/g60" / "native_titan_aim.lua"
 ARRIVAL = ROOT / "src/g60" / "native_arrival.lua"
 FAULTS = ROOT / "src/g60" / "priority_faults.lua"
+PING_SRC = ROOT / "src/g60" / "native_ping.lua"
+# ⚠ 别叫 PING_MEMORY：本文件第 396 行已经有一个同名**字符串**常量（lupa 用的 Lua 源码），
+#   重名会静默覆盖，报错却在很远的地方（`'str' object has no attribute 'read_text'`）。
+PINGMEM_SRC = ROOT / "src/g60" / "ping_memory.lua"
+ENTRY_SRC = ROOT / "addon" / "entry.lua.in"
 
 failures = []
 checks = 0
@@ -82,6 +87,20 @@ def test_fault_classification(rt):
               bool(competitive(msg)),
               f"{msg[:34]}… -> 只放弃这一颗")
 
+    # ★ 2026-10-01：`arrival trigger changed` 从 fail-closed **改判为竞争态**。
+    #   原先把它跟"explode 之后的断言"归一类，理由是"它在 explode 之后" —— 理由是错的：
+    #   它在 `if action=='detonate' then` 的**第一句**，explode 还在两行之后。
+    #   实机代价（用户："又出现失效情况了"）：
+    #       arrival_skipped;entity=577;…:2727: arrival trigger changed
+    #       frame_error;…:6586: arrival operation disabled
+    #       disabled;applied=0                    ← 整局 mod 停手
+    #   触发条件是点目标路径：它在引爆判定**之前**就写 record（写 ping 的点），
+    #   所以本帧 mutated 已为 true ⇒ 任何引爆期断言失败都会升级成全局熔断。
+    #   该断言失败时既没写坏内存、也没发过爆炸请求 ⇒ 重试安全 ⇒ 只放弃这一颗。
+    check("arrival_trigger_changed_is_competitive",
+          bool(competitive("arrival trigger changed")),
+          "引爆期断言失败 -> 只放弃这一颗（不是整局停手）")
+
     # 版本漂移：这些继续乱写会让游戏崩，必须保持全局 fail-closed
     structural = [
         "priority scope changed",
@@ -101,8 +120,9 @@ def test_fault_classification(rt):
         #   —— 逐个评估的结论写在这里，防止以后被"顺手"加进 COMPETITIVE：
         #   · `explode(...)` **之后**的断言：失败时爆炸请求可能已发出，重试会重复
         #     触发引爆，风险等级与"写后回读不符"不同。
+        #     ⚠ `arrival trigger changed` **不在**这一组 —— 它在 explode 之前，
+        #     已按上面的 check 改判为竞争态（2026-10-01 实机误归类）。
         "arrival request not committed",
-        "arrival trigger changed",
         "arrival request changed flight state",
         #   · 两次读之间 record 被改 ⇒ 行为观测漂移。
         "arrival source changed",
@@ -1149,7 +1169,11 @@ def test_no_lock_path_bypasses_whitelist():
     # （虫洞 sticky / 通用 sticky）。两处必须各受**自己的**复核保护：
     #   · 虫洞 → structure_profiles[e.resource] + eligible()
     #   · 通用 → generic_validate()（target_valid 硬门槛，**不查虫洞白名单**）
-    check("lock_assignment_is_two_guarded_paths", n_locked == 2,
+    # 2026-10-01：优先级让位（结构 > 标记单位）新增**第三处** ——
+    #   "让位失败回退"（新近结构标记这一帧拿不到 ⇒ 继续驱动原来的单位锁）。
+    #   它同样**必须**过 generic_validate，否则就是又一条绕过复核的锁路径
+    #   —— 本测试存在的全部意义就是钉死这件事。
+    check("lock_assignment_is_three_guarded_paths", n_locked == 3,
           f"LOCKED 恰好两处（虫洞 sticky / 通用 sticky），实际 {n_locked} 处")
 
     # sticky 复用必须重新核对（防实体 id 被复用）。
@@ -2008,6 +2032,11 @@ def test_arrival_fault_isolation():
       ④ build.json 里 Faults 别名必须排在 native_arrival **之前** —— 构建期
          `local competitive=Faults.competitive` 的右值若还是 nil，隔离就是空转
          （与 2026-09-28「Geometry 排在使用者之后」完全同型的一种静默失效）
+
+    ★ 2026-10-01 补第 ⑤ 条（同一道隔离的"参照系"版本）：
+       点目标路径会在引爆判定**之前**写 record ⇒ 引爆期断言若拿"写前 record"
+       当参照，引擎只要重选过一次目标就不符 ⇒ 又一次整局熔断
+       （用户："又出现失效情况了"，entity=577）。参照改用写后回读。
     """
     print()
     print("=== ㉑ arrival 段故障域隔离（2026-09-30 事故）===")
@@ -2037,6 +2066,25 @@ def test_arrival_fault_isolation():
     check("runtime_arrival_disable_guards_quarantine",
           "and not (ok_arr and type(result)=='table' and result.kind=='quarantine') then" in r,
           "`arrival operation disabled` 不再被竞争态触发（与 priority 段同款防御）")
+
+    # ⑤ ★ 2026-10-01：引爆期断言的**参照系**必须是"写后快照"，不能是"写前 record"。
+    #    点目标路径在引爆判定**之前**就写 record ⇒ 拿写前快照去比，只要引擎在这两帧
+    #    之间给这颗 G-60 重选过目标就不符（实机 entity=577 引爆帧）。
+    #    这类"参照系取错"是静态可查的：断言里不能再出现裸的 `source()==record`。
+    check("arrival_flight_reference_declared",
+          "local flight_reference=record" in arr,
+          "★ 本帧参照快照 flight_reference 存在（默认 = 本帧 record）")
+    check("arrival_point_write_updates_reference",
+          "flight_reference=after" in arr
+          and arr.index("flight_reference=after") > arr.index("mutated=true;scope.calls.clear(pair,data)"),
+          "★ 点目标写完之后立刻把参照换成写后回读（顺序即语义）")
+    check("arrival_detonate_uses_flight_reference",
+          "and source()==flight_reference,'arrival trigger changed'" in arr,
+          "引爆期断言用 flight_reference（不是写前 record）")
+    check("arrival_no_stale_detonate_reference",
+          "and source()==record,'arrival trigger changed'" not in arr
+          and "assert(source()==record,'arrival request changed flight state')" not in arr,
+          "★ 引爆分支里不再残留裸 `source()==record`（两处都要换）")
 
     # ④ 构建期别名顺序（与 test_fault_classification 里的 priority/runtime 三处同源）
     import json
@@ -2400,6 +2448,100 @@ def test_point_target(rt):
           "虫洞标记路径不受影响（回归）")
 
 
+def test_target_priority_tiers():
+    """★ 2026-10-01 用户拍板的优先级：**虫洞/构筑 > 标记单位 > 空白标记**。
+
+    用户原话：
+      「我定个优先级吧，虫洞、构筑这一类建筑优先级最高，然后到标记单位，
+        最后是空白标记」
+      「还有一个问题需要解决，标记过的单位，即使取消标记，G60 仍会追踪该单位」
+
+    改前的实测缺口（本测试逐条钉死的就是这两条）：
+      · 已在飞往**单位**的 G-60 → 新标记**虫洞**被 `if not chosen` 直接跳过（单位锁
+        sticky 到底）⇒ "我标记了虫洞，G-60 却继续去追那个单位"。
+      · 引擎自选**泰坦**会覆盖**标记单位**锁（只有虫洞标记有权力压住泰坦）。
+      · 通用单位标记在 ping UI 过期后仍留在记忆里 ⇒ 之后每一颗 G-60 继续追它。
+
+    三档里"空白标记最低"**本来就成立**（point_drive 让位给任何 old.lock），
+    所以这里用**反向**断言守住它：不许以后有人把点目标提到标记前面。
+    """
+    print()
+    print("=== ㉕ 目标优先级三档（2026-10-01 用户拍板）===")
+    p = PRIORITY.read_text(encoding="utf-8")
+    r = RUNTIME.read_text(encoding="utf-8")
+    g = PING_SRC.read_text(encoding="utf-8")
+    e = ENTRY_SRC.read_text(encoding="utf-8")
+    pm = PINGMEM_SRC.read_text(encoding="utf-8")
+
+    # ---- ③档最低：空白标记必须继续让位于任何已持有的锁（回归，反向钉死）----
+    check("point_still_lowest_tier",
+          "and not titan_selected and not (old and old.lock)" in r,
+          "★ 空白点仍让位给 old.lock（不许把点目标提到标记之前）")
+
+    # ---- 结构 > 标记单位：只对**新近**结构标记让位 ----
+    check("fresh_structure_gate_uses_current",
+          "local fresh_structure=structure_mark~=nil and structure_mark.current==true" in p,
+          "★ 让位门槛 = structure_mark.current（本帧 ping 环里还看得到 = UI 8 秒窗口内）")
+    check("fresh_structure_gate_before_sticky",
+          p.index("local fresh_structure=") < p.index("if previous and previous.marked_structure then"),
+          "门槛必须在 sticky 判定**之前**算出（顺序即语义）")
+    _gs = p[p.index("if previous.generic then"):]
+    _gs = _gs[:_gs.index("local whitelisted=e and env.structure_profiles")]
+    check("unit_lock_yields_only_to_structure",
+          "if fresh_structure then" in _gs and "yielded_unit=previous" in _gs,
+          "★ 只对**结构**让位，且让位动作落在通用(单位)锁分支内")
+    check("same_tier_still_sticky",
+          p.count("yielded_unit=previous") == 1 and "previous.generic then" in _gs,
+          "★ 同层不抢（本条只针对 generic；虫洞↔虫洞仍由裁剪 I 保持忠实）")
+    check("yield_fallback_keeps_unit_lock",
+          "if not chosen and yielded_unit then" in p
+          and "generic_validate(d.entity(yielded_unit.id))" in p,
+          "★ 让位失败回退：结构这一帧拿不到 ⇒ 继续驱动单位锁（不丢锁、不白飞）")
+
+    # ---- 标记单位 > 引擎自选的泰坦/蟑龙 ----
+    check("titan_yields_to_marked_lock",
+          "local marked_lock_held=old~=nil and old.lock~=nil" in r
+          and "and not mark_is_wormhole and not marked_lock_held" in r,
+          "★ 持有玩家点名锁时泰坦让位（原来只有虫洞标记有这个权力）")
+
+    # ---- 单位标记的记忆判据：取消标记后不再被**新**接管 ----
+    check("unit_mark_live_only_default_true",
+          "unit_mark_live_only=true," in e,
+          "开关默认 true（单位标记只在 ping 标记可见时算数）")
+    check("unit_mark_live_only_wired",
+          "unit_mark_live_only=state.unit_mark_live_only," in e,
+          "开关已透传到 env（否则改了没效果）")
+    check("remembered_intent_keeps_structures",
+          "remembered_intent=function(mark,live)" in r
+          and "if claim_profile(mark.resource) then return true end" in r,
+          "★ 结构/泰坦照旧长期记忆（'ping 一次虫洞、过会儿才扔'不能被这条改掉）")
+    check("unit_mark_live_only_off_restores_old",
+          "return env.unit_mark_live_only==false" in r,
+          "置 false 即回到旧行为（一键可回退）")
+    check("ping_filter_uses_current_and_intent",
+          "if selected and options.remembered_intent then" in g
+          and "if m.current or options.remembered_intent(m,false) then" in g,
+          "过滤判据 = current(本帧可见) 或 调用方允许长期记忆")
+    check("ping_filter_after_memory_update",
+          g.index("local selected=memory:update(observation,valid)")
+          < g.index("if selected and options.remembered_intent then"),
+          "过滤必须在 memory:update **之后**（顺序即语义）")
+    check("ping_memory_contract_untouched",
+          "remembered_intent" not in pm and "keep_intent" not in pm,
+          "★ ping_memory 保持上游原样（过滤放在 native_ping，保住 UNTOUCHED 清单）")
+    check("observe_failure_clears_current",
+          "if last_selected then last_selected.current=false end" in g,
+          "★ 观测失败那一帧不许再声称'它还在 ping 环里'（current 反转，防陈旧信号）")
+
+    # ---- 让位事件必须可观测（诊断被节流掉 = 诊断不存在）----
+    check("yield_diagnostic_whitelisted",
+          "and not line:match('^unit_lock_yielded;')" in e,
+          "★ 让位事件进日志白名单（它是'虫洞抢回单位'是否生效的唯一判据）")
+    check("yield_diagnostic_deduped",
+          "M.yield_reported={}" in p and "not M.yield_reported[yk]" in p,
+          "让位事件按 (G-60, 结构) 去重（让位失败会反复触发，不去重会刷屏）")
+
+
 def main():
     rt = lupa.LuaRuntime(encoding=None, unpack_returned_tuples=True)
     test_fault_classification(rt)
@@ -2427,6 +2569,7 @@ def main():
     test_point_target(rt)
     test_priority_wiring()
     test_arrival_fault_isolation()
+    test_target_priority_tiers()
 
     print()
     if failures:

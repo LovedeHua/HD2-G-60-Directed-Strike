@@ -30,6 +30,10 @@ M.probe_by_entity={}
 -- 白名单拒绝的去重集合：同一个 target 只打首条。
 -- 不去重会逐帧刷屏 —— 记忆里 2026-09-27 记过"逐条刷屏会把真正的一次性错误埋掉"。
 M.rejected_targets={}
+-- 让位事件（单位锁 → 新近结构标记）的去重集合，理由同上：
+-- 让位之后如果结构标记这一帧**拿不到**（被别的 G-60 预约 / 超距），
+-- 下一帧会再次让位 ⇒ 不按 (G-60, 结构) 去重就会逐帧刷屏。
+M.yield_reported={}
 local setter=ffi.typeof('void (*)(void **, const void *)')
 local valid=ffi.typeof('bool (*)(void *, uint32_t, const void *)')
 -- ★ 故障域隔离（2026-09-27 实机事故的直接修复）★ 判定规则见 g60.priority_faults：
@@ -226,6 +230,27 @@ function M.new(env)
             --
             -- 现在：**已经在飞向某个虫洞的 G-60 保持忠实**（sticky），
             -- 只有该虫洞确实不可用（实体消失/已爆/被摧毁）时才允许改投别的标记。
+            --
+            -- ★★ 优先级（2026-10-01 用户拍板）：**虫洞/构筑 > 标记单位 > 空白标记** ★★
+            --
+            --   裁剪 I 那条"保持忠实"是**同层**之间的规则（虫洞↔虫洞），不能回退。
+            --   但跨层要按用户定的优先级让位 —— 本处补的是唯一还缺的一段：
+            --   **已在飞往「标记单位」的 G-60，遇到新近的结构标记必须让位**
+            --   （原来单位锁 sticky 到底，新虫洞标记会被 `if not chosen` 直接跳过，
+            --    表现为"我标记了虫洞，G-60 却继续去追那个单位"）。
+            --
+            --   ⚠ 门槛 `structure_mark.current==true` 是**必需的**，不是保险：
+            --     `structure_mark` 来自 ping_memory，UI 标记过期后它仍在记忆里；
+            --     不加门槛就会变成"一个很久以前标记的虫洞，在记忆存续期内反复夺走
+            --     之后每一颗 G-60" —— 与点目标那轮踩过的「旧结构标记把整个能力
+            --     挡死」是同一种事故。`current` = 本帧 ping 环里**确实还看得到它**
+            --     （UI 的 8 秒窗口内），而 native_ping 在观测失败的那一帧会把
+            --     `current` 翻成 false ⇒ 这个信号不会陈旧。
+            --   ⚠ 单位→单位、虫洞→虫洞 仍然不抢（同层保持忠实）。
+            local fresh_structure=structure_mark~=nil and structure_mark.current==true
+                and env.structure_profiles~=nil
+                and env.structure_profiles[structure_mark.resource]~=nil
+            local yielded_unit
             if previous and previous.marked_structure then
                 local e=d.entity(previous.id)
                 if previous.generic then
@@ -236,11 +261,30 @@ function M.new(env)
                     -- 表现为"通用目标不忠实 + 每轮重锁"。
                     -- 现在走 generic_validate —— 与新标记路径**同一套**判据，
                     -- 既保住 id 复用 / 友方 / 死亡复核，又让通用锁真正 sticky。
-                    local row,detail=generic_validate(e)
-                    if row then chosen,reason=row,'LOCKED'
-                    elseif env.emit then
-                        env.emit('structure_lock_lost;target='..tostring(previous.id)
-                            ..';detail='..tostring(detail)..';generic=true')
+                    --
+                    -- ★ 例外：出现**新近的结构标记** ⇒ 让位（见上面 fresh_structure）★
+                    --   注意这里**不丢锁**：真正去拿结构的是下面的 structure_mark
+                    --   分支；万一它拿不到（超距 / 不可用 / 已被别的 G-60 预约 /
+                    --   实体读不到），末尾会回退到这个单位锁继续驱动。
+                    --   直接在这里放弃会让 G-60 当场释放、白飞一趟。
+                    if fresh_structure then
+                        yielded_unit=previous
+                        local yk=L.u32(c.identity_bytes,8)..'|'..structure_mark.id
+                        if env.emit and not M.yield_reported[yk] then
+                            M.yield_reported[yk]=true
+                            env.emit('unit_lock_yielded;entity='..tostring(L.u32(c.identity_bytes,8))
+                                ..';target='..tostring(previous.id)
+                                ..';to='..tostring(structure_mark.id)
+                                ..';resource='..tostring(structure_mark.resource)
+                                ..';reason=FRESH_STRUCTURE_PRIORITY')
+                        end
+                    else
+                        local row,detail=generic_validate(e)
+                        if row then chosen,reason=row,'LOCKED'
+                        elseif env.emit then
+                            env.emit('structure_lock_lost;target='..tostring(previous.id)
+                                ..';detail='..tostring(detail)..';generic=true')
+                        end
                     end
                 else
                     -- ★ sticky 复用也必须过白名单 ★
@@ -385,6 +429,19 @@ function M.new(env)
                 if good and row then
                     chosen,reason=row,row.generic and 'PLAYER_MARK_GENERIC' or 'PLAYER_MARK_STRUCTURE'
                 elseif not good and env.emit then env.emit('structure_unavailable;detail='..tostring(row)) end
+            end
+            -- ★ 让位失败回退（见 fresh_structure 处）★
+            --   为新近的结构标记让了位、但这一帧它**拿不到**（超距 / 不可用 /
+            --   已被别的 G-60 预约 / 实体读不到）⇒ 继续驱动原来的单位锁。
+            --   不写这段的后果：G-60 会走下面的 `{kind='keep',released=true}`，
+            --   当场把锁还回引擎、白飞一趟，而且下一帧重新锁上又让位 ⇒ 每帧抖动。
+            if not chosen and yielded_unit then
+                local row,detail=generic_validate(d.entity(yielded_unit.id))
+                if row then chosen,reason=row,'LOCKED'
+                elseif env.emit then
+                    env.emit('structure_lock_lost;target='..tostring(yielded_unit.id)
+                        ..';detail='..tostring(detail)..';generic=true;yield_fallback=true')
+                end
             end
             -- ★★ 敌人锁分支整段删除，理由见文件下方同名注释 ★★
             -- 原来这里还有第二个 sticky 分支（`if not chosen and previous.marked_structure`），

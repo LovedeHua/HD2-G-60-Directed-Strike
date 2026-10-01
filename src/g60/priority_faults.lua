@@ -47,11 +47,34 @@ M.COMPETITIVE={
     ['arrival proximity suppression failed']=true,
     ['arrival clear failed']=true,
 
+    -- ★★ 2026-10-01 实机事故：`arrival trigger changed` 本来被**误**归为 fail-closed ★★
+    --
+    -- 当时的理由（写在下面"有意不列入"里）是"它在 `explode(...)` 之后" ——
+    -- **这条理由是错的**。它在引爆分支的**最开头**：
+    --     if action=='detonate' then
+    --         assert(… ,'arrival trigger changed')      ← 这里，explode 之前
+    --         mutated=true
+    --         scope.calls.explode(…)                    ← explode 在这之后
+    -- 真正在 explode 之后的是 `arrival request not committed` 与
+    -- `arrival request changed flight state`（那两条确实必须 fail-closed）。
+    --
+    -- 后果（用户报"又出现失效情况了"，日志末三行）：
+    --     arrival_skipped;entity=577;…:2727: arrival trigger changed
+    --     frame_error;…:6586: arrival operation disabled
+    --     disabled;applied=0            ← 整局 mod 停手、日志当场关闭
+    -- 为什么会走到 `disabled=true`：点目标路径**在引爆判定之前**就要写 record
+    -- （把 ping 的地面点写成点目标选择）⇒ 本帧 `mutated` 已经为 true ⇒
+    -- `if mutated and not early then disabled=true end` 把 arrival 段永久关掉。
+    -- 而这次断言本身就是**假警报**（参照系取错，详见 native_arrival 的
+    -- `flight_reference`），既没写坏内存也没发过爆炸请求 —— 重试完全安全。
+    --
+    -- 所以它属于竞争态：失败时**只放弃这一颗** G-60，下一帧照常重试/重接管。
+    ['arrival trigger changed']=true,
+
     -- ⚠ 有意**不**列入竞争态（保持 fail-closed，逐个评估的结论）：
-    --   · `arrival request not committed` / `arrival trigger changed` /
-    --     `arrival request changed flight state` —— 都在 `explode(...)` **之后**，
-    --     失败时爆炸请求可能已经发出；重试会重复触发引爆，风险等级与"写后回读不符"
-    --     不同，不能混进来。
+    --   · `arrival request not committed` / `arrival request changed flight state`
+    --     —— 都在 `explode(...)` **之后**，失败时爆炸请求可能已经发出；
+    --     重试会重复触发引爆，风险等级与"写后回读不符"不同，不能混进来。
     --   · `arrival source changed` / `arrival behavior changed` / `arrival preflight changed` /
     --     `arrival aim observation changed` —— 两次读之间 record 变了，属于**行为观测**漂移。
     --   · `arrival changed flight timer` / `arrival orbit changed timer` —— 飞行计时器被动，

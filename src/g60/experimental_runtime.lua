@@ -219,7 +219,27 @@ function M.new(env)
         --   **ping 到空地时，那个 88 字节的槽里到底有没有世界坐标**。
         --   只在读不到实体（NO_ENTITY_MARK）时 dump，每槽一次（见 native_ping.dump_slot）。
         slot_dump=env.ping_slot_dump,
-        slot_dump_diagnostic=function(detail) env.emit('ping_slot;'..detail) end})
+        slot_dump_diagnostic=function(detail) env.emit('ping_slot;'..detail) end,
+        -- ★★ 记忆存续判据（2026-10-01，用户实机反馈）★★
+        --   用户原话：「标记过的单位，即使取消标记，G60 仍会追踪该单位」。
+        --
+        --   根因：ping_memory 的设计是"UI 过期不代表意图过期"（history 只要实体
+        --   还有效就留着）⇒ 玩家 ping 一个单位、标记从画面上消失之后，记忆里那条
+        --   还在 ⇒ 之后每一颗 G-60 都会照它去追那个单位，看起来就是"取消不掉"。
+        --
+        --   这条判据决定**哪些标记可以脱离 UI 存活**（`live` = 本帧 ping 环里
+        --   还看得到它，即 UI 的 8 秒窗口内）：
+        --     · 结构 / 泰坦 / 蟑龙 / 泰坦变体 ⇒ 照旧长期记忆
+        --       （"ping 一次虫洞、过一会儿才扔"是常规操作，不能要求重 ping）
+        --     · 通用单位标记 ⇒ 默认只认活标记（env.unit_mark_live_only 可关掉，
+        --       关掉即回到旧行为：记忆里的旧单位标记继续被新 G-60 接管）
+        --   ⚠ 已在飞向该单位的那颗**不受影响**：它持有 old.lock，下一帧走
+        --     native_priority 的 sticky 复核（按实体 id 重读），不依赖这条记忆。
+        remembered_intent=function(mark,live)
+            if live then return true end
+            if claim_profile(mark.resource) then return true end
+            return env.unit_mark_live_only==false
+        end})
     if ping or structure_ping then env.forget_mark=function(identity)
         if ping then ping:forget(identity) end
         if structure_ping then structure_ping:forget(identity) end
@@ -1050,8 +1070,19 @@ function M.new(env)
                     -- 改成只对**虫洞**标记让位。
                     local mark_is_wormhole=structure_mark~=nil and env.structure_profiles~=nil
                         and env.structure_profiles[structure_mark.resource]~=nil
+                    -- ★★ 优先级（2026-10-01 用户拍板）★★
+                    --   用户定的三档：**虫洞/构筑 > 标记单位 > 空白标记**。
+                    --   本处修的是"引擎自选的泰坦/蟑龙 抢走 标记单位"：
+                    --   原来只有**虫洞标记**有权力压住泰坦（mark_is_wormhole）⇒
+                    --   玩家点名标记了单位、priority 也锁上了，但只要引擎恰好给这颗
+                    --   G-60 选中了吐酸泰坦，泰坦段就会覆盖那把锁（标记形同没生效）。
+                    --   现在：本 mod 已为它锁定**玩家点名的目标**（old.lock，结构或单位
+                    --   都算）⇒ 泰坦让位，由标记目标继续驱动。
+                    --   `old.lock` 被释放的条件不变（目标不可用 / 被 quarantine），
+                    --   所以这不会让泰坦"永远打不了"。
+                    local marked_lock_held=old~=nil and old.lock~=nil
                     local titan_selected=not abandoned and titan and selected
-                        and not retry_search and not mark_is_wormhole
+                        and not retry_search and not mark_is_wormhole and not marked_lock_held
                         and has_weakpoint(m.selection_resource)
                     -- ★★ 点目标驱动（2026-10-01）★★
                     --   优先级按**每颗 G-60** 判（第一版写成"有结构标记就全局禁用点目标"，

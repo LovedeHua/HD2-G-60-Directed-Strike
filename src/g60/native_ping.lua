@@ -232,6 +232,48 @@ function M.new(env,options)
                 time=L.hex64(d.read(clock+0x18,8),0),marks=marks}
             local selected=memory:update(observation,valid)
             assert(d.validate(),'Ping observation changed')
+            -- ★★ 记忆的**存续判据**（2026-10-01，用户实机反馈）★★
+            --
+            --   用户原话：「标记过的单位，即使取消标记，G60 仍会追踪该单位」。
+            --
+            --   背景：ping_memory 的设计是"UI 过期不代表意图过期" —— history 只要
+            --   实体还有效（`valid()`）就一直留着。这对**虫洞**是对的
+            --   （"ping 一次虫洞、过一会儿才扔"是常规操作），但对**通用单位**
+            --   就成了"取消不掉"：标记从画面上消失之后，记忆里那条还在 ⇒
+            --   之后每一颗 G-60 仍会照它去追那个单位。
+            --
+            --   ⚠ 这里**不修改 ping_memory**（它在"上游原样"清单里，见
+            --     tests/test_bughole_scope.py 的 UNTOUCHED）—— 改为在**返回给上层的
+            --     队列上过滤**：`queue` 每一项的 `current` 由 ping_memory 算好
+            --     （= 本帧 ping 环里确实还看得到它，即 UI 的 8 秒窗口内），
+            --     两者组合就是"允许存活的标记"。判据由调用方给
+            --     （`options.remembered_intent`，未提供 = 完全原行为）。
+            --
+            --   ⚠ 已在飞向该单位的那颗**不受影响**：它持有 old.lock，下一帧走
+            --     native_priority 的 sticky 复核（按实体 id 重读），不依赖这条记忆
+            --     —— 2026-09-28「半路停手」的修复不会被这条改回退。
+            --   ⚠ 观测失败那一帧上面已把 `current` 翻成 false ⇒ 通用标记会当帧消失、
+            --     下一帧成功观测时按 `current` 重算恢复（只抖一帧，不会永久丢）。
+            if selected and options.remembered_intent then
+                local kept={}
+                for _,m in ipairs(selected.queue or {selected}) do
+                    if m.current or options.remembered_intent(m,false) then
+                        kept[#kept+1]=m
+                    end
+                end
+                if #kept==0 then
+                    selected=nil
+                else
+                    -- ⚠ 复制一份当 top，**不要**直接拿 kept[1] 并给它挂 queue ——
+                    --   那会让 `selected.queue[1]==selected`（自引用环），
+                    --   任何"顺着 queue 往下走一层"的写法都会绕回自己。
+                    --   ping_memory 自己也是用 copy 这个写法（top=copy(queue[1])）。
+                    local top={}
+                    for k,v in pairs(kept[1]) do top[k]=v end
+                    top.queue=kept
+                    selected=top
+                end
+            end
             -- ★ 空白标记位置：只在**本帧确实看到**时才更新，看不到就清空 ——
             --   位置随标记存活而失效，不会拿一个已经过期的 ping 点去引导 G-60。
             last_point=point_seen
@@ -239,6 +281,14 @@ function M.new(env,options)
         end)
         if not ok then
             -- 瞬时读取失败：保留记忆，继续用上一次成功选中的标记。
+            -- ★ 但**不能**继续声称它是"活标记"（2026-10-01）★
+            --   本帧什么都没读到 ⇒ "它还在 ping 环里"这件事**没有被观测到**。
+            --   `current` 是给上层判"新近标记"的门槛（native_priority 的让位规则、
+            --   以及通用单位标记的存活判据），一个陈旧的真值会让上层基于**没观测过**
+            --   的状态去抢占。这里把它翻成 false 是**语义正确**的，不是保守补丁。
+            --   `last_selected` 是 memory:update 返回的 `copy(queue[1])`，与 history
+            --   里的条目不是同一张表 ⇒ 改它不会污染记忆。
+            if last_selected then last_selected.current=false end
             failed_frames=failed_frames+1
             if failed_frames>=FAILURE_RESET_LIMIT then
                 memory:reset();last_selected=nil

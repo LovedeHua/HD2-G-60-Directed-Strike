@@ -169,6 +169,24 @@ local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets
     --     G-60 飞向地面点时通常会悬在它**上方** ⇒ 必须给 `above` 留量，
     --     否则 dz>0 恒不成立、永远判不到达（虫洞那次的同款坑）。
     point_target_enabled=true,point_target_ttl_frames=1200,
+    -- ★★ 单位标记的记忆判据（2026-10-01，用户实机反馈）★★
+    --   用户原话：「标记过的单位，即使取消标记，G60 仍会追踪该单位」。
+    --
+    --   根因：ping_memory 的设计原本是"UI 过期不代表意图过期"（只要实体还有效就
+    --   一直留在记忆里）—— 这对**虫洞**是对的（"ping 一次虫洞、过一会儿才扔"是
+    --   常规操作），但对**通用单位**就成了"取消不掉"：标记从画面上消失后，
+    --   之后每一颗 G-60 还是会照记忆里的旧标记去追那个单位。
+    --
+    --   本开关 = true（默认）：**通用单位标记只在该 ping 标记仍然可见时算数**
+    --     （`keep_intent` 的 live 判据，见 g60.ping_memory / native_ping）。
+    --     · 结构 / 泰坦 / 蟑龙 / 变体 **不受影响**：照旧长期记忆
+    --     · **已在飞向它**的那颗也不受影响：它持有 old.lock，走 sticky 复核
+    --       （按实体 id 重读），不依赖这条记忆 —— 2026-09-28「半路停手」的修复
+    --       不会被这条改回退
+    --   置 false：回到旧行为（记忆里的旧单位标记继续被新 G-60 接管）。
+    --   ⚠ 若你觉得"ping 完过一会儿再扔"对单位太短（标记 UI 约 8 秒），
+    --     就是这一格要调 —— 告诉我想要的时长，我改成可配的帧数上限。
+    unit_mark_live_only=true,
     --   ★ 2026-10-01 首次放宽：地面点不需要泰坦那种"贴腹"精度，取策略断言的上限附近
     --     （arrival_policy: radius<=3 / depth<=2 / above<=2）。
     --     首测若出现 `point_stalled`（4 秒内没满足到达）就继续在这一格调；日志里
@@ -276,6 +294,11 @@ local ok,why=pcall(function()
             and not line:match('^point_stalled;')
             -- ★ 2026-10-01：点目标"已就绪"（与结构标记并存时打一行，解释优先级）
             and not line:match('^point_armed;')
+            -- ★ 2026-10-01：优先级让位事件（结构 > 标记单位 > 空白标记）。
+            --   这是"我标记了虫洞，G-60 却继续追那个单位"是否已修好的**唯一判据** ——
+            --   诊断被节流掉 = 诊断不存在（同日 arrival_already_exploded 已栽过一次）。
+            --   本次让位事件已按 (G-60, 结构) 去重，不会刷屏。
+            and not line:match('^unit_lock_yielded;')
             -- ★ perf 窗口行必须常驻：它是"优化有没有效"的唯一判据，
             --   被节流掉就等于没测（同日 arrival_already_exploded 已栽过一次）。
             and not line:match('^perf;') then return end
@@ -371,6 +394,7 @@ local ok,why=pcall(function()
         point_marker_enabled=state.point_marker_enabled,
         point_target_enabled=state.point_target_enabled,
         point_target_ttl_frames=state.point_target_ttl_frames,
+        unit_mark_live_only=state.unit_mark_live_only,
         point_arrival_region=state.point_arrival_region,
         titan_arrival_region=state.titan_arrival_region,
         thread=function() return tonumber(k.GetCurrentThreadId()) end,
@@ -401,6 +425,9 @@ local ok,why=pcall(function()
         --   2026-09-29 就是这里硬编码了旧哈希(98152772a72f7838)，
         --   而实现里已换成 db90077e76faa025 ⇒ 日志与实现不一致，核对时被骗。
         ..';enemy_veto_resources='..table.concat(Filter.excluded_resources(),',')
+        -- ★ 2026-10-01 优先级（用户定：虫洞/构筑 > 标记单位 > 空白标记）
+        --   单位标记的记忆判据 —— 打出来才能确认"取消标记后不再追"这一条有没有生效。
+        ..';unit_mark_live_only='..tostring(state.unit_mark_live_only)
         ..';titan_variants='..table.concat(TitanVariants and TitanVariants.resources() or {},',')
         -- ★ 2026-09-29：接管范围 = 标记虫洞 + 吐酸泰坦，其余交还引擎。
         --   titan_resource 打出实际哈希，方便日志确认是否命中预期目标。

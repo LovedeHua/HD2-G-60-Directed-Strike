@@ -47,6 +47,25 @@ function M.new(env)
             local ex=Explosive.capture(scope.read,env.base,env.exe,c.identity_bytes,env.fuse_profile)
             assert(ex.validate() and source()==record,'arrival preflight changed')
             local action,progress,dist='guide',nil,nil
+            -- ★★「本帧飞行记录没有被外力改写」的参照快照 ★★
+            --   默认 = 本帧读到的 record。于是 `source()==flight_reference` 的语义是
+            --   "record 从本帧开始到现在没被动过"。
+            --
+            --   ⚠ 一旦**我们自己**往 record 里写过东西（下面的点目标 setter），参照就必须
+            --   换成**写后回读**（`after`）—— 否则这个断言比较的是"我们写之前的世界"：
+            --   只要引擎在这两帧之间给这颗 G-60 重新选过一次目标（它自己的 TargetLock
+            --   正常在跑），写前快照 ≠ 写后内容 ⇒ 引爆帧必炸断言。
+            --
+            --   2026-10-01 实机（entity=577，第 8 次点目标接管）就这么死的：
+            --     point_taken;entity=577;…;frame=19053
+            --     point_guide;entity=577;dist=4.34;frame=19113      ← 已经飞到 4.3m
+            --     arrival_skipped;…:2727: arrival trigger changed   ← 本断言
+            --     frame_error;…:6586: arrival operation disabled    ← 整局熔断
+            --     disabled;applied=0
+            --   而它前面 7 次全部成功（`arrival_detonated;target=point`）—— 因为那几帧
+            --   record 里还留着我们上一帧写的点（写前快照恰好等于写后内容），
+            --   断言的**参照系错了**，只是恰好没暴露。
+            local flight_reference=record
             -- ★★ 纯坐标目标（2026-10-01，用户要求"ping 一个位置 ⇒ G-60 飞过去炸"）★★
             --   `options.point_target={x,y,z}` 时，**没有实体**也要能引导：
             --   把玩家 ping 的地面点写成**点目标选择**，与泰坦路径完全同款写法
@@ -76,6 +95,8 @@ function M.new(env)
                     assert(L.u32(after,0x18)==scope.invalid_id and after:byte(0x79)==1
                         and after:sub(0x1d,0x28)==point_bytes and L.u32(after,0x70)==scope.invalid_id,
                         'point setter postcondition')
+                    -- ★ 写后快照成为本帧的参照（见 flight_reference 定义处的实机事故）
+                    flight_reference=after
                     goal={want_point[1],want_point[2],want_point[3]}
                 elseif not goal then
                     assert(c.selection.has_target and c.selection.id==target.id,'arrival selected target mismatch')
@@ -91,11 +112,12 @@ function M.new(env)
                     tostring(target and target.id or 'point')..':'..stage,previous,region)
             end
             if action=='detonate' then
-                assert((not target or target.validate()) and ex.validate() and source()==record,'arrival trigger changed')
+                assert((not target or target.validate()) and ex.validate()
+                    and source()==flight_reference,'arrival trigger changed')
                 mutated=true
                 scope.calls.explode(ffi.cast('void *',ex.manager),ex.id,ex.invalid_source,nil)
                 assert(scope.read(ex.network_address+1,1)=='\1','arrival request not committed')
-                assert(source()==record,'arrival request changed flight state')
+                assert(source()==flight_reference,'arrival request changed flight state')
                 return {kind='detonate',distance=dist,target=target and target.id or 'point'}
             end
             if action=='search' then
