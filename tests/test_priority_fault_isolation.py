@@ -1808,17 +1808,25 @@ def test_enemy_veto_wiring():
     #   而引擎真正分配给 G-60 的是 db90077e76faa025（cyborg_dropship）⇒ 从未生效。
     #   教训："名字对得上"不等于"就是那个哈希"。下面每条都断言来源。
     keys = re.findall(r"\['([0-9a-f]{16})'\]\s*=\s*true", sf)
-    check("veto_list_is_cyborg_dropship_only",
-          keys == ["db90077e76faa025"],
-          f"★ 排除表恰好一项 = 机器人运输船（实际 {keys}）")
+    #   ★ 2026-10-01 加第二项：光能族**增援飞船** 74e2285c01da4f71
+    #     （日志证据 `enemy_selection;entity=1241;resource=74e2285c01da4f71`）
+    check("veto_list_is_evidenced_dropships_only",
+          sorted(keys) == sorted(["db90077e76faa025", "74e2285c01da4f71"]),
+          f"★ 排除表恰好两项 = 机器人运输船 + 光能族增援飞船（实际 {keys}）")
     check("veto_list_has_log_evidenced_hash",
-          "db90077e76faa025" in keys,
-          "★ 唯一一项必须带**实机日志证据**（entity=933 的引擎选择）")
+          "db90077e76faa025" in keys and "74e2285c01da4f71" in keys,
+          "★ 每一项都必须带**实机日志证据**（两条都是引擎真实选中的 resource）")
     # ★ 反向断言：停落地面的那个运输船不得被加回来
     #   （用户 2026-09-29 判断它是地面上不再起飞的运输船 ⇒ G-60 不会锁它 ⇒ 排除无意义）
     check("veto_list_excludes_landed_dropship",
           "98152772a72f7838" not in keys,
           "★ 停落地面的运输船(98152772a72f7838)不得重新加入")
+    # ★ 反向断言：营地停落的**光能族**穿梭舰也不得加入 ——
+    #   玩家会主动标记去炸它（同一局实机：structure_mark ACCEPTED 6 次 + priority_locked 14 次）。
+    #   用户原话："注意是**增援**的飞船"。
+    check("veto_list_excludes_landed_warp_ship",
+          "b3c9cdb79dc17937" not in keys,
+          "★ 营地穿梭舰 Warp Ship Landed 不得被排除（玩家要炸它）")
     # ★ 安全属性：绝不能把玩家自己的撤离机（鹈鹕 shuttle_dropship = 7b0f8449ca9d2da0）
     #   也否决掉 —— 那会把"不追踪敌方运输船"变成"不追踪自己的撤离机"。
     check("veto_list_excludes_friendly_pelican",

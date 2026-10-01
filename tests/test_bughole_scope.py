@@ -478,9 +478,23 @@ def main():
     #   ⇒ 引擎真正分配给 G-60 的运输船是 db90077e76faa025（cyborg_dropship）。
     #   而 98152772a72f7838（社区表"运输船"）从未被选中过，用户判断它是
     #   **停落地面的运输船** ⇒ 已去掉，表里只剩前者。
-    check('small_filter_excludes_cyborg_dropship_only',
-          entries == ['db90077e76faa025'],
-          f'恰好排除机器人运输船一项（实际 {entries}）')
+    # ★ 2026-10-01：加第二项 —— 光能族的**增援飞船**
+    #   illuminate_dropship / 增援穿梭舰，实机日志证据
+    #   `enemy_selection;entity=1241;resource=74e2285c01da4f71;vetoed=false`
+    #   （用户："光能族的飞船也要过滤 —— 注意是**增援**的飞船"）
+    check('small_filter_excludes_evidenced_dropships_only',
+          sorted(entries) == ['74e2285c01da4f71', 'db90077e76faa025'],
+          f'恰好两项：机器人运输船 + 光能族增援飞船（实际 {entries}）')
+    # 反向：**营地停落的**光能族穿梭舰不得被加进来 ——
+    #   它是玩家会主动标记去炸的目标（同一局实机日志：structure_mark ACCEPTED 6 次、
+    #   priority_locked 14 次）。用户补充："注意是增援的飞船"。
+    check('small_filter_landed_warp_ship_not_excluded',
+          'b3c9cdb79dc17937' not in entries,
+          '★ 营地穿梭舰(Warp Ship Landed)不得被排除（玩家要炸它）')
+    # 反向：无证据的两个也不得加（日志里从未被引擎选中过）
+    check('small_filter_unevidenced_warp_ships_not_excluded',
+          '2ad2e055dad21f6e' not in entries and '01fe503dcd17847b' not in entries,
+          '★ 无实机证据的穿梭舰变体不得凭名字加进来')
     # 反向：冗余的那个不得被加回来（除非日志真的出现它）
     check('small_filter_landed_dropship_not_readded',
           '98152772a72f7838' not in entries,

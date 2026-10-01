@@ -46,7 +46,24 @@ local M = {}
 --   逐条证据（每条都必须能追到来源）：
 --     · db90077e76faa025 —— ★ 实机日志证据（上面那行）
 --         游戏路径 = content/fac_cyborgs/vehicles/cyborg_dropship/cyborg_dropship
---         ⇒ 机器人运输船本体。**唯一一项。**
+--         ⇒ 机器人运输船本体。
+--     · 74e2285c01da4f71 —— ★ 实机日志证据（2026-10-01，光能族战线）
+--         `enemy_selection;entity=1241;resource=74e2285c01da4f71;vetoed=false`
+--         游戏路径 = content/fac_illuminate/vehicles/illuminate_dropship
+--         社区表名 = 增援穿梭舰 / Warp Ship ⇒ **光能族的增援飞船**。
+--         用户 2026-10-01 明确要求："光能族的飞船也要过滤（注意是**增援**的飞船）"。
+--
+--   ★★★ 这里只排除**增援**那一艘，**不是**"光能族的飞船全都排除" ★★★
+--     · `b3c9cdb79dc17937`（营地的穿梭舰 / Warp Ship Landed）**必须保留在表外** ——
+--       是玩家**会主动标记去炸**的目标（2026-10-01 实机日志：同一局里
+--       `structure_mark … ACCEPTED` 6 次 + `priority_locked` **14** 次）。
+--       用户原话补充："注意是**增援**的飞船" ⇒ 停落的营地穿梭舰不在过滤范围。
+--       测试里 `veto_list_excludes_landed_warp_ship` 钉住这一点。
+--     · 同理 `2ad2e055dad21f6e`（入侵的穿梭舰 / Warp Ship Invasion）与
+--       `01fe503dcd17847b`（营地的穿梭舰，另一个 id）**都没加** ——
+--       它们**从未在实机日志里被引擎选中过**，加进去没有任何证据支撑，
+--       而且 `01fe…` 与 b3c9… 同名（营地的穿梭舰）⇒ 加了可能误伤玩家想炸的那艘。
+--       **判据永远只能是实机日志里真的出现过的那个哈希**（见下面 98152772a72f7838 的教训）。
 --
 --   ⚠️ **98152772a72f7838 已从本表去除**（2026-09-29，用户决定）
 --       它 = 社区表「哈希表-整合」第 112 行的"运输船 | Dropship"，
@@ -60,14 +77,19 @@ local M = {}
 --       = content/fac_helldivers/vehicles/shuttle_gunship/shuttle_dropship
 --       = 鹈鹕 MK2（**玩家自己的撤离机**）。把友军撤离机也否决掉是严重错误，
 --       测试里有 `veto_list_excludes_friendly_pelican` 钉住这一点。
---   ⚠️ 同类但**未**加入（用户 2026-09-29 决定"只排除机器人运船"）：
---       `74e2285c01da4f71` = content/fac_illuminate/vehicles/illuminate_dropship
---       （社区表"增援穿梭舰 Warp Ship"）。将来打光能族若遇到同类问题再加。
+--   ⚠️ 同类但**未**加入（用户决定）：
+--       `b3c9cdb79dc17937` = 营地的穿梭舰 / Warp Ship Landed
+--         —— 玩家会主动标记去炸的目标，**不能**过滤（2026-10-01 用户："是增援的飞船"）
+--       `01fe503dcd17847b` = 营地的穿梭舰（另一个 id）、
+--       `2ad2e055dad21f6e` = 入侵的穿梭舰 / Warp Ship Invasion
+--         —— 日志里从未被引擎选中过，无证据；且 `01fe…` 与 b3c9… 同名 ⇒ 加了可能误伤。
+--       `2ad2e055dad21f6e` 若将来在日志里出现且确实是**增援**用船，再加。
 --
 --   ⇒ 仍保留 enemy_selection 只读日志（实机确认触发时机）与
 --     enemy_veto_enabled 开关（一键回退）。
 local excluded = {
     ['db90077e76faa025'] = true,   -- ★ 机器人运输船 cyborg_dropship（实机日志证据）
+    ['74e2285c01da4f71'] = true,   -- ★ 光能族增援飞船 illuminate_dropship / 增援穿梭舰（实机日志证据）
 }
 function M.excluded(resource) return excluded[resource] == true end
 -- 只读：把排除表如实列出来（**排序后**，保证启动日志稳定可比）。
