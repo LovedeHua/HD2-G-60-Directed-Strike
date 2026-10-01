@@ -2162,6 +2162,45 @@ def test_early_nav_probe():
           "ping_slot_dump=true," in e and "and not line:match('^ping_slot;')" in e,
           "★ entry 开关 + 日志进节流白名单（否则等于没测）")
 
+    # ── ⑧ 空白标记位置暴露（2026-10-01，只读；"指哪打哪"的前置验证）──
+    #   实测已证：槽 +0x04 是世界坐标（8 槽三边定位自洽、残差 ~0.7m RMS；
+    #   两次 ping 的坐标间距 37.3m 与用户"走开约 30m 再 ping"吻合）。
+    check("point_marker_exposed_from_ping",
+          "function api:last_point() return last_point end" in pg
+          and "local px,py,pz,pd=slot_point(r)" in pg,
+          "★ native_ping 把空白标记位置暴露给上层（api:last_point）")
+    # ★ 只接受 `id==invalid` 的**真空白标记**：`not e` 也覆盖"有 id 但实体读不到"，
+    #   那种不能当地面点用（否则会往一个"存在但读不到"的实体位置扔炸弹）。
+    check("point_marker_only_for_invalid_id",
+          "if id==d.invalid then" in pg and "point_seen={x=px" in pg,
+          "★ 只对 id==invalid（真·无实体标记）记位置")
+    # ★ 位置必须**随标记存活而失效**：本帧没看到就清空，
+    #   否则会拿一个已过期的 ping 点去引导 G-60（"指哪打哪"最怕这个）。
+    check("point_marker_cleared_when_absent",
+          "last_point=point_seen" in pg and "local point_seen" in pg,
+          "★ 每帧重算：看不到就清空（不残留过期 ping 点）")
+    check("point_marker_self_guarded",
+          "local function slot_point(r)" in pg and "local ok,x,y,z,d=pcall(function()" in pg,
+          "★ slot_point 自兜异常 + 不用会断言的 Data.float（与 dump_slot 同款坑）")
+    check("point_marker_rejects_implausible",
+          "math.abs(x)+math.abs(y)+math.abs(z)<0.5 then return nil end" in pg,
+          "★ 拒绝「全零/量级过小」的伪坐标（防误读成真实位置）")
+    check("point_marker_logged_once_per_marker",
+          "if not P.pmark[tk] and P.pmark_n<120 then" in r,
+          "★ 每个标记只打一行（键 = slot+位置），且有上限")
+    # ★★ 诊断表必须放进 P（复用既有 local）：host:tick 的匿名函数 upvalue 已吃满 60
+    #   （Lua 5.1 上限）⇒ 新开 local 可能让整个 chunk 编译失败（"mod 没生效"）。
+    check("point_marker_state_inside_P",
+          "pmark={},pmark_n=0}" in r and "local point_mark_logged" not in r,
+          "★ 去重表放进 P（不新增 upvalue，避免 60 上限）")
+    check("point_marker_switch_and_whitelist",
+          "point_marker_enabled=true," in e and "and not line:match('^point_marker;')" in e
+          and "point_marker_enabled=state.point_marker_enabled," in e,
+          "★ entry 开关 + 传参 + 日志进节流白名单")
+    check("point_marker_does_not_change_behavior",
+          "marks[#marks+1]=mark" in pg and "last_selected=result" in pg,
+          "★ 现有「有实体标记」的返回链路一字未改（本轮只读）")
+
 
 def main():
     rt = lupa.LuaRuntime(encoding=None, unpack_returned_tuples=True)

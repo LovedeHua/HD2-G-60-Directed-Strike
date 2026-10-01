@@ -44,7 +44,11 @@ function M.new(env)
     --   · idle_skip   —— 0=每帧观测；>0=空闲时每 N 帧观测一次（见 tick 开头）
     --   · observe/lreads/lbytes/wframe/window —— perf 窗口统计
     local P={ready_frame=-1,ready_value=nil,ready_reads=0,
-        idle_skip=0,observe=0,lreads=0,lbytes=0,wframe=0,window=600}
+        idle_skip=0,observe=0,lreads=0,lbytes=0,wframe=0,window=600,
+        -- ★ 空白标记诊断去重表（2026-10-01）。**放进 P 而不是新开 local** ——
+        --   `host:tick` 的匿名函数 upvalue 已吃满 60（Lua 5.1 上限），
+        --   新开一个 local 就可能让整个 chunk 编译失败（"mod 没生效"）。
+        pmark={},pmark_n=0}
     local frame_errors={}
     local structure_issue_counts={}
     local last_structure_issue
@@ -433,6 +437,26 @@ function M.new(env)
                     end
                 end
                 last_structure_issue=structure_issue
+                -- ★★ "空白标记"位置（2026-10-01，**只读诊断**）★★
+                --   玩家 ping 到**空地**时，ping 槽里其实**带世界坐标**（`+0x04` float3，
+                --   已由三边定位交叉验证：8 组 (pos,dist) 解出同一公共点、残差 ~0.7m RMS）。
+                --   这里把它打出来 —— 这是"ping 位置 ⇒ 点目标接管（指哪打哪）"的
+                --   **前置验证**：确认位置能一路走到决策层，再谈用它引导 G-60。
+                --   ⚠ 不改任何现有行为（`observe()` 的返回仍是"有实体的标记"）；
+                --     每项只打一次（键 = slot + 位置，同一槽的新 ping 会再打）。
+                if env.point_marker_enabled and env.emit then
+                    local lp=structure_ping.last_point and structure_ping:last_point()
+                    if lp then
+                        local tk=tostring(lp.slot)..':'
+                            ..string.format('%.1f/%.1f/%.1f',lp.x,lp.y,lp.z)
+                        if not P.pmark[tk] and P.pmark_n<120 then
+                            P.pmark[tk]=true;P.pmark_n=P.pmark_n+1
+                            env.emit(string.format(
+                                'point_marker;slot=%s;pos=%.2f/%.2f/%.2f;dist=%.2f;source=ping_slot',
+                                tostring(lp.slot),lp.x,lp.y,lp.z,lp.dist or -1))
+                        end
+                    end
+                end
             end
             if ping then
                 mark,ping_issue=ping:observe()

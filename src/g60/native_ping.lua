@@ -54,6 +54,32 @@ function M.new(env,options)
     --   ③ **纯读**：只 read + 格式化，不写任何内存。
     -- 输出两样：88 字节的 hex（全量证据）+ 扫描出的"疑似 float 三元组"候选
     --   （连续 3 个小量级有限浮点，可能就是坐标 —— 但会有误报，需人工比对）。
+    -- ★★ "空白标记"位置暴露（2026-10-01，**只读**）★★
+    --   用户目标：「有敌人时，ping 一个位置 ⇒ G-60 飞过去炸」（指哪打哪）。
+    --   实机已证实 ping 槽 `+0x04/+0x08/+0x0c` 是**世界坐标 float3**、`+0x28` 是到玩家距离：
+    --     · 8 槽三边定位自洽（8 组 (pos,dist) 解出同一公共点，残差 ~0.7m RMS）
+    --     · 两次 ping ⇒ 两个槽，坐标间距 37.3m（与用户"走开约 30m 再 ping"吻合）
+    --     · `+0x2c/+0x30` ≈ 屏幕中心 (960,600) —— 因为 ping 就落在准星上
+    --   本函数只把"最新一项空白标记"的位置**暴露给上层**（`api:last_point()`）；
+    --   本轮**不改任何行为**：`observe()` 的返回值仍只含"有实体的标记"，
+    --   该位置目前仅用于诊断日志（见 experimental_runtime 的 `point_marker;`）。
+    --   ⚠ 与 dump_slot 同款**自兜异常**：本函数也在 structure_mark 的 pcall 内部被调用，
+    --     抛错会被记成 `ENTITY_READ_FAILED`，把这次观测一起废掉。
+    local function slot_point(r)
+        local ok,x,y,z,d=pcall(function()
+            local buf=ffi.new('uint8_t[0x58]',r)
+            local f=ffi.cast('float *',buf)
+            return f[1],f[2],f[3],f[10]
+        end)
+        if not ok then return nil end
+        local function fin(v) return v==v and math.abs(v)<100000 end
+        if not (fin(x) and fin(y) and fin(z)) then return nil end
+        if x==0 and y==0 and z==0 then return nil end
+        if math.abs(x)+math.abs(y)+math.abs(z)<0.5 then return nil end   -- 量级太小 ⇒ 不像真实坐标
+        if not (fin(d) and d>=0) then d=0 end
+        return x,y,z,d
+    end
+    local last_point
     local slot_seen={}
     local dump_count=0
     local DUMP_CAP=80                  -- 防刷屏上限（超了只再打一行 dump_capped）
@@ -112,9 +138,13 @@ function M.new(env,options)
         options.slot_dump_diagnostic(ok and detail
             or ('slot='..slot..';dump_error='..tostring(detail)))
     end
+    -- ★ 只读：最近一次观测到的**空白标记**（玩家 ping 到空地）的世界坐标。
+    --   返回 `{x,y,z,dist,slot}` 或 nil。⚠ **不参与任何现有决策** ——
+    --   本轮（2026-10-01）只把它打成诊断日志，为"ping 位置 ⇒ 点目标接管"做前置验证。
+    function api:last_point() return last_point end
     function api:reset()
         memory:reset();diagnosed={};diagnostic_count=0
-        last_selected=nil;failed_frames=0
+        last_selected=nil;failed_frames=0;last_point=nil
     end
     function api:forget(identity)
         memory:forget(identity)
@@ -147,6 +177,7 @@ function M.new(env,options)
             local head,tail=L.u32(header,8),L.u32(header,12)
             assert(head<128 and tail<128,'Ping ring bounds')
             local marks={}
+            local point_seen                      -- 本帧看到的空白标记位置（见 slot_point）
             for step=0,(tail-head)%128-1 do
                 local slot=(head+step)%128
                 local r=d.read(ring+16+slot*0x58,0x58)
@@ -159,6 +190,13 @@ function M.new(env,options)
                             diagnose(id,nil,'NO_ENTITY_MARK')
                             -- ★ "空白标记"（读不到实体）⇒ 把整槽 dump 出来（见 dump_slot 说明）
                             if options.slot_dump then dump_slot(slot,r) end
+                            -- ★ 且记下它的**世界坐标**（只接受 `id==invalid` 的真空白标记：
+                            --   `not e` 也包含"有 id 但实体读不到"，那种不能当地面点用）。
+                            --   循环按 head→tail 顺序 ⇒ 后面看到的更新，最终留下**最新**一项。
+                            if id==d.invalid then
+                                local px,py,pz,pd=slot_point(r)
+                                if px then point_seen={x=px,y=py,z=pz,dist=pd,slot=slot} end
+                            end
                         elseif not allowed(e.resource) then diagnose(id,e.resource,'RESOURCE_NOT_SUPPORTED') end
                         if e and (not allowed or allowed(e.resource)) then
                             local unit=d.unit(e)
@@ -191,6 +229,9 @@ function M.new(env,options)
                 time=L.hex64(d.read(clock+0x18,8),0),marks=marks}
             local selected=memory:update(observation,valid)
             assert(d.validate(),'Ping observation changed')
+            -- ★ 空白标记位置：只在**本帧确实看到**时才更新，看不到就清空 ——
+            --   位置随标记存活而失效，不会拿一个已经过期的 ping 点去引导 G-60。
+            last_point=point_seen
             return selected
         end)
         if not ok then
