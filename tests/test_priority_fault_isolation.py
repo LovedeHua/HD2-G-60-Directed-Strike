@@ -2203,7 +2203,7 @@ def test_early_nav_probe():
           "★ 现有「有实体标记」的返回链路一字未改（本轮只读）")
 
 
-def test_point_target():
+def test_point_target(rt):
     print()
     print("=== ㉕ ★ ping 地面点 ⇒ G-60 飞过去炸（指哪打哪，2026-10-01 用户要求）===")
     r = RUNTIME.read_text(encoding="utf-8")
@@ -2298,6 +2298,54 @@ def test_point_target():
           and "point_target_enabled=true," in e,
           "开关置 false 即完全回到原行为（无点目标登记 → 门控不再放行）")
 
+    # ── 行为级（不只是"源码里有这串字"）──
+    #   ① mask_only 表达式：**有点目标时必须求值为 nil**
+    #      ⚠ 这是本功能最隐蔽的失效模式：若它求值为 true，arrival 会走 mask_all 分支、
+    #        一个字节都写不进去，而所有"结构存在性"断言照样全绿。
+    rt.execute("function _pt_mask(fs,bs,tgt,pt) return (fs or bs) and 'search' "
+               "or (not tgt and not pt) and true or nil end")
+    def _mask(vals):
+        rt.execute("__pt_mv = _pt_mask(%s)" % ",".join("true" if v else "false" for v in vals))
+        return rt.eval("__pt_mv")
+    check("mask_nil_when_point_present",
+          _mask((False, False, False, True)) is None,
+          "★ 有点目标 ⇒ mask_only=nil（放行写入）")
+    check("mask_all_without_point_unchanged",
+          _mask((False, False, False, False)) is True,
+          "无点且无实体 ⇒ mask_only=true（原有'不写选择'语义不变）")
+    check("mask_entity_target_unchanged",
+          _mask((False, False, True, False)) is None,
+          "有实体目标 ⇒ mask_only=nil（原行为不变）")
+    check("mask_search_still_wins",
+          _mask((True, False, True, False)) == b"search"
+          and _mask((False, True, True, False)) == b"search",
+          "force_search / blocked_selected 仍优先走 search")
+
+    #   ② take_gate 真跑（纯 Lua，无需桩）
+    rt.execute("PT_GATE = load([==[\n%s\n]==])()" % g)
+    rt.execute("function _pt_decide(t) local q=PT_GATE.decide(t); return q.drive, q.why end")
+    def _decide(lua_old, sm="nil"):
+        rt.execute("__pt_d = {_pt_decide({behavior_id=4,state=4,native_update_eligible=true,"
+                   "retired=false,old=%s,structure_mark=%s,allow_early=false,"
+                   "selection_vetoed=false,state_age=0,early_min_age=0})}" % (lua_old, sm))
+        return rt.eval("__pt_d[1]"), rt.eval("__pt_d[2]")
+    d, why = _decide("{point={x=1,y=2,z=3}}")
+    check("gate_drives_on_point_hold_only",
+          d is True and why == b"state4_drive",
+          "★ 行为级：只持有 old.point 时门控真的放行")
+    d, why = _decide("{}")
+    check("gate_blocks_without_any_hold",
+          d is False and why == b"no_mark_no_hold",
+          "空记录仍被拦（回归：不许因这次改动放宽门控）")
+    d, why = _decide("{quarantined=true,point={x=1,y=2,z=3}}")
+    check("gate_quarantine_beats_point",
+          d is False and why == b"quarantined",
+          "quarantined 仍然优先（不因有点目标就复活）")
+    d, why = _decide("{}", sm="{resource='x'}")
+    check("gate_structure_mark_still_drives",
+          d is True,
+          "虫洞标记路径不受影响（回归）")
+
 
 def main():
     rt = lupa.LuaRuntime(encoding=None, unpack_returned_tuples=True)
@@ -2323,7 +2371,7 @@ def main():
     test_generic_takeover()
     test_link_diagnostics()
     test_early_nav_probe()
-    test_point_target()
+    test_point_target(rt)
     test_priority_wiring()
     test_arrival_fault_isolation()
 
