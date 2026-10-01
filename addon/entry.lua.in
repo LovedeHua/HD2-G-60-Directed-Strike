@@ -103,7 +103,28 @@ local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets
     --       orbit 是已在 state 4 每帧调用的同一函数；但 `path_agent=false` 是新条件，
     --       最坏情况是游戏崩溃（重开即可，不写盘）。
     --   ⇒ 只看日志就能回答：早期能不能拿到 movement、orbit 在早期是否被采纳。
-    early_nav_probe=true,early_nav_orbit=true,
+    --
+    -- ★★ 2026-10-01 实验已做完，两个开关**归零**（结论见下，代码与开关保留备查）★★
+    --
+    --   实测（v0.1.4，11 颗 G-60，结果 11/11 完全一致）：
+    --     early_nav_probe;state=3;result=OK;movement=…;path_agent=false;dest=0.00,0.00,0.00
+    --     early_nav_orbit;state=3;ok=true;before=0,0,0;after=-189.86,-3.54,-0.96
+    --                    ;changed=true;agent_before=false;agent_after=false
+    --   ⇒ ① state 3 **能拿到** movement 地址（"拿不到地址"的顾虑不成立）
+    --     ② `orbit` 调用成功、destination **确实被写入**（0,0,0 → 真实坐标）
+    --     ③ **但 `path_agent` 始终是 false** ⇒ 引擎**没有**开始导航 ⇒ 写入无人读取
+    --        ⇒ G-60 继续弹道飞行，虫洞炸不掉（用户实测确认）
+    --
+    --   机制结论：**state 2/3 的 G-60 处于弹道飞行模式（无 path_agent），
+    --   既不读 selection（setter 已证）也不读导航目的地（orbit 本次证）** ——
+    --   两者失效是**同一个原因**：引擎还没把它从弹道切到导航。
+    --   ⇒ 在早期 state 里改任何"目标数据"都无效；除非能让引擎**自己**建立寻路代理。
+    --   ⇒ 现有 6 个原生函数（clear/orbit/target_valid/aim/explode/remove）**已全部试尽**。
+    --   剩下的唯一路径是逆向 game.dll 找"分配目标 / 状态转换 / 建立 path_agent"的函数
+    --   （磁盘那份有加密壳 ⇒ 需 dump 运行时镜像），成本高，未做。
+    --
+    --   要重启实验：把下面两个值改回 true 即可（early_nav_orbit 是**写操作**，谨慎）。
+    early_nav_probe=false,early_nav_orbit=false,
     -- ★ 到达区域（**泰坦/变体专用**）—— 判定形状 = **圆柱**（2026-09-30 试过球形，
     --   实机效果差 ⇒ 已回滚；公式见 arrival_policy: `dx²+dy²<=r² 且 -depth<=dz<=above`）。
     --   历史：这段原本按**虫洞**标定过（2026-09-28：上游 {radius=1.75,depth=0.8}

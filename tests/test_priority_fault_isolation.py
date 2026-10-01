@@ -2083,8 +2083,8 @@ def test_early_nav_probe():
           "失败原因原样上报（区分'组件未建立'与'结构未就绪'）")
     # 5) 开关与白名单
     check("early_nav_switches_values",
-          "early_nav_probe=true,early_nav_orbit=true," in e,
-          "★ 2026-10-01 用户拍板：只读探测 + orbit 试探都开（实验）")
+          "early_nav_probe=false,early_nav_orbit=false," in e,
+          "★ 2026-10-01 实验已做完（结论：早期 state 改目标数据无效）⇒ 两个开关归零")
     # ★ 构建守门（build.py）扫描的是**整个 entry 文本（含注释）** ⇒ 注释里出现
     #   WriteProcessMemory 之类的字面量会直接让构建失败（本次就踩了）。
     #   这里在源码层再钉一道，免得以后在注释里"顺手"写出来。
