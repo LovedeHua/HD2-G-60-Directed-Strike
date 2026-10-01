@@ -2126,6 +2126,20 @@ def test_early_nav_probe():
     check("ping_slot_dump_reports_candidates",
           "cand[#cand+1]=string.format('0x%x=%.2f/%.2f/%.2f'" in pg,
           "同时扫描并报告「疑似坐标三元组」候选（便于人工比对）")
+    # ★★ 2026-10-01 踩坑修复的守门 ★★
+    #   dump_slot 在 structure_mark 的 pcall 内部被调用 ⇒ 它抛错会被记成
+    #   ENTITY_READ_FAILED（实测日志里 dump 一行没出，只有那句 nonfinite target data）。
+    #   ⇒ 必须 ① 自己 pcall 兜住 ② 不用有断言的 Data.float。
+    _ds = pg[pg.index("local function dump_slot(slot,bytes)"):
+             pg.index("function api:reset()")]
+    check("ping_slot_dump_self_guarded",
+          "local ok,detail=pcall(function()" in _ds,
+          "★ dump 自己兜异常（否则会污染外层 pcall 的结论）")
+    # 只看**代码行**（注释里会提到旧写法，不能算）
+    _ds_code = "\n".join(l for l in _ds.splitlines() if not l.strip().startswith("--"))
+    check("ping_slot_dump_no_asserting_decoder",
+          "Data.float" not in _ds_code and "ffi.cast('float *',buf)" in _ds_code,
+          "★ 用 ffi 解 float，不用会断言的 Data.float（'nonfinite target data'）")
     check("ping_slot_dump_wired_through_runtime",
           "slot_dump=env.ping_slot_dump," in r
           and "slot_dump_diagnostic=function(detail) env.emit('ping_slot;'..detail) end" in r,

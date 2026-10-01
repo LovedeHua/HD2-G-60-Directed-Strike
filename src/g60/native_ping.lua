@@ -1,4 +1,5 @@
 -- Read-only native UI ring. Creator must match the uniquely locally owned actor.
+local ffi=require('ffi')
 local L=require('g60.native_observer')
 local Data=require('g60.native_target_data')
 local Authority=require('g60.native_authority')
@@ -59,18 +60,33 @@ function M.new(env,options)
         if slot_seen[key] then return end
         slot_seen[key]=true
         if not options.slot_dump_diagnostic then return end
-        local hex=(bytes:gsub('.',function(ch) return string.format('%02x',string.byte(ch)) end))
-        local cand={}
-        for off=0,0x58-12,4 do
-            local a,b,c=Data.float(bytes,off),Data.float(bytes,off+4),Data.float(bytes,off+8)
-            if a==a and b==b and c==c and math.abs(a)<100000 and math.abs(b)<100000
-                and math.abs(c)<100000 and (a~=0 or b~=0 or c~=0) then
-                cand[#cand+1]=string.format('0x%x=%.2f/%.2f/%.2f',off,a,b,c)
+        -- ⚠ 本函数在 structure_mark 的 pcall **内部**被调用 ⇒ 一旦抛错会被记成
+        --   `ENTITY_READ_FAILED`，把这次观测一起废掉（2026-10-01 实测就是这么踩的：
+        --   日志里只有 ENTITY_READ_FAILED:…:nonfinite target data，dump 一行没出）。
+        --   根因：原来用 `Data.float` 扫全槽，而它对非有限/超大值**直接断言**
+        --   （`assert(f==f and math.abs(f)<1000000,'nonfinite target data')`），
+        --   而 88 字节里必然有若干偏移构不出合法 float。
+        --   ⇒ 改两点：① 用 ffi 直接解 float（**不做任何断言**）；
+        --             ② 整段自己 pcall 兜住，异常只写进日志、不往外冒。
+        local ok,detail=pcall(function()
+            local hex=(bytes:gsub('.',function(ch) return string.format('%02x',string.byte(ch)) end))
+            local buf=ffi.new('uint8_t[0x58]',bytes)
+            local f=ffi.cast('float *',buf)
+            local cand={}
+            for i=0,0x58/4-3 do
+                local a,b,c=f[i],f[i+1],f[i+2]
+                if a==a and b==b and c==c
+                    and math.abs(a)<100000 and math.abs(b)<100000 and math.abs(c)<100000
+                    and (a~=0 or b~=0 or c~=0) then
+                    cand[#cand+1]=string.format('0x%x=%.2f/%.2f/%.2f',i*4,a,b,c)
+                end
             end
-        end
-        options.slot_dump_diagnostic('slot='..slot..';id='..tostring(L.u32(bytes,0x20))
-            ..';age='..tostring(Data.float(bytes,0x14))
-            ..';hex='..hex..';f3='..table.concat(cand,'|'))
+            return 'slot='..slot..';id='..tostring(L.u32(bytes,0x20))
+                ..';age='..string.format('%.2f',f[5])
+                ..';hex='..hex..';f3='..table.concat(cand,'|')
+        end)
+        options.slot_dump_diagnostic(ok and detail
+            or ('slot='..slot..';dump_error='..tostring(detail)))
     end
     function api:reset()
         memory:reset();diagnosed={};diagnostic_count=0
