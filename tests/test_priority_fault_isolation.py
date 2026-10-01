@@ -2191,8 +2191,9 @@ def test_early_nav_probe():
     # ★★ 诊断表必须放进 P（复用既有 local）：host:tick 的匿名函数 upvalue 已吃满 60
     #   （Lua 5.1 上限）⇒ 新开 local 可能让整个 chunk 编译失败（"mod 没生效"）。
     check("point_marker_state_inside_P",
-          "pmark={},pmark_n=0}" in r and "local point_mark_logged" not in r,
-          "★ 去重表放进 P（不新增 upvalue，避免 60 上限）")
+          "pmark={},pmark_n=0," in r and "pt={token=nil,frame=-1000000000}}" in r
+          and "local point_mark_logged" not in r,
+          "★ 去重表与点目标新鲜度状态都放进 P（不新增 upvalue，避免 60 上限）")
     check("point_marker_switch_and_whitelist",
           "point_marker_enabled=true," in e and "and not line:match('^point_marker;')" in e
           and "point_marker_enabled=state.point_marker_enabled," in e,
@@ -2200,6 +2201,102 @@ def test_early_nav_probe():
     check("point_marker_does_not_change_behavior",
           "marks[#marks+1]=mark" in pg and "last_selected=result" in pg,
           "★ 现有「有实体标记」的返回链路一字未改（本轮只读）")
+
+
+def test_point_target():
+    print()
+    print("=== ㉕ ★ ping 地面点 ⇒ G-60 飞过去炸（指哪打哪，2026-10-01 用户要求）===")
+    r = RUNTIME.read_text(encoding="utf-8")
+    e = (ROOT / "addon" / "entry.lua.in").read_text(encoding="utf-8")
+    ar = (ROOT / "src/g60" / "native_arrival.lua").read_text(encoding="utf-8")
+    g = (ROOT / "src/g60" / "take_gate.lua").read_text(encoding="utf-8")
+
+    # 1) 门控：old.point 与 lock/titan 同属"本 mod 已持有"
+    #    漏了它 ⇒ 只有第一帧写、之后不再驱动（G-60 会漂走）
+    check("gate_point_counts_as_hold",
+          "o.structure_mark or (old and (old.lock or old.titan or old.point))" in g,
+          "★ 门控把 old.point 也算作已持有")
+    check("gate_guidance_point_counts_as_hold",
+          "if not (o.old and (o.old.lock or o.old.titan or o.old.point)) then" in g,
+          "arrival 门控同样认 old.point")
+
+    # 2) native_arrival：点目标写入（与泰坦同款四条不变量）
+    check("arrival_point_write_exists",
+          "local want_point=options and options.point_target" in ar
+          and "ffi.cast('uint32_t *',data)[0]=scope.invalid_id" in ar
+          and "for i=0,2 do xyz[i]=want_point[i+1] end" in ar,
+          "★ 把坐标写成点目标（invalid_id + float3）")
+    check("arrival_point_clears_category_mask",
+          "ffi.cast('uint32_t *',data+0x4c)[0]=0" in ar,
+          "★ +0x4c 类别掩码清零（与泰坦同款：过渡航点不得被当成引信目标）")
+    check("arrival_point_postcondition",
+          "'point setter postcondition'" in ar,
+          "★ 写完回读不变量（不符即进 quarantine，不会静默继续乱写）")
+
+    # 3) ★ 核心前提：没有实体（target=nil）也要能引导
+    check("arrival_accepts_nil_target_with_goal",
+          "if (target or want_point) and not mask_only then" in ar
+          and "assert((not target or target.validate()) and ex.validate()" in ar
+          and "target=target and target.id or 'point'" in ar,
+          "★ target=nil 也能走 Policy.step / 引爆 / 返回 target='point'")
+
+    # 4) runtime：状态机与优先级
+    check("runtime_point_drive_priority",
+          "local point_drive=not abandoned and point_marker~=nil and not titan_selected" in r,
+          "★ 优先级：虫洞标记 > 泰坦/弱点 > ping 地面点（不抢既有行为）")
+    check("runtime_point_hold_and_start_log",
+          "old.point={x=point_marker.x" in r and "'point_taken;entity=%s" in r,
+          "登记持有 + 首次接管打一行 point_taken")
+    check("runtime_point_released_on_marker_loss",
+          "if held and held.point and not point_marker then" in r and "'point_released;entity='" in r,
+          "★ 标记消失 / TTL 到期 ⇒ 本帧就释放（不残留过期目标）")
+    check("runtime_point_ttl",
+          "if (frame-P.pt.frame)<=env.point_target_ttl_frames then point_marker=lp end" in r,
+          "★ TTL：同一个 ping 标记只在有限帧内作数")
+    check("runtime_point_opt_in_switch",
+          "if env.point_target_enabled and lp and lp.token and not structure_mark then" in r,
+          "★ 开关 + 虫洞优先（玩家标记虫洞时不做点目标）")
+
+    # 5) ★★ 最隐蔽的陷阱 ★★
+    #    有点目标时 mask_only 必须为 **nil**：否则 arrival 走 mask_all 分支，
+    #    一个字节都写不进去 —— 而所有"结构存在性"断言照样全绿（功能静默失效）。
+    check("runtime_point_not_masked_all",
+          "or (not target and not point) and true or nil" in r,
+          "★ 有点目标时必须放行写入（mask_all 会让功能静默失效）")
+    check("runtime_point_arrival_options",
+          "arr_opts={region=env.point_arrival_region,point=true," in r
+          and "point_target={point.x,point.y,point.z}}" in r,
+          "★ 传 region + point=true（跳过实体邻近抑制段）+ 坐标")
+    check("runtime_point_defers_to_weakpoint",
+          "if point and has_weakpoint(m.selection_resource) then point=nil end" in r,
+          "引擎选中泰坦/弱点类目标时让位（与 titan 段同款判据）")
+
+    # 6) 配置与日志白名单
+    check("point_target_config",
+          "point_target_enabled=true,point_target_ttl_frames=1200," in e
+          and "point_arrival_region={radius=2.0,depth=1.5,above=1.5}," in e,
+          "★ 开关 / TTL / 到达区域都有配置（above 必须留量：G-60 会悬在地面点上方）")
+    check("point_target_config_passed",
+          "point_target_enabled=state.point_target_enabled," in e
+          and "point_target_ttl_frames=state.point_target_ttl_frames," in e
+          and "point_arrival_region=state.point_arrival_region," in e,
+          "三个配置都传进 Runtime.new")
+    check("point_target_lines_whitelisted",
+          "and not line:match('^point_taken;')" in e
+          and "and not line:match('^point_released;')" in e,
+          "★ point_taken / point_released 进节流白名单（否则等于没测）")
+
+    # 7) 只读边界与既有路径不受影响
+    check("point_region_within_policy_bounds",
+          "radius=2.0,depth=1.5,above=1.5" in e,
+          "到达区域落在 arrival_policy 断言范围内（radius<=3 / depth<=2 / above<=2）")
+    check("point_does_not_change_veto_path",
+          "run_veto(m,veto_resource,'no_mark')" in r,
+          "引擎选择否决（运输船/增援飞船）路径一字未改")
+    check("point_off_switch_reverts_all",
+          "if env.point_target_enabled and lp and lp.token" in r
+          and "point_target_enabled=true," in e,
+          "开关置 false 即完全回到原行为（无点目标登记 → 门控不再放行）")
 
 
 def main():
@@ -2226,6 +2323,7 @@ def main():
     test_generic_takeover()
     test_link_diagnostics()
     test_early_nav_probe()
+    test_point_target()
     test_priority_wiring()
     test_arrival_fault_isolation()
 

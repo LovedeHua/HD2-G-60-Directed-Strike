@@ -195,7 +195,10 @@ function M.new(env,options)
                             --   循环按 head→tail 顺序 ⇒ 后面看到的更新，最终留下**最新**一项。
                             if id==d.invalid then
                                 local px,py,pz,pd=slot_point(r)
-                                if px then point_seen={x=px,y=py,z=pz,dist=pd,slot=slot} end
+                                if px then point_seen={x=px,y=py,z=pz,dist=pd,slot=slot,
+                                    -- token = 槽 + 位置字节：同一个槽里**换了位置**也算新标记
+                                    -- （玩家在同一个槽上 ping 了新地点时必须重新计时）
+                                    token=tostring(slot)..':'..r:sub(5,16)} end
                             end
                         elseif not allowed(e.resource) then diagnose(id,e.resource,'RESOURCE_NOT_SUPPORTED') end
                         if e and (not allowed or allowed(e.resource)) then

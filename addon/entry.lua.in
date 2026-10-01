@@ -145,6 +145,31 @@ local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets
     --   ⚠ 纯诊断：**不改变任何现有行为**（`observe()` 的返回仍只含"有实体的标记"）。
     --   置 false 即完全静默。
     point_marker_enabled=true,
+    -- ★★ 点目标：ping 一个位置 ⇒ G-60 飞过去炸（"指哪打哪"，2026-10-01 用户要求）★★
+    --   原理：玩家 ping **空地** 时，ping 槽里带世界坐标（见 point_marker_enabled）。
+    --   开启后，本 mod 会把那个坐标写成**点目标选择**（`native_arrival` 的
+    --   `options.point_target`，与泰坦路径同款写法：invalid_id + 坐标），
+    --   让引擎把 G-60 飞过去，再由 arrival 段按到达区域判定并引爆。
+    --
+    --   优先级（保守，不抢既有行为）：**虫洞标记 > 引擎自选的泰坦/弱点 > ping 地面点**。
+    --   即只有这颗 G-60 既没被虫洞标记认领、引擎也没选中泰坦类目标时才接管。
+    --
+    --   ⚠ 两个前提（都必须满足，否则这条能力不会生效）：
+    --     ① **有敌人**：G-60 必须先被引擎驱动到 state 4。附近没敌人时它停在
+    --        state 2/3（弹道模式，已实测定论）⇒ 标记任何东西都不会飞。
+    --     ② **玩家 ping 的是空地**：ping 到实体时走原有的实体接管路径（更精确）。
+    --
+    --   `point_target_ttl_frames`：同一个 ping 标记只在这么多帧内作数
+    --     （≈20 秒 @60fps）。为什么要它：ping 标记在引擎里的存活时长我们无法从
+    --     `+0x14` 判断（实测那不是时间戳），而"顺手 ping 一下地面"不该长期劫持 G-60。
+    --     标记被引擎淘汰时位置读取会变 nil ⇒ 自然释放；TTL 是第二道闸。
+    --     置 0 等同于"只在 ping 的那一帧有效"（不建议）；置 false 关闭整个能力。
+    --
+    --   `point_arrival_region`：到达判定区域（圆柱，语义同 titan_arrival_region）。
+    --     G-60 飞向地面点时通常会悬在它**上方** ⇒ 必须给 `above` 留量，
+    --     否则 dz>0 恒不成立、永远判不到达（虫洞那次的同款坑）。
+    point_target_enabled=true,point_target_ttl_frames=1200,
+    point_arrival_region={radius=2.0,depth=1.5,above=1.5},
     -- ★ 到达区域（**泰坦/变体专用**）—— 判定形状 = **圆柱**（2026-09-30 试过球形，
     --   实机效果差 ⇒ 已回滚；公式见 arrival_policy: `dx²+dy²<=r² 且 -depth<=dz<=above`）。
     --   历史：这段原本按**虫洞**标定过（2026-09-28：上游 {radius=1.75,depth=0.8}
@@ -238,6 +263,9 @@ local ok,why=pcall(function()
             and not line:match('^ping_slot;')
             -- ★ 2026-10-01：空白标记位置（每项一次；"指哪打哪"的前置验证）
             and not line:match('^point_marker;')
+            -- ★ 2026-10-01：点目标接管/释放（每颗每次一条 —— 是"有没有生效"的唯一判据）
+            and not line:match('^point_taken;')
+            and not line:match('^point_released;')
             -- ★ perf 窗口行必须常驻：它是"优化有没有效"的唯一判据，
             --   被节流掉就等于没测（同日 arrival_already_exploded 已栽过一次）。
             and not line:match('^perf;') then return end
@@ -331,6 +359,9 @@ local ok,why=pcall(function()
         early_nav_probe=state.early_nav_probe,early_nav_orbit=state.early_nav_orbit,
         ping_slot_dump=state.ping_slot_dump,
         point_marker_enabled=state.point_marker_enabled,
+        point_target_enabled=state.point_target_enabled,
+        point_target_ttl_frames=state.point_target_ttl_frames,
+        point_arrival_region=state.point_arrival_region,
         titan_arrival_region=state.titan_arrival_region,
         thread=function() return tonumber(k.GetCurrentThreadId()) end,
         engine=assert(rawget(_G,'stingray'),'engine API unavailable'),emit=emit})

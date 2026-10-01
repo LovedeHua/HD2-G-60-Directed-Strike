@@ -684,17 +684,17 @@ def main():
           'runtime 的 arrival 段确实走 TakeGate.decide_guidance')
     check('F_priority_gated_on_structure',
           'if old and old.quarantined then' in gate
-          and 'if not (o.structure_mark or (old and (old.lock or old.titan))) then' in gate,
+          and 'if not (o.structure_mark or (old and (old.lock or old.titan or old.point))) then' in gate,
           'priority 门控：只有虫洞标记/已有锁定才驱动；quarantined 交回原生')
     check('F_arrival_gated_on_held_lock',
-          'if not (o.old and (o.old.lock or o.old.titan)) then' in gate
+          'if not (o.old and (o.old.lock or o.old.titan or o.old.point)) then' in gate
           and 'if not o.can_guide then' in gate,
           'arrival 门控：必须真正持有锁定/航点，且仅 can_guide（state 4）可做')
     # 三处门控必须真的存在（防止有人"优化"掉）
     for _tag, _frag in (('disposal', 'if disposal and held and m.behavior_id==4'),):
         check(f'gate_present_{_tag}', _frag in rt, f'{_tag} 门控片段存在')
-    for _tag, _frag in (('priority', "o.structure_mark or (old and (old.lock or old.titan))"),
-                        ('guidance', 'o.old.lock or o.old.titan'),
+    for _tag, _frag in (('priority', "o.structure_mark or (old and (old.lock or old.titan or old.point))"),
+                        ('guidance', 'o.old.lock or o.old.titan or o.old.point'),
                         ('early_flight_age', 'too_early_in_flight')):
         check(f'gate_fragment_{_tag}', _frag in gate, f'{_tag} 判定存在于 take_gate')
 

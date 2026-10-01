@@ -69,7 +69,11 @@ function M.decide(opts)
 
     -- 门控：只在"玩家标记了虫洞"或"本 mod 已持有锁定/航点"时才驱动。
     --   无标记的敌人 G-60：本 mod 不建 tracked、不读 Search、不写任何内存。
-    if not (o.structure_mark or (old and (old.lock or old.titan))) then
+    --
+    -- ★ 2026-10-01 加 `old.point`：**玩家 ping 的地面点**（"空白标记"）。
+    --   它和 lock/titan 同属"本 mod 已持有"，只是目标不是实体而是坐标；
+    --   持有期间同样必须继续驱动，否则第一帧之后就不写了（G-60 会漂走）。
+    if not (o.structure_mark or (old and (old.lock or old.titan or old.point))) then
         -- ★★ 唯一的例外：引擎选择否决（2026-09-29，用户要求）★★
         --
         --   引擎给这颗**非自有**的 G-60 选了我们明确排除的目标（目前只有运输船），
@@ -123,7 +127,7 @@ function M.decide_guidance(opts)
     if not o.drive then
         return {run=false,why='not_driving'}
     end
-    if not (o.old and (o.old.lock or o.old.titan)) then
+    if not (o.old and (o.old.lock or o.old.titan or o.old.point)) then
         -- 没有实际持有锁定/航点 ⇒ 不做 aim/orbit/explode。
         --   arrival:step 在 target=nil 且 mask_only='search' 时会执行
         --   clear(pair,nil) 逐帧清掉引擎刚选中的目标 ⇒ G-60 永远锁不上

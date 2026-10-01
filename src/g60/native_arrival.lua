@@ -47,10 +47,37 @@ function M.new(env)
             local ex=Explosive.capture(scope.read,env.base,env.exe,c.identity_bytes,env.fuse_profile)
             assert(ex.validate() and source()==record,'arrival preflight changed')
             local action,progress,dist='guide',nil,nil
+            -- ★★ 纯坐标目标（2026-10-01，用户要求"ping 一个位置 ⇒ G-60 飞过去炸"）★★
+            --   `options.point_target={x,y,z}` 时，**没有实体**也要能引导：
+            --   把玩家 ping 的地面点写成**点目标选择**，与泰坦路径完全同款写法
+            --   （泰坦 `native_titan_aim` 每一帧都这么做，state 4 已实机验证）：
+            --     ① candidate = 本 record 自己的 80 字节 selection 块（0x19..0x68）
+            --     ② +0x00 ← invalid_id（= 不是实体目标，而是"点"）
+            --     ③ +0x04 ← 三维坐标
+            --     ④ +0x4c ← 0（类别掩码清零：过渡航点不得被当成引信目标）
+            --   随后 `calls.clear(pair,data)` 提交，并回读三个不变量。
+            --   ⚠ 与 titan 同款：本段**必须**在 Policy.step 之前写，否则这一帧
+            --     引擎还按旧选择飞，arrival 的到达判定就会与真实飞行方向脱节。
+            local want_point=options and options.point_target
             if mask_only=='search' then action='search' end
-            if target and not mask_only then
-                assert(target.validate(),'arrival target changed')
-                if not goal then
+            if (target or want_point) and not mask_only then
+                if target then assert(target.validate(),'arrival target changed') end
+                if want_point then
+                    assert(type(want_point)=='table' and type(want_point[1])=='number'
+                        and type(want_point[2])=='number' and type(want_point[3])=='number','point target shape')
+                    local data=ffi.new('uint8_t[80]',record:sub(0x19,0x68))
+                    ffi.cast('uint32_t *',data)[0]=scope.invalid_id
+                    local xyz=ffi.cast('float *',data+4)
+                    for i=0,2 do xyz[i]=want_point[i+1] end
+                    ffi.cast('uint32_t *',data+0x4c)[0]=0
+                    local point_bytes=ffi.string(data+4,12)
+                    mutated=true;scope.calls.clear(pair,data)
+                    local after=source()
+                    assert(L.u32(after,0x18)==scope.invalid_id and after:byte(0x79)==1
+                        and after:sub(0x1d,0x28)==point_bytes and L.u32(after,0x70)==scope.invalid_id,
+                        'point setter postcondition')
+                    goal={want_point[1],want_point[2],want_point[3]}
+                elseif not goal then
                     assert(c.selection.has_target and c.selection.id==target.id,'arrival selected target mismatch')
                     assert(ffi.istype(aim_type,scope.calls.aim),'arrival aim ABI')
                     local out=ffi.new('float[3]');local position=ffi.new('uint8_t[12]',c.own_position_bytes)
@@ -60,15 +87,16 @@ function M.new(env)
                 end
                 local below=not (stage:sub(1,6)=='titan/' or options and options.below) or own[3]<=goal[3]
                 local region=options and options.region or stage:sub(1,6)=='titan/' and env.titan_arrival_region or nil
-                action,progress,dist=Policy.step(now,own,goal,terminal and below,tostring(target.id)..':'..stage,previous,region)
+                action,progress,dist=Policy.step(now,own,goal,terminal and below,
+                    tostring(target and target.id or 'point')..':'..stage,previous,region)
             end
             if action=='detonate' then
-                assert(target.validate() and ex.validate() and source()==record,'arrival trigger changed')
+                assert((not target or target.validate()) and ex.validate() and source()==record,'arrival trigger changed')
                 mutated=true
                 scope.calls.explode(ffi.cast('void *',ex.manager),ex.id,ex.invalid_source,nil)
                 assert(scope.read(ex.network_address+1,1)=='\1','arrival request not committed')
                 assert(source()==record,'arrival request changed flight state')
-                return {kind='detonate',distance=dist,target=target.id}
+                return {kind='detonate',distance=dist,target=target and target.id or 'point'}
             end
             if action=='search' then
                 mutated=true;scope.calls.clear(pair,nil)

@@ -48,7 +48,10 @@ function M.new(env)
         -- ★ 空白标记诊断去重表（2026-10-01）。**放进 P 而不是新开 local** ——
         --   `host:tick` 的匿名函数 upvalue 已吃满 60（Lua 5.1 上限），
         --   新开一个 local 就可能让整个 chunk 编译失败（"mod 没生效"）。
-        pmark={},pmark_n=0}
+        pmark={},pmark_n=0,
+        -- ★ 点目标（ping 地面）的"新鲜度"状态：`token` = 当前标记，`frame` = 它出现的帧。
+        --   同一个 token 只在 TTL 内作数（见 point_target_ttl_frames）。
+        pt={token=nil,frame=-1000000000}}
     local frame_errors={}
     local structure_issue_counts={}
     local last_structure_issue
@@ -425,6 +428,10 @@ function M.new(env)
             end
             local mark,ping_issue
             local structure_mark,structure_issue
+            -- ★★ 本帧生效的"ping 地面点"目标（2026-10-01）★★
+            --   声明放在这里（tick 函数体顶层）而不是 if 里 —— 后面 per-entity 段要用它。
+            --   ⚠ 不要把它带进 arrival 的匿名函数（那会多占一个 upvalue，见 P 的说明）。
+            local point_marker
             if structure_ping then
                 structure_mark,structure_issue=structure_ping:observe()
                 -- ★ 与 ping_issue 同款去重：这类"Ping creator 暂时读不到"是**逐帧**发生的
@@ -437,25 +444,36 @@ function M.new(env)
                     end
                 end
                 last_structure_issue=structure_issue
-                -- ★★ "空白标记"位置（2026-10-01，**只读诊断**）★★
-                --   玩家 ping 到**空地**时，ping 槽里其实**带世界坐标**（`+0x04` float3，
+                -- ★★ "空白标记"（ping 到空地）★★
+                --   玩家 ping 空地时，ping 槽里其实**带世界坐标**（`+0x04` float3，
                 --   已由三边定位交叉验证：8 组 (pos,dist) 解出同一公共点、残差 ~0.7m RMS）。
-                --   这里把它打出来 —— 这是"ping 位置 ⇒ 点目标接管（指哪打哪）"的
-                --   **前置验证**：确认位置能一路走到决策层，再谈用它引导 G-60。
-                --   ⚠ 不改任何现有行为（`observe()` 的返回仍是"有实体的标记"）；
-                --     每项只打一次（键 = slot + 位置，同一槽的新 ping 会再打）。
-                if env.point_marker_enabled and env.emit then
-                    local lp=structure_ping.last_point and structure_ping:last_point()
-                    if lp then
-                        local tk=tostring(lp.slot)..':'
-                            ..string.format('%.1f/%.1f/%.1f',lp.x,lp.y,lp.z)
-                        if not P.pmark[tk] and P.pmark_n<120 then
-                            P.pmark[tk]=true;P.pmark_n=P.pmark_n+1
-                            env.emit(string.format(
-                                'point_marker;slot=%s;pos=%.2f/%.2f/%.2f;dist=%.2f;source=ping_slot',
-                                tostring(lp.slot),lp.x,lp.y,lp.z,lp.dist or -1))
-                        end
+                --   两个用途，**互不依赖**：
+                --     · 诊断（point_marker_enabled）：每项只打一行，便于核对
+                --     · 点目标（point_target_enabled）：把它登记成"可引导的坐标目标"
+                local lp=nil
+                if (env.point_marker_enabled or env.point_target_enabled)
+                    and structure_ping.last_point then
+                    lp=structure_ping:last_point()
+                end
+                if lp and env.point_marker_enabled and env.emit then
+                    local tk=tostring(lp.slot)..':'
+                        ..string.format('%.1f/%.1f/%.1f',lp.x,lp.y,lp.z)
+                    if not P.pmark[tk] and P.pmark_n<120 then
+                        P.pmark[tk]=true;P.pmark_n=P.pmark_n+1
+                        env.emit(string.format(
+                            'point_marker;slot=%s;pos=%.2f/%.2f/%.2f;dist=%.2f;source=ping_slot',
+                            tostring(lp.slot),lp.x,lp.y,lp.z,lp.dist or -1))
                     end
+                end
+                -- ★★ 点目标登记（2026-10-01，用户要求"ping 一个位置 ⇒ G-60 飞过去炸"）★★
+                --   只有**开了开关**且**玩家没标记虫洞**时才登记 —— 虫洞优先。
+                --   TTL：同一个 token 只在 `point_target_ttl_frames` 内作数。
+                --     为什么需要：ping 标记在引擎里的存活时长我们无法从 `+0x14` 判断
+                --     （实测它不是时间戳），而"顺手 ping 一下地面"不该长期劫持 G-60。
+                --     标记被引擎淘汰时 `last_point` 变 nil ⇒ 自然释放；TTL 是第二道闸。
+                if env.point_target_enabled and lp and lp.token and not structure_mark then
+                    if P.pt.token~=lp.token then P.pt.token=lp.token;P.pt.frame=frame end
+                    if (frame-P.pt.frame)<=env.point_target_ttl_frames then point_marker=lp end
                 end
             end
             if ping then
@@ -720,6 +738,20 @@ function M.new(env)
                     local old=tracked[m.id]
                     local fingerprint=m.identity_bytes..m.flight_start
                     if old and old.fingerprint~=fingerprint then runner:release(old.ref);old=nil;tracked[m.id]=nil end
+                    -- ★★ 点目标失效 ⇒ 释放持有（2026-10-01）★★
+                    --   标记被引擎淘汰 / TTL 到期 / 玩家改标记 / 玩家标记了虫洞
+                    --   （`point_marker` 为 nil）时，本帧就交回引擎，不再往下写。
+                    --   放在门控**之前**：否则这一帧 TakeGate 仍会因 old.point 而放行。
+                    --   ⚠ 这里用 `held` 而不是直接写 `old.point=…`：本文件有一条静态检查
+                    --     （no_unguarded_old_index）要求**每处 `old.` 引用同行带 nil 守卫**，
+                    --     而 `old` 在上面可能是 nil（首次遇到这颗 G-60）。语义完全相同。
+                    local held=old
+                    if held and held.point and not point_marker then
+                        held.point=nil
+                        if env.emit then
+                            env.emit('point_released;entity='..m.id..';frame='..frame)
+                        end
+                    end
                     -- ★ 门控判定已抽到 g60.take_gate（纯函数，可真跑测试）★
                     -- 详见那里的说明：重构前这些判断内联在 tick 里，
                     -- 仓库 195 个测试一行都跑不到，于是四轮实机事故
@@ -982,10 +1014,19 @@ function M.new(env)
                     local titan_selected=not abandoned and titan and selected
                         and not retry_search and not mark_is_wormhole
                         and has_weakpoint(m.selection_resource)
+                    -- ★★ 点目标驱动（2026-10-01）★★
+                    --   优先级：**虫洞标记 > 引擎自选的泰坦/弱点 > ping 地面点**。
+                    --   即：只有当这颗 G-60 没被虫洞标记认领、引擎也没选中泰坦类目标时，
+                    --   才把 ping 的地面点接管过来。这样新能力**不会抢走**任何既有行为
+                    --   （泰坦接管、虫洞标记都原样生效）。
+                    --   `selected` = 引擎确实给它选了目标（它正在被驱动）；
+                    --   `old.point` = 本 mod 已持有 ⇒ 必须继续驱动（否则只写一帧就漂走）。
+                    local point_drive=not abandoned and point_marker~=nil and not titan_selected
+                        and (selected or (old and old.point))
                     -- titan 航点要写 movement 结构；state 3 时它可能还没初始化，
                     -- 所以 state-3 驱动的这一帧不进 titan 段（只让 priority 设目标）。
                     if (not abandoned) and m.state==4
-                        and (excluded or titan_selected or (old and not selected)) then
+                        and (excluded or titan_selected or point_drive or (old and not selected)) then
                         if not old then
                             serial=serial+1
                             old={fingerprint=fingerprint,ref={id=tostring(m.id),
@@ -1027,8 +1068,26 @@ function M.new(env)
                                     env.emit('arrival_detonated;entity='..m.id..';target='..result.target..';distance='..result.distance)
                                 end
                             end
+                        elseif point_drive then
+                            -- ★ 点目标：**本段不写内存** —— 真正的点目标写入在 arrival 段
+                            --   （native_arrival 的 `options.point_target`，与泰坦同款写法）。
+                            --   这里只做两件事：登记持有 + 交回 runner
+                            --   （runner 会按原生搜索改写选择，必须先释放，
+                            --     否则它会每帧把我们刚写的点目标清掉）。
+                            old.titan=nil;old.lock=nil
+                            local starting=old.point==nil
+                            old.point={x=point_marker.x,y=point_marker.y,z=point_marker.z,
+                                token=point_marker.token,frame=frame}
+                            runner:release(old.ref)
+                            if starting and env.emit then
+                                env.emit(string.format(
+                                    'point_taken;entity=%s;pos=%.2f,%.2f,%.2f;slot=%s;frame=%d',
+                                    tostring(m.id),point_marker.x,point_marker.y,point_marker.z,
+                                    tostring(point_marker.slot),frame))
+                            end
                         else
                             old.titan=nil
+                            old.point=nil
                             result,status,detail=runner:step(old.ref)
                         end
                         current=nil
@@ -1115,13 +1174,28 @@ function M.new(env)
                             if titan_point then return {kind='guide'} end
                             if has_weakpoint(m.selection_resource) then target=nil end
                             local blocked_selected=old.blocked and old.lock==nil and m.selection_flag==1
+                            -- ★ 点目标（2026-10-01）：把 ping 的地面点交给 arrival 段
+                            --   写成**点目标选择**（native_arrival 的 options.point_target，
+                            --   与泰坦同款写法）并按点判定到达/引爆。
+                            --   ⚠ 引擎选中泰坦/弱点类目标时让位 —— 与 titan 段同款判据，
+                            --     新能力不抢既有行为。
+                            local point=old.point
+                            if point and has_weakpoint(m.selection_resource) then point=nil end
                             -- 早期驱动：传 titan 同款到达区域 + early 标记
                             -- （early 让 arrival 内部失败不永久禁用，熔断由 state3_danger 管）
-                            local arr_opts=early_drive
-                                and {region=env.titan_arrival_region,early=true} or nil
+                            local arr_opts
+                            if point then
+                                arr_opts={region=env.point_arrival_region,point=true,
+                                    point_target={point.x,point.y,point.z}}
+                            elseif early_drive then
+                                arr_opts={region=env.titan_arrival_region,early=true}
+                            end
+                            -- mask_only 原为 `not target`；有点目标时**必须放行**
+                            -- （否则 arrival 会走 mask_all 分支、我们一个字节都写不进去）。
+                            local mask_only=(old.force_search or blocked_selected) and 'search'
+                                or (not target and not point) and true or nil
                             return arrival:step(scope,target,nil,'vanilla',true,old.arrival_progress,
-                                (old.force_search or blocked_selected) and 'search' or not target,
-                                arr_opts)
+                                mask_only,arr_opts)
                         end)
                         current=nil
                         if not ok_arr and early_drive then
@@ -1145,7 +1219,7 @@ function M.new(env)
                                 --     才跑，那两个写入本帧已经发生，置了也没有效果。
                                 --     真正生效的是 old.quarantined —— 下一帧
                                 --     TakeGate.decide 直接返回 why='quarantined'，不再写它。
-                                old.quarantined=true;old.lock=nil;old.titan=nil
+                                old.quarantined=true;old.lock=nil;old.titan=nil;old.point=nil
                                 old.force_search=nil;old.arrival_progress=nil;old.blocked=nil
                                 env.emit('arrival_quarantined;entity='..m.id
                                     ..';detail='..tostring(result.contended))
@@ -1158,7 +1232,7 @@ function M.new(env)
                             else
                                 old.arrival_progress=result.progress;old.force_search=nil
                                 if result.blocked then old.blocked=result.blocked end
-                                if result.kind=='search' then old.lock=nil;old.titan=nil end
+                                if result.kind=='search' then old.lock=nil;old.titan=nil;old.point=nil end
                                 if result.kind=='detonate' then
                                     retired[m.id]=retired_key
                                     release_hold(m.id)
