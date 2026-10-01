@@ -2191,7 +2191,7 @@ def test_early_nav_probe():
     # ★★ 诊断表必须放进 P（复用既有 local）：host:tick 的匿名函数 upvalue 已吃满 60
     #   （Lua 5.1 上限）⇒ 新开 local 可能让整个 chunk 编译失败（"mod 没生效"）。
     check("point_marker_state_inside_P",
-          "pmark={},pmark_n=0," in r and "pt={token=nil,frame=-1000000000}," in r
+          "pmark={},pmark_n=0," in r and "pt={token=nil,frame=-1000000000,seen=false}," in r
           and "pg={}}" in r and "local point_mark_logged" not in r,
           "★ 去重表与点目标新鲜度状态都放进 P（不新增 upvalue，避免 60 上限）")
     check("point_marker_switch_and_whitelist",
@@ -2242,8 +2242,21 @@ def test_point_target(rt):
 
     # 4) runtime：状态机与优先级
     check("runtime_point_drive_priority",
-          "local point_drive=not abandoned and point_marker~=nil and not titan_selected" in r,
-          "★ 优先级：虫洞标记 > 泰坦/弱点 > ping 地面点（不抢既有行为）")
+          "local point_drive=not abandoned and point_marker~=nil" in r
+          and "and not titan_selected and not (old and old.lock)" in r,
+          "★ 优先级按**每颗**判：已锁结构 ⇒ 让位；引擎选中泰坦/弱点 ⇒ 让位")
+    # ★ TTL 只能约束"新接管"（2026-10-01 第二次实机修正）★
+    #   第一版让 TTL 一到期就把 point_marker 置 nil ⇒ **已在飞的那颗被当场丢掉**
+    #   （ping 之后隔一会儿才扔就会撞上）⇒ 这就是"时灵时不灵"的一个来源。
+    check("point_ttl_gates_new_takeover_only",
+          "local point_armed" in r
+          and "((selected and point_armed) or (old and old.point))" in r
+          and "point_armed=(frame-P.pt.frame)<=env.point_target_ttl_frames" in r,
+          "★ TTL 只挡新接管；已在引导中的那颗不受影响（否则半路被丢、永远不炸）")
+    check("point_marker_requeues_when_reappearing",
+          "if P.pt.token~=lp.token or P.pt.seen==false then" in r
+          and "P.pt.seen=false" in r,
+          "标记消失又出现（同一 token）⇒ TTL 重新计时")
     # ★★★ 本轮实机事故的回归守门（2026-10-01）★★★
     #   分支后面有一段**公共**的引导失败熔断：`if result then 清零 else fail_count+1`。
     #   第一版 point_drive 分支没给 result 赋值 ⇒ 每帧被记成失败 ⇒
@@ -2266,11 +2279,27 @@ def test_point_target(rt):
           "if held and held.point and not point_marker then" in r and "'point_released;entity='" in r,
           "★ 标记消失 / TTL 到期 ⇒ 本帧就释放（不残留过期目标）")
     check("runtime_point_ttl",
-          "if (frame-P.pt.frame)<=env.point_target_ttl_frames then point_marker=lp end" in r,
-          "★ TTL：同一个 ping 标记只在有限帧内作数")
+          "point_armed=(frame-P.pt.frame)<=env.point_target_ttl_frames" in r,
+          "★ TTL：同一个 ping 标记只在有限帧内**作数给新接管**（已在引导中的不受限）")
     check("runtime_point_opt_in_switch",
-          "if env.point_target_enabled and lp and lp.token and not structure_mark then" in r,
-          "★ 开关 + 虫洞优先（玩家标记虫洞时不做点目标）")
+          "if env.point_target_enabled and lp and lp.token then" in r,
+          "★ 开关：开了才登记点目标")
+    # ★★★ 本轮实机事故的回归守门（2026-10-01）★★★
+    #   第一版把"虫洞优先"写成**登记期的全局条件** `and not structure_mark` ⇒
+    #   只要 ping 记忆里**存在**任何结构标记（虫洞/泰坦/泛用标记都算），
+    #   点目标就**永久不登记** ⇒ 用户报"生效几次，后面又不生效了"
+    #   （实机：ping 了一个虫洞 MK9 之后，后面十几次 ping 全部无效）。
+    #   正解 = 按**每颗 G-60** 判优先级：该颗锁上结构就让位，其余照常打点目标。
+    check("point_registration_not_globally_blocked",
+          "and not structure_mark then" not in r.split("if env.point_target_enabled")[1][:120],
+          "★ 登记点目标不得被 structure_mark 全局挡住（否则一个虫洞标记就把能力永久关死）")
+    check("point_defers_to_structure_lock_per_entity",
+          "and not (old and old.lock)" in r
+          and "if point and old.lock then point=nil end" in r,
+          "★ 让位改成**按每颗**：该颗已锁上结构 ⇒ 让给结构；其余不受影响")
+    check("point_armed_diagnostic",
+          "'point_armed;slot='" in r and "note=structure_mark_present" in r,
+          "与结构标记并存时打一行 point_armed（解释'这次为什么可能先打虫洞'）")
 
     # 5) ★★ 最隐蔽的陷阱 ★★
     #    有点目标时 mask_only 必须为 **nil**：否则 arrival 走 mask_all 分支，
@@ -2289,7 +2318,7 @@ def test_point_target(rt):
     # 6) 配置与日志白名单
     check("point_target_config",
           "point_target_enabled=true,point_target_ttl_frames=1200," in e
-          and "point_arrival_region={radius=2.5,depth=2.0,above=2.0}," in e,
+          and "point_arrival_region={radius=3.0,depth=2.0,above=2.0}," in e,
           "★ 开关 / TTL / 到达区域都有配置（above 必须留量：G-60 会悬在地面点上方）")
     check("point_target_config_passed",
           "point_target_enabled=state.point_target_enabled," in e
@@ -2300,7 +2329,8 @@ def test_point_target(rt):
           "and not line:match('^point_taken;')" in e
           and "and not line:match('^point_released;')" in e
           and "and not line:match('^point_guide;')" in e
-          and "and not line:match('^point_stalled;')" in e,
+          and "and not line:match('^point_stalled;')" in e
+          and "and not line:match('^point_armed;')" in e,
           "★ point_taken / point_released / point_guide / point_stalled 都进节流白名单")
     # 点目标的 guide/search 原本**完全静默**（只有 detonate/quarantine 打日志）
     #   ⇒ 实机"飞过去没炸"时日志里只有 point_taken，无从判断卡在哪。
@@ -2311,7 +2341,7 @@ def test_point_target(rt):
 
     # 7) 只读边界与既有路径不受影响
     check("point_region_within_policy_bounds",
-          "radius=2.5,depth=2.0,above=2.0" in e,
+          "radius=3.0,depth=2.0,above=2.0" in e,
           "到达区域落在 arrival_policy 断言范围内（radius<=3 / depth<=2 / above<=2）")
     check("point_does_not_change_veto_path",
           "run_veto(m,veto_resource,'no_mark')" in r,

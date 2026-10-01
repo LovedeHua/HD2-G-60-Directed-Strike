@@ -2,9 +2,9 @@
   "derived_from": "etxp/HD2-G60-Smart-Targeting 0.1-beta.1",
   "resource_name": "mods/hd2test/g60_bughole_lock",
   "resource_id": "055946D02778D197",
-  "entry_sha256": "65775f4a69637e8fc90f73e570200b57df6804d13ac4d96f6b47506669d63e83",
+  "entry_sha256": "1bb811ccd1339f3ae4578b8302187b06c86a3717be13455812d0d4ab15778568",
   "addon_sha256": {
-    "Addon/9ba626afa44a3aa3.patch_0": "2a6a402eb475a65a8c4ca6890173dd4742d88248b836a91da8b876887e77f5ab",
+    "Addon/9ba626afa44a3aa3.patch_0": "3ea3c6dc8fe4bb694e40995bc72c74db110d9276f1618b234debfec0e552ef09",
     "Addon/9ba626afa44a3aa3.patch_0.stream": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "Addon/9ba626afa44a3aa3.patch_0.gpu_resources": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
   }

@@ -51,7 +51,8 @@ function M.new(env)
         pmark={},pmark_n=0,
         -- ★ 点目标（ping 地面）的"新鲜度"状态：`token` = 当前标记，`frame` = 它出现的帧。
         --   同一个 token 只在 TTL 内作数（见 point_target_ttl_frames）。
-        pt={token=nil,frame=-1000000000},
+        --   `seen` = 上一帧是否看到该标记（用于"消失后又出现 ⇒ 重新计时"）
+        pt={token=nil,frame=-1000000000,seen=false},
         -- ★ 点目标"每 60 帧报一次距离"的节流表（见 point_guide 诊断）
         pg={}}
     local frame_errors={}
@@ -434,6 +435,10 @@ function M.new(env)
             --   声明放在这里（tick 函数体顶层）而不是 if 里 —— 后面 per-entity 段要用它。
             --   ⚠ 不要把它带进 arrival 的匿名函数（那会多占一个 upvalue，见 P 的说明）。
             local point_marker
+            -- ★ 与 point_marker 分开：`point_armed` = 还在 TTL 内（**只约束"新接管"**）。
+            --   已在引导中的那颗不受 TTL 影响 —— 否则 TTL 一到期就把它当场丢掉
+            --   （G-60 半路失去引导、永远不炸）。见登记处的说明。
+            local point_armed
             if structure_ping then
                 structure_mark,structure_issue=structure_ping:observe()
                 -- ★ 与 ping_issue 同款去重：这类"Ping creator 暂时读不到"是**逐帧**发生的
@@ -468,14 +473,46 @@ function M.new(env)
                     end
                 end
                 -- ★★ 点目标登记（2026-10-01，用户要求"ping 一个位置 ⇒ G-60 飞过去炸"）★★
-                --   只有**开了开关**且**玩家没标记虫洞**时才登记 —— 虫洞优先。
                 --   TTL：同一个 token 只在 `point_target_ttl_frames` 内作数。
                 --     为什么需要：ping 标记在引擎里的存活时长我们无法从 `+0x14` 判断
                 --     （实测它不是时间戳），而"顺手 ping 一下地面"不该长期劫持 G-60。
                 --     标记被引擎淘汰时 `last_point` 变 nil ⇒ 自然释放；TTL 是第二道闸。
-                if env.point_target_enabled and lp and lp.token and not structure_mark then
-                    if P.pt.token~=lp.token then P.pt.token=lp.token;P.pt.frame=frame end
-                    if (frame-P.pt.frame)<=env.point_target_ttl_frames then point_marker=lp end
+                --
+                --   ★★ 优先级改成**按每颗 G-60 判**（2026-10-01 实机修正）★★
+                --   第一版写成 `and not structure_mark` —— 只要**存在**任何结构标记
+                --   （虫洞/泰坦/被泛用接管的实体…）就**全局**不登记点目标。
+                --   实机后果（19:44 那局）：玩家 ping 了一个虫洞 MK9 之后，
+                --   那个结构标记在 ping 记忆里长期存活 ⇒ **后面所有 ping 全都不生效**
+                --   （用户报"生效几次，后面又不生效"）。
+                --   正解：登记不再看 structure_mark；真正的优先级在**驱动时**判 ——
+                --     · 这颗 G-60 若已被 priority 锁上结构（old.lock）⇒ 结构优先（见 point_drive）
+                --     · 否则才轮到点目标 ⇒ "一颗炸虫洞、其余炸 ping 点"能同时成立
+                --   `point_marker` = 标记**存在**（供"已在飞行中的那颗"继续用 + 释放判定）
+                --   `point_armed`  = 还在 TTL 内（**只约束"新接管"**）
+                --   ★ 为什么必须把这两件事分开（2026-10-01 第二次实机修正）：
+                --     第一版让 TTL 一到期就把 point_marker 置 nil ⇒ **已经在飞的那颗
+                --     会被当场丢掉**（G-60 半路失去引导、永远不炸）。
+                --     玩家"ping 之后隔一会儿才扔"很容易撞上（TTL 20 秒、飞行 5~14 秒）
+                --     —— 这正是"时灵时不灵"的一个来源。
+                --     ⇒ 现在：TTL 只挡新接管；已在引导中的那颗一直有效，
+                --       直到标记真的从 ping 环里消失（`last_point` 变 nil）。
+                --   另外：标记若从环里消失又出现（同一 token），TTL 重新计时
+                --     （`P.pt.seen==false` 那一帧又看到它 ⇒ 是新的一次 ping）。
+                if env.point_target_enabled and lp and lp.token then
+                    if P.pt.token~=lp.token or P.pt.seen==false then
+                        P.pt.token=lp.token;P.pt.frame=frame
+                        -- 与结构标记并存时打一行：解释"这次为什么可能先打虫洞"
+                        if env.emit and structure_mark then
+                            env.emit('point_armed;slot='..tostring(lp.slot)
+                                ..';pos='..string.format('%.1f/%.1f/%.1f',lp.x,lp.y,lp.z)
+                                ..';note=structure_mark_present;structure='..tostring(structure_mark.resource))
+                        end
+                    end
+                    P.pt.seen=true
+                    point_marker=lp
+                    point_armed=(frame-P.pt.frame)<=env.point_target_ttl_frames
+                else
+                    P.pt.seen=false
                 end
             end
             if ping then
@@ -1017,14 +1054,18 @@ function M.new(env)
                         and not retry_search and not mark_is_wormhole
                         and has_weakpoint(m.selection_resource)
                     -- ★★ 点目标驱动（2026-10-01）★★
-                    --   优先级：**虫洞标记 > 引擎自选的泰坦/弱点 > ping 地面点**。
-                    --   即：只有当这颗 G-60 没被虫洞标记认领、引擎也没选中泰坦类目标时，
-                    --   才把 ping 的地面点接管过来。这样新能力**不会抢走**任何既有行为
-                    --   （泰坦接管、虫洞标记都原样生效）。
+                    --   优先级按**每颗 G-60** 判（第一版写成"有结构标记就全局禁用点目标"，
+                    --   实机被一个长期存活的结构标记把整个能力挡死 —— 见登记处的说明）：
+                    --     ① 这颗 G-60 已被 priority 锁上结构（`old.lock`）⇒ 结构优先，让给结构
+                    --     ② 引擎选中了泰坦/弱点类目标（`titan_selected`）⇒ 泰坦优先
+                    --     ③ 其余才轮到 ping 的地面点
                     --   `selected` = 引擎确实给它选了目标（它正在被驱动）；
                     --   `old.point` = 本 mod 已持有 ⇒ 必须继续驱动（否则只写一帧就漂走）。
-                    local point_drive=not abandoned and point_marker~=nil and not titan_selected
-                        and (selected or (old and old.point))
+                    --   · 新接管：需要 `point_armed`（TTL 内）—— 防"顺手 ping 一下"长期劫持
+                    --   · 已在引导中的那颗（`old.point`）：**不受 TTL 影响**，继续飞到引爆
+                    local point_drive=not abandoned and point_marker~=nil
+                        and not titan_selected and not (old and old.lock)
+                        and ((selected and point_armed) or (old and old.point))
                     -- titan 航点要写 movement 结构；state 3 时它可能还没初始化，
                     -- 所以 state-3 驱动的这一帧不进 titan 段（只让 priority 设目标）。
                     if (not abandoned) and m.state==4
@@ -1187,9 +1228,11 @@ function M.new(env)
                             -- ★ 点目标（2026-10-01）：把 ping 的地面点交给 arrival 段
                             --   写成**点目标选择**（native_arrival 的 options.point_target，
                             --   与泰坦同款写法）并按点判定到达/引爆。
-                            --   ⚠ 引擎选中泰坦/弱点类目标时让位 —— 与 titan 段同款判据，
-                            --     新能力不抢既有行为。
+                            --   ⚠ 两种"让位"，与 point_drive 的判据一致（按每颗 G-60 判）：
+                            --     · `old.lock` 有值 ⇒ 这颗已锁上结构目标 ⇒ 让给结构
+                            --     · 引擎选中泰坦/弱点类 ⇒ 让给泰坦段
                             local point=old.point
+                            if point and old.lock then point=nil end
                             if point and has_weakpoint(m.selection_resource) then point=nil end
                             -- 早期驱动：传 titan 同款到达区域 + early 标记
                             -- （early 让 arrival 内部失败不永久禁用，熔断由 state3_danger 管）
