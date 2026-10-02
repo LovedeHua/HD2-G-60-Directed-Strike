@@ -69,8 +69,8 @@ local function setup(mode)
         local d=Data.new(f.read,f.base,f.exe);local e=d.entity(id);d.unit(e);e.validate=d.validate;return e
     end
     f.arrival=Arrival.new(f)
-    function f.step(goal,stage,terminal,progress)
-        local result,reason=f.arrival:step(f.scope(),f.target(522),goal,stage or 'vanilla',terminal~=false,progress)
+    function f.step(goal,stage,terminal,progress,options)
+        local result,reason=f.arrival:step(f.scope(),f.target(522),goal,stage or 'vanilla',terminal~=false,progress,nil,options)
         assert(result,reason);return result
     end
     return f
@@ -121,6 +121,32 @@ test('Titan arrival within tolerance above the belly does not request detonation
     assert(f.step({10,0,6},'titan/attack',true).kind=='guide' and native.fixture_explosions()==0)
     f.position={10,0,5.5}
     assert(f.step({10,0,6},'titan/attack',true).kind=='detonate' and native.fixture_explosions()==1)
+end)
+-- ★★ 2026-10-02：泰坦「腹部提前引爆」（用户："G-60 几乎都要在泰坦腹部盘旋很久才会引爆"）★★
+--   上面那条测试守的是**缺省**行为（= 上游：必须在爆点或更低）。
+--   本组测试守**放宽路径**：只有泰坦 stage、且显式传 `options.titan_belly_above` 时才放宽，
+--   且**只放宽高度**。缺省不动 ⇒ 上游语义仍由上面那条钉住。
+test('Titan belly-early window honours titan_belly_above only for titan stages and only in height',function()
+    local region={radius=2.25,depth=1.2,above=1.2}
+    -- ① 缺省（不传 options）⇒ 与上游等价：爆点上方不引爆
+    local f=setup();f.select(522);f.titan_arrival_region=region;f.position={10,0,6.5}
+    assert(f.step({10,0,6},'titan/attack',true).kind=='guide' and native.fixture_explosions()==0)
+    -- ② 传余量 1.0 ⇒ 爆点上方 0.5 也引爆（"飞到腹部底下就炸"）
+    f=setup();f.select(522);f.titan_arrival_region=region;f.position={10,0,6.5}
+    assert(f.step({10,0,6},'titan/attack',true,nil,{titan_belly_above=1.0}).kind=='detonate'
+        and native.fixture_explosions()==1)
+    -- ③ 余量 0.3 < 高差 0.5 ⇒ 仍不引爆（边界真的生效，不是"传了就一律放宽"）
+    f=setup();f.select(522);f.titan_arrival_region=region;f.position={10,0,6.5}
+    assert(f.step({10,0,6},'titan/attack',true,nil,{titan_belly_above=0.3}).kind=='guide'
+        and native.fixture_explosions()==0)
+    -- ④ 非泰坦 stage：即使传了余量也不放宽（弱点/虫洞路径不受影响）
+    f=setup();f.select(522);f.titan_arrival_region=region;f.position={10,0,6.5}
+    assert(f.step({10,0,6},'vanilla',true,nil,{below=true,titan_belly_above=1.0}).kind=='guide'
+        and native.fixture_explosions()==0)
+    -- ⑤ 余量只放宽**高度**：水平超出 radius 仍不引爆
+    f=setup();f.select(522);f.titan_arrival_region=region;f.position={10,2.5,6.5}
+    assert(f.step({10,0,6},'titan/attack',true,nil,{titan_belly_above=1.0}).kind=='guide'
+        and native.fixture_explosions()==0)
 end)
 test('transit point cannot detonate and four seconds without progress clears into orbit',function()
     local f=setup();f.select(522);f.position={10,0,0}

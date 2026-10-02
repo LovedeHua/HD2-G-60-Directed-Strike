@@ -192,13 +192,27 @@ function M.new(env,options)
                             if options.slot_dump then dump_slot(slot,r) end
                             -- ★ 且记下它的**世界坐标**（只接受 `id==invalid` 的真空白标记：
                             --   `not e` 也包含"有 id 但实体读不到"，那种不能当地面点用）。
-                            --   循环按 head→tail 顺序 ⇒ 后面看到的更新，最终留下**最新**一项。
+                            --
+                            -- ★★ 2026-10-02：多个空标记并存时取**最新 ping 的那个**（用户要求）★★
+                            --   旧行为只按**扫描顺序**（head→tail，取最后扫到的槽）—— 那是
+                            --   "最后看到的"，不是"最后 ping 的"：ping 环是**环形复用**的，
+                            --   先 ping 的标记完全可能落在更靠后的槽位 ⇒ 优先级反了。
+                            --   新判据：`age` **最小**（= 存在时间最短 = 最近 ping 的）。
+                            --     · `age` 来自槽 `+0x14`，单位秒，精度约 1 帧（0.01s）
+                            --       —— 实机佐证：`slot=75 age=0.03` vs `slot=76 age=0.01`
+                            --     · 同一帧内的多个标记无法区分 ⇒ 用 `<=`（而非 `<`）保留
+                            --       "扫描顺序最后"作为兜底，与旧行为一致
+                            --     · 取不到 age 时同样保留旧行为
+                            --   ⚠ 纯**选择**逻辑：不改任何槽的读写语义、不多读一个字节。
                             if id==d.invalid then
                                 local px,py,pz,pd=slot_point(r)
-                                if px then point_seen={x=px,y=py,z=pz,dist=pd,slot=slot,
-                                    -- token = 槽 + 位置字节：同一个槽里**换了位置**也算新标记
-                                    -- （玩家在同一个槽上 ping 了新地点时必须重新计时）
-                                    token=tostring(slot)..':'..r:sub(5,16)} end
+                                if px and (point_seen==nil or point_seen.age==nil or age==nil
+                                    or age<=point_seen.age) then
+                                    point_seen={x=px,y=py,z=pz,dist=pd,slot=slot,age=age,
+                                        -- token = 槽 + 位置字节：同一个槽里**换了位置**也算新标记
+                                        -- （玩家在同一个槽上 ping 了新地点时必须重新计时）
+                                        token=tostring(slot)..':'..r:sub(5,16)}
+                                end
                             end
                         elseif not allowed(e.resource) then diagnose(id,e.resource,'RESOURCE_NOT_SUPPORTED') end
                         if e and (not allowed or allowed(e.resource)) then

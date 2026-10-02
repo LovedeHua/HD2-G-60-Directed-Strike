@@ -106,8 +106,28 @@ function M.new(env)
                     goal=Data.vector(ffi.string(out,12),0);goal[3]=goal[3]+0.25
                     assert(target.validate() and ex.validate() and source()==record,'arrival aim observation changed')
                 end
-                local below=not (stage:sub(1,6)=='titan/' or options and options.below) or own[3]<=goal[3]
-                local region=options and options.region or stage:sub(1,6)=='titan/' and env.titan_arrival_region or nil
+                -- ★★ 泰坦「腹部提前引爆」（2026-10-02，用户实机要求）★★
+                --
+                --   现状：`below` 要求 `own[3] <= goal[3]`。而泰坦的 goal **已经**是
+                --   `blast_z = 腹点 - standoff`（比腹部低 0.85~2.5 m）⇒ 两个条件叠加，
+                --   有效引爆窗口只剩 `dz ∈ [-depth, 0]` —— **必须在爆点或更低**。
+                --   实机表现（用户原话）：「G-60 几乎都要在泰坦腹部盘旋很久才会引爆」——
+                --   它到了腹部附近却够不到那个更低的爆点，就在窗口外绕圈。
+                --
+                --   ⇒ 允许在爆点**上方** `options.titan_belly_above` 以内引爆。
+                --   ★ 余量由**调用方**按当前 standoff 约束（`≤ standoff-0.25`）⇒
+                --     引爆点最高 = `腹点 - 0.25 m`，**仍在腹部下方**，
+                --     不会退化成"在头顶炸"。
+                --   ⚠ 缺省 0 ⇒ 与上游行为**逐字节等价**（只有泰坦路径显式传值时才放宽）。
+                local titan_stage=stage:sub(1,6)=='titan/'
+                local titan_above=0
+                if titan_stage and options and type(options.titan_belly_above)=='number'
+                    and options.titan_belly_above>0 then
+                    titan_above=options.titan_belly_above
+                end
+                local region=options and options.region or titan_stage and env.titan_arrival_region or nil
+                local below=not (titan_stage or options and options.below)
+                    or own[3]<=goal[3]+titan_above
                 action,progress,dist=Policy.step(now,own,goal,terminal and below,
                     tostring(target and target.id or 'point')..':'..stage,previous,region)
             end
@@ -118,7 +138,14 @@ function M.new(env)
                 scope.calls.explode(ffi.cast('void *',ex.manager),ex.id,ex.invalid_source,nil)
                 assert(scope.read(ex.network_address+1,1)=='\1','arrival request not committed')
                 assert(source()==flight_reference,'arrival request changed flight state')
-                return {kind='detonate',distance=dist,target=target and target.id or 'point'}
+                -- ★ 2026-10-02：一并给出**引爆点的几何分解**（水平 / dz），只为诊断 ——
+                --   三维 `distance` 分不清"偏侧"还是"贴脸"，而这两者的修法**相反**：
+                --     · 偏侧（水平大）⇒ 只覆盖一侧 ⇒ 收紧 `radius`
+                --     · 贴脸（dz 正、离腹部太近）⇒ 只覆盖腹部 ⇒ 关掉 `titan_belly_above`
+                --   ⚠ 纯增量字段，不参与决策。
+                local hx,hy=own[1]-goal[1],own[2]-goal[2]
+                return {kind='detonate',distance=dist,target=target and target.id or 'point',
+                    horizontal=math.sqrt(hx*hx+hy*hy),dz=own[3]-goal[3]}
             end
             if action=='search' then
                 mutated=true;scope.calls.clear(pair,nil)

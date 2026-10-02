@@ -16,16 +16,35 @@ if existing then return existing end
 --   置 false ⇒ target_allowed=nil ⇒ `not allowed` 恒真 ⇒ 永不 veto ⇒ 敌人侧完全原生，
 --   虫洞则只由 structure_profiles（9 个虫洞）单独决定接管。
 -- ★ titan_standoff = 目标爆点距离（泰坦腹部下方几米引爆），titan_standoff_min = 自适应下限。
---   ★ 2026-09-30：**下限 1.5 → 0.5 → 0.75 → 1.0 → 0.85（最终）**，全部来自实机试错。
---     起点 1.5 的问题：爆点离腹部太远、贴地 ⇒ 该放宽的是**这个下限**（让爆点收向腹部），
---     而不是 titan_route 的离地余量（降后者只会让爆点更低、**更远离**腹部）。
---     0.5 贴太近会**小概率吃不到弱点、炸不死**；1.0 偏保守 ⇒ 最终取 **0.85**。
---     · 净空充足 ⇒ 仍用 titan_standoff(2.5)，行为不变
---     · 净空受限 ⇒ standoff 收到"刚好清空地板"的值，最低 0.85（旧值 1.5 会过早放弃）
---     · `titan_route` 的离地余量保持上游的 1.25 不变（该文件是逐字节守卫）
---   自适应在**调用方** native_titan_aim 完成，titan_route.lua 保持逐字节不变。
---   把 titan_standoff_min 设为与 titan_standoff 相等即可关闭自适应、退回"宁可放弃"行为。
-local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets_only=false,titan_standoff=2.5,titan_standoff_min=0.85,
+--   ★★ 2026-10-02：**0.85 → 2.5（= 关闭自适应）** ★★
+--
+--   【为什么反转】原先把它一路压到 0.85 的**前提已被证伪**。
+--   当时的理由是「爆点贴近腹部 ⇒ 伤害集中 ⇒ 才炸得死」（见下历史记录），
+--   但用户 2026-10-02 用实机 + 机制纠正：
+--     · 「如果手雷引爆点太靠近腹部就会炸不死」
+--     · 「G60 杀死泰坦是靠**多部位**造成伤害，太靠近腹部会让**受伤部位减少**」
+--   ⇒ 「离腹部更近」不是更好，而是**更差**。而自适应下限 0.85 恰好允许
+--     把爆点压到**腹部下方 0.85 m** —— 正是用户后来报的
+--     「偶尔会在距离腹部极近的情况下引爆 / 泰坦准备吐酸时腹部会降低导致杀不死」。
+--   ⇒ 现在把下限设为 **2.0**（用户 2026-10-02 定）：
+--     · **0.85** 太松 —— 允许爆点贴到腹下 0.85 m（"偶尔在离腹部极近处引爆"的来源）
+--     · **1.75** 实测**仍会偶尔炸不死**（贴腹区间还是太宽）
+--     · **2.5**（= 完全不许缩短）**过于严格** —— 腹部被压低时直接拒绝规划、手雷干等
+--     ⇒ 最终取 **2.0**：收缩区间收窄到 2.0~2.5，只保留很小的余量
+--     数学后果（`titan_route` 的不变量）：规划成功 ⇒ `p_z - standoff ≥ floor`
+--     ⇒ 接近点 `under = max(p_z-3.5, floor) ≤ p_z - standoff`
+--     ⇒ **任意阶段的引爆点都在腹部下方 ≥ 2.0 m**（standoff 名义值仍是 2.5，
+--       只在净空受限时才收到 2.0~2.5 之间）。
+--     腹部低到连 2.0 都放不下时 `titan_route` 直接**拒绝规划**，
+--     我们在原地等待（见 runtime 的"净空等待"分支），腹部抬起后照常引爆。
+--
+--   【代价 / 回退】腹部极低的那几秒不再"贴着腹部硬炸"（那本来就炸不死），
+--     代价是这一小段时间不推进（极端情况下这颗手雷会被浪费）。
+--     想要更松：改回 **0.85**（旧自适应）或 **1.75**；想要更严：改成 **2.5**。
+--   【历史】1.5 → 0.5 → 0.75 → 1.0 → 0.85（2026-09-30 试错）→ 2.5 → 1.75 → **2.0（2026-10-02 最终）**
+--   · `titan_route` 的离地余量保持上游的 1.25 不变（该文件是逐字节守卫）
+--   · 自适应在**调用方** native_titan_aim 完成，titan_route.lua 保持逐字节不变。
+local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets_only=false,titan_standoff=2.5,titan_standoff_min=2.0,
     mark_priority_enabled=false,exclusive_targets=true,marked_structures=true,
     -- ★ 吐酸泰坦接管开关（2026-09-29）
     --   本 mod 接管的���标只有两类：玩家标记的虫洞 + 吐酸泰坦。其余全部交还引擎原生
@@ -187,6 +206,13 @@ local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets
     --   ⚠ 若你觉得"ping 完过一会儿再扔"对单位太短（标记 UI 约 8 秒），
     --     就是这一格要调 —— 告诉我想要的时长，我改成可配的帧数上限。
     unit_mark_live_only=true,
+    -- ★★ 2026-10-02：**结构标记也只认活标记**（用户：「标记虫洞再取消标记丢出手雷，
+    --   手雷还是会向虫洞飞过去爆炸」）。
+    --   · true（默认）⇒ 只有本帧 ping 环里还看得到的结构标记才被接管 ⇒ **取消即失效**
+    --   · false ⇒ 回到旧的"长期记忆"（UI 过期不代表意图过期）
+    --   ⚠ 权衡：ping 之后超过标记存活时长（UI 约 8 秒）才扔 ⇒ 结构标记已过期 ⇒ 不接管。
+    --   ⚠ 已在飞向它的那颗不受影响（持有 old.lock，走 sticky 复核）⇒ 不会半路停手。
+    structure_mark_live_only=true,
     --   ★ 2026-10-01 首次放宽：地面点不需要泰坦那种"贴腹"精度，取策略断言的上限附近
     --     （arrival_policy: radius<=3 / depth<=2 / above<=2）。
     --     首测若出现 `point_stalled`（4 秒内没满足到达）就继续在这一格调；日志里
@@ -211,7 +237,42 @@ local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets
     --       注：捷径②要求 `radius>terminal_radius` ⇒ 调大本值会**略收窄**那条走廊，
     --       但该捷径实测 0 命中，无实际影响。
     --   配置断言范围：radius ∈ (0, 3]。
-    titan_arrival_region={radius=2.25,depth=1.2,above=1.2},bughole_only=true,bughole_profiles=16,
+    --
+    --   ★★ 2026-10-02 第三次调整（**回退收紧**）：**1.0 → 1.5（当前）** ★★
+    --   第二次把它收到 1.0（"强制靠到中心才炸"）之后，实机出现**一颗根本不引爆**：
+    --     `entity=1320 / target=1314`（泰坦在**走动**，位移 ~50 m）在 `under` 阶段
+    --     反复振荡，`goal_dist` 始终 **1.2~3.0 m** ⇒ **从未满足"水平 ≤ 1.0"** ⇒ 不引爆 ⇒ 无声消失。
+    --   ⇒ 判定球太小会把"移动中的泰坦"整颗漏掉（浪费一颗手雷、泰坦还活着）——
+    --     这比"爆点略偏侧"严重得多（1.75 时用户实测评价是"**体验还行**"）。
+    --   ⇒ 取 **1.5**：落在"1.0（太紧、会漏炸）"与"1.75（你说体验还行）"之间，
+    --     既让判定球有足够余量接住移动目标，又不比 1.75 更容易偏侧。
+    --   ⚠ 本值**同时**是 `titan_route` 的 `terminal_radius` ⇒ 两侧方向一致：
+    --     · `attack` 更早触发（`radius<=1.5`）⇒ 提前进入末端接近
+    --     · 捷径② 的走廊 `radius>terminal_radius` 略窄（1.5~12）—— 影响可忽略
+    --   ⚠ 上游 `arrival_policy` 的默认半径是 0.8；本值仍比上游宽。
+    --   微调方向：若又出现"偶尔炸不死/偏侧" ⇒ 回 **1.25**；若仍"飞过去不炸" ⇒ 上 **1.75**。
+    --
+    --   ★ 机制（用户）：G60 靠**多部位伤害累加** ⇒ 爆点要落在"正下方 + 离腹部约 standoff"的
+    --     **紧凑球**内；**偏侧**（radius 大）或**贴脸**（`belly_above` 大）都会减少受伤部位。
+    --     两个维度一起收：`radius=1.5` + `titan_belly_above=0`。
+    --     ⚠ 但"紧凑"有下限：球太小 ⇒ 接不住移动目标 ⇒ 整颗漏炸（见上）。
+    titan_arrival_region={radius=1.5,depth=1.2,above=1.2},bughole_only=true,bughole_profiles=16,
+    -- ★★ 泰坦「腹部提前引爆」余量（2026-10-02 实测后**关闭**：置 0）★★
+    --   来历：加它是为了治"G-60 到不了爆点就在腹部盘旋"（当时判定要求
+    --   `own_z <= blast_z`，即必须在爆点或更低）。含义 = 允许在爆点**上方**这么多米引爆。
+    --
+    --   ★★ 2026-10-02 实机反馈（用户原话）：「**如果手雷引爆点太靠近腹部就会炸不死**」★★
+    --   几何核算：`blast_z = 腹点 - standoff(2.5)`，本值 2.0 时引爆窗口是
+    --     `own_z ∈ [腹点-3.7, 腹点-0.5]` ⇒ **最高可在腹点下方 0.5 m 处引爆** = 贴脸。
+    --   上游的 `standoff=2.5` + `depth=1.2` 标定出的是 `[腹点-3.7, 腹点-2.5]`
+    --   —— 那是**按泰坦体型测出来的最佳爆炸距离**；把它朝腹部方向放开，
+    --   反而落进"炸不死"的区间。
+    --   ⇒ **置 0**：回到上游标定的窗口（必须在爆点或更低）。
+    --   ⚠ 原来"盘旋"的顾虑**已不存在**：绕行由捷径②「每帧评估」解决，
+    --     G-60 能直接到达正下方 ⇒ 够得到爆点。
+    --   ⚠ 只影响泰坦 baseline 路径；弱点/虫洞路径不受影响（缺省 0）。
+    --   ⚠ 要重新打开就设一个小值（如 0.5）；上限自动被 `min(·, standoff-0.25)` 夹住。
+    titan_belly_above=0,
     experimental=true,native_lifetime_verified=false,state='starting'}
 rawset(_G,'G60BugholeLock',state)
 local log,host
@@ -259,6 +320,10 @@ local ok,why=pcall(function()
         --   都必须进白名单。
         if lines>60 and lines%120~=0 and not fresh_issue and not line:find('disabled',1,true)
             and not line:match('^titan_started;') and not line:match('^titan_stage;')
+            -- ★ 泰坦接近诊断（2026-10-02，每 30 次调用一条）：是"腹部盘旋多久 / 卡在
+            --   哪个高度 / 窗口差多少"的**唯一数据源**。被节流掉 = 诊断不存在
+            --   （同日 arrival_already_exploded 已经栽过一次）。
+            and not line:match('^titan_probe;')
             and not line:match('^priority_locked;')
             and not line:match('^structure_mark;') and not line:match('^structure_stalled;')
             and not line:match('^arrival_detonated;') and not line:match('^arrival_retired;')
@@ -269,6 +334,11 @@ local ok,why=pcall(function()
             --   被节流掉就等于没测（同日 arrival_already_exploded 已经栽过一次）。
             and not line:match('^titan_clearance;')
             and not line:match('^titan_standoff_adapted;')
+            -- ★ 2026-10-02：引爆瞬间的**腹部距离**（`belly_dz = own_z - 腹点z`）。
+            --   用户报"偶尔在距离腹部极近处引爆"—— `dz`/`horiz` 都是相对**目标点**的，
+            --   而目标点会被地面净空抬高 ⇒ 两者不等价。这一行才能直接回答"离腹部多远"。
+            --   被节流掉 = 下次又是猜。
+            and not line:match('^titan_blast;')
             -- ★ 否决与其只读诊断必须常驻：诊断被节流掉 = 诊断不存在
             and not line:match('^enemy_veto;')
             and not line:match('^enemy_selection;')
@@ -395,8 +465,10 @@ local ok,why=pcall(function()
         point_target_enabled=state.point_target_enabled,
         point_target_ttl_frames=state.point_target_ttl_frames,
         unit_mark_live_only=state.unit_mark_live_only,
+        structure_mark_live_only=state.structure_mark_live_only,
         point_arrival_region=state.point_arrival_region,
         titan_arrival_region=state.titan_arrival_region,
+        titan_belly_above=state.titan_belly_above,
         thread=function() return tonumber(k.GetCurrentThreadId()) end,
         engine=assert(rawget(_G,'stingray'),'engine API unavailable'),emit=emit})
     state.stop=Runtime.install(_G,host,function()
@@ -415,6 +487,9 @@ local ok,why=pcall(function()
         ..'native_lifetime_verified=false;mode=EXPERIMENTAL_NATIVE_CALLS;titan_standoff='..state.titan_standoff
         ..';titan_arrival_radius='..state.titan_arrival_region.radius..';titan_arrival_depth='..state.titan_arrival_region.depth
         ..';titan_standoff_min='..tostring(state.titan_standoff_min)
+        -- ★ 腹部提前引爆余量（2026-10-02）：必须能在日志里一眼确认它是否生效 ——
+        --   0 = 旧行为（必须到爆点或更低）
+        ..';titan_belly_above='..tostring(state.titan_belly_above)
         ..';dragonroach_enabled='..tostring(state.dragonroach_enabled)
         ..';dragonroach_resource='..tostring(state.dragonroach_resource)
         ..';titan_variants_enabled='..tostring(state.titan_variants_enabled)
@@ -428,6 +503,7 @@ local ok,why=pcall(function()
         -- ★ 2026-10-01 优先级（用户定：虫洞/构筑 > 标记单位 > 空白标记）
         --   单位标记的记忆判据 —— 打出来才能确认"取消标记后不再追"这一条有没有生效。
         ..';unit_mark_live_only='..tostring(state.unit_mark_live_only)
+        ..';structure_mark_live_only='..tostring(state.structure_mark_live_only)
         ..';titan_variants='..table.concat(TitanVariants and TitanVariants.resources() or {},',')
         -- ★ 2026-09-29：接管范围 = 标记虫洞 + 吐酸泰坦，其余交还引擎。
         --   titan_resource 打出实际哈希，方便日志确认是否命中预期目标。

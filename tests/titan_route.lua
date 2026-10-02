@@ -29,7 +29,25 @@ test('front approach follows outside chords before descending',function()
         own=p.point;previous=p.route
         if p.terminal then break end
     end
-    assert(around>=3 and previous.stage=='attack')
+    -- ★ 2026-10-02：原断言是 `around>=3 and previous.stage=='attack'`。
+    --   `around>=3` 的前提（"前方接近**必须**绕至少 3 帧外圈弦线"）**已按用户要求作废**
+    --   —— 用户实机：「还是会从侧面绕到腹部，准确说是从**侧面到后面再到腹部**」，
+    --   那正是这段绕行；捷径② 现已改为**每帧评估** ⇒ 够近够低的当帧就中断绕行。
+    --   ⚠ **脚区安全属性原样保留**（上面 `>11` 那条）：只要处于 `around`，指令线段不得进脚区。
+    assert(previous.stage=='attack')
+end)
+-- ★ 2026-10-02（用户授权 + 实机驱动）：捷径② 改为**每帧**评估。
+--   这是"从侧面到后面再到腹部"的直接修复 —— 原来它只在接管第一帧评估一次，
+--   第一帧没命中就**永远不再评估**（stage 从 previous 继承）。
+test('a low grenade inside the ring cuts straight to the belly even after the route started',function()
+    local t=target()
+    -- 第一帧就够近够低 ⇒ 直接 under（旧行为，仍然成立）
+    assert(Route.step({6,1,3},t).route.stage=='under')
+    -- ★ 修复点：**已经进入 out 之后**，只要后来变得够近够低 ⇒ **当帧**中断绕行
+    local p=Route.step({6,1,14},t)              -- 位置太高 ⇒ 不命中 ⇒ 停在 out
+    assert(p.route.stage=='out')
+    p=Route.step({6,1,3},t,p.route)             -- 带 previous（旧代码在这里永远停在 out）
+    assert(p.route.stage=='under')              -- ★ 每帧评估 ⇒ 当帧内收
 end)
 test('side selection is stable and mirrored for left approach',function()
     local t=target();local p=Route.step({-2,0,12},t)
@@ -62,11 +80,16 @@ test('invalid pose and insufficient belly clearance do not produce a waypoint',f
     t=target();t.right={0,0,1};assert(not pcall(Route.step,{0,0,14},t))
     t=target();assert(not pcall(Route.step,{0/0,0,14},t))
 end)
-test('side approach already below belly skips the exterior detour, but high or front approaches do not',function()
+-- ★ 2026-10-02（用户明确授权）：捷径②的 `forward<=2.5` → `forward<=RADIUS`。
+--   原断言里的"**正前方 ⇒ out**（必须绕到侧面）"**已按用户要求作废** ——
+--   用户实机：「站在泰坦前方丢 G60，G60 也会从侧面绕到腹部」⇒ 那正是本条件造成的。
+--   现在正前方只要**位置够低**就直接内收；仍然保留的是**高度**门槛。
+test('low approaches skip the exterior detour regardless of heading; high ones do not',function()
     local t=target()
-    assert(Route.step({6,1,3},t).route.stage=='under')
-    assert(Route.step({6,1,12},t).route.stage=='out')
-    assert(Route.step({0,6,3},t).route.stage=='out')
+    assert(Route.step({6,1,3},t).route.stage=='under')     -- 侧方、够低 ⇒ 直接内收
+    assert(Route.step({0,6,3},t).route.stage=='under')     -- ★ 正前方、够低 ⇒ 现在也直接内收（新行为）
+    assert(Route.step({6,1,12},t).route.stage=='out')      -- 够低但**位置太高** ⇒ 仍绕外圈
+    assert(Route.step({0,6,12},t).route.stage=='out')      -- ★ 正前方 + 太高 ⇒ 仍绕（高度门槛未撤）
 end)
 test('simultaneous exterior descent shortens the front approach without crossing the body',function()
     local function length(separate)

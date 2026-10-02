@@ -199,10 +199,13 @@ TITAN_ROUTE_ANCHORS = (
     "'Titan has insufficient blast standoff clearance'",
     "'Titan has insufficient observed belly clearance'",
     "'unknown Titan route stage'",
-    # 捷径②：上游意图注释 + forward 条件（**有意保持上游值** —— 一次只动一个变量）
+    # 捷径②：上游意图注释 + forward 条件
+    # ★ 2026-10-02（用户明确授权）：`forward<=2.5` → `forward<=RADIUS` = 取消侧向限制。
+    #   锚点随之更新为**新的**约束（`forward<=RADIUS`），并保留注释锚点；
+    #   "必须位于腿间侧带"这条上游属性**已被用户明确推翻**（理由见 titan_route.lua 的注释）。
     "Already below the belly and inside the side corridor: go inward,",
     "local forward=math.abs(-dx*ry+dy*rx)",
-    "forward<=2.5",
+    "forward<=RADIUS",
 )
 TITAN_ROUTE_REQUIRED = (
     "target.origin[3]+1.25",      # 离地余量保持上游 1.25（恢复后未动）
@@ -358,9 +361,19 @@ def main():
 
     rt = strip_comments((ROOT / 'src/g60/experimental_runtime.lua').read_text(encoding='utf-8'))
     check('runtime_excluded_is_false', re.search(r'local excluded\s*=\s*false', rt) is not None)
+    # ★ 2026-10-02：原来这里是**字面量禁令**（`'Filter.excluded(m.selection_resource)' not in rt`）。
+    #   性能轮次引入了"空闲降频"的新判据 —— 其中一条是"引擎选中了**要否决**的目标"，
+    #   而否决必须每帧重申，所以降频判定必须查**同一张**排除表 ⇒ 这个字面量必然出现。
+    #   改为钉**语义**（原意是"小怪/非白名单敌人不触发接管"，而不是"这行字不许出现"）：
+    #     ① 该查询全文只出现一次
+    #     ② 它必须落在降频判据块内（`local busy=` … `P.idle_skip=busy and 0 or 3`），
+    #        也就是**不参与接管决策** —— 原来的约束原封不动地保住了。
     check('runtime_excluded_not_computed',
-          'Filter.excluded(m.selection_resource)' not in rt,
-          '小怪/非白名单敌人不再触发接管')
+          rt.count('Filter.excluded(m.selection_resource)') == 1
+          and rt.index('local busy=')
+          < rt.index('Filter.excluded(m.selection_resource)')
+          < rt.index('P.idle_skip=busy and 0 or 3'),
+          '小怪/非白名单敌人不再触发接管（唯一的 excluded 查询只在降频判据里）')
     # 函数体有多行且含早退的 `if ... then ... end`，
     # 非贪婪匹配到第一个 `end` 会截断（我第一版就这么写，漏掉了后半段）。
     # 改为：从函数起点截到下一个 `local ` 定义为止。
@@ -432,6 +445,182 @@ def main():
         for frag in frags:
             check('exception_present:' + rel + ':' + frag, frag in cur,
                   '声明过的例外片段仍在')
+
+    print('=== 3b. 泰坦「腹部提前引爆」（2026-10-02，用户要求）===')
+    # 背景：`below` 原为 `own[3] <= goal[3]`，而泰坦 goal 已是 `blast_z = 腹点 - standoff`
+    #   ⇒ 有效窗口只剩 `dz ∈ [-depth, 0]`，G-60 够不到爆点就在腹部盘旋（用户实机）。
+    #   ⇒ 允许在爆点上方 `options.titan_belly_above` 以内引爆，上限由 standoff 约束。
+    # ⚠ 行为测试在 `tests/arrival_windows.lua`（需 Windows fixture DLL，本机 lupa 通道会 SKIP）；
+    #   这里用**源码级断言**保证结构与安全属性，两条通道互不替代。
+    arr_src = (ROOT / 'src/g60/native_arrival.lua').read_text(encoding='utf-8')
+    aim_src = (ROOT / 'src/g60/native_titan_aim.lua').read_text(encoding='utf-8')
+    entry_src = (ROOT / 'addon/entry.lua.in').read_text(encoding='utf-8')
+    check('belly_above_defaults_to_zero_in_arrival',
+          'local titan_above=0' in arr_src,
+          '★ 缺省 0 ⇒ 不传时与上游行为等价（不是"默认就放宽"）')
+    check('belly_above_read_only_for_titan_stage',
+          "titan_stage and options and type(options.titan_belly_above)=='number'" in arr_src,
+          '★ 只有 `titan/` 前缀的 stage 才读该余量（弱点/虫洞路径不受影响）')
+    check('belly_above_applied_to_below',
+          'own[3]<=goal[3]+titan_above' in arr_src,
+          '★ 余量作用在 `below` 的**上界** ⇒ 只放宽高度，不动水平判定')
+    check('belly_above_not_a_new_upvalue',
+          arr_src.count('local titan_above=0') == 1 and arr_src.count('local titan_stage=') == 1,
+          '★ 收成 pcall 内的 local（Lua 5.1 每函数 upvalue 上限 60）')
+    check('belly_above_bounded_by_standoff',
+          'local limit=route_standoff-0.25' in aim_src
+          and 'local belly=math.min(env.titan_belly_above,limit)' in aim_src,
+          '★ 余量上限 = standoff-0.25 ⇒ 引爆点仍在**腹部下方**，不退化成"在头顶炸"')
+    check('belly_above_not_for_weakpoints',
+          'if not profile.kind and env.titan_belly_above and route_standoff then' in aim_src,
+          '★ 弱点路径（profile.kind）不传该字段 ⇒ 弱点行为逐字节不变')
+    check('belly_above_configurable_and_visible',
+          'titan_belly_above=0,' in entry_src
+          and 'titan_belly_above=state.titan_belly_above,' in entry_src
+          and "';titan_belly_above='..tostring(state.titan_belly_above)" in entry_src,
+          '★ 配置 + 透传 + 状态行。⚠ 2026-10-02 实测已**置 0**（关闭）：用户「引爆点太靠近腹部就会炸不死」⇒ 回到上游标定的爆点窗口')
+    check('titan_probe_whitelisted',
+          "line:match('^titan_probe;')" in entry_src,
+          '★ 泰坦接近诊断必须放行 —— 被节流掉 = "盘旋多久/卡在哪"无法定位')
+    check('titan_aim_reports_own_position',
+          'own_position=own_position,' in aim_src,
+          '★ 泰坦诊断必须带 own（原来只有 structure 才带）⇒ 否则看不到 G-60 在哪')
+    # ★ 2026-10-02：用户实机观察「站在泰坦**正前方**丢，G-60 仍从侧面绕到腹部」。
+    #   根因 = 捷径②的 `forward<=2.5`（"腿间侧带"），从前方来必然不命中。
+    #   要判断"放宽到多少"，必须知道 `forward` 的**实际分布** ⇒ 诊断先落地。
+    route_src = (ROOT / 'src/g60/titan_route.lua').read_text(encoding='utf-8')
+    check('titan_route_exposes_forward_and_under',
+          "under=under,forward=forward," in route_src and "distance=radius}" in route_src,
+          '★ 捷径②的三个判据随返回值暴露（单一来源，调用方不重算公式）；'
+          '`distance` = 到泰坦的距离（日志原来把"到目标点的距离"标成 radius，误导）')
+    check('titan_route_forward_defined_once',
+          route_src.count('local forward=math.abs(-dx*ry+dy*rx)') == 1,
+          '★ `forward` 只定义一次（提到函数顶部）⇒ 不会有两个同名变量互相遮蔽')
+    check('titan_route_shortcut_is_every_frame',
+          "(route.stage=='out' or route.stage=='around')" in route_src,
+          '★★ 捷径② 现在**每帧**评估（判据含 out/around 两个阶段）')
+    _i_side_assert = route_src.index("assert(route.side==1 or route.side==-1")
+    _i_shortcut = route_src.index("(route.stage=='out' or route.stage=='around')")
+    check('titan_route_shortcut_after_init_branch',
+          _i_shortcut > _i_side_assert,
+          '★★ 捷径② 的判定位于**初始化分支之后**（= 每帧执行）。'
+          '原来它写在 `else`（`previous==nil`，接管第一帧）里 ⇒ 第一帧没命中就永远不再评估 '
+          '⇒ 必然绕 12 m 外圈 ⇒ 用户看到的"从侧面到后面再到腹部"')
+    check('titan_route_shortcut_relaxed_by_user',
+          'forward<=RADIUS' in route_src
+          and 'forward<=2.5' not in strip_comments(route_src),
+          '★ 2026-10-02 用户授权：捷径②的 forward 门槛放宽到 `RADIUS`（取消侧向限制）；'
+          '旧的 `forward<=2.5` 必须**已不存在**于代码（放宽不是"两条并存"）。'
+          '⚠ 注释里仍会提到旧值 —— 所以按**去注释**判')
+    _rt_src = (ROOT / 'src/g60/experimental_runtime.lua').read_text(encoding='utf-8')
+    check('detonate_logs_geometry_split',
+          _rt_src.count("';horiz='..tostring(result.horizontal or -1)") == 2
+          and _rt_src.count("';dz='..tostring(result.dz or -1)") == 2,
+          '★ 引爆日志带 horiz/dz 分解，且**两处 emit（泰坦 + 点目标）都要有** —— '
+          '三维 distance 分不清"偏侧"还是"贴脸"，而两者的修法相反。'
+          '⚠ 用 `count==2` 而不是 `in`：只写 `in` 的话，漏掉其中一处仍然全绿（本次实测踩到）')
+
+    check('titan_probe_logs_forward',
+          'forward=%.2f;under_dz=%.2f' in aim_src and 'route.forward or -1' in aim_src
+          and 'route.under and (own_position[3]-route.under)' in aim_src,
+          '★ `titan_probe` 输出 forward / under_dz ⇒ 能直接看出"只差哪一条"')
+
+    print('=== 3b-2. 「距离腹部极近时引爆」的判据与防护（2026-10-02，用户实测）===')
+    # 用户两条反馈（同一根因）：
+    #   ① 「还是偶尔会在距离腹部极近的情况下引爆」
+    #   ② 「泰坦准备吐酸时腹部会降低，导致手雷引爆造成杀不死泰坦」
+    #      「底部有大型敌人时手雷被迫抬升高度导致受伤部位不够」
+    #   ⇒ 都指向"引爆点离腹部太近 ⇒ 受伤部位减少 ⇒ 炸不死"。
+    #   ★ 判据只能是**腹点本身**：`dz` 是相对**目标点**的，而目标点会被地面净空抬高
+    #     （`under=max(p_z-3.5,floor)`）⇒ 目标点 ≠ 腹部，看 `dz` 会得出相反结论。
+    check('titan_probe_logs_belly_height',
+          ';p_z=%.2f;belly_dz=%.2f' in aim_src
+          and 'target.point[3],own_position[3]-target.point[3]' in aim_src,
+          '★ `titan_probe` 必须给出**腹点高度 p_z** 与 `belly_dz = own_z - 腹点z` —— '
+          '这是"离腹部多远"的唯一直接读数（目标点会被净空抬高，`dz` 判不出来）')
+    check('titan_blast_logged',
+          "value.kind=='detonate' and env.emit" in aim_src
+          and "'titan_blast;target=%s;stage=%s;p_z=%.2f;own_z=%.2f;belly_dz=%.2f;standoff=%.2f'" in aim_src
+          and 'own_position[3]-target.point[3]' in aim_src
+          and aim_src.index('assert(value,why)')
+              < aim_src.index("'titan_blast;target="),
+          '★ 引爆瞬间打一条 `titan_blast`（含 belly_dz / standoff）⇒ 爆点离腹部多远可直接读。'
+          '⚠ 连**条件**一起钉（`value.kind==\'detonate\'`）：只钉格式串的话，'
+          '把条件改成恒假仍然全绿 —— 本次变异测试发现的空转')
+    check('titan_blast_whitelisted',
+          "not line:match('^titan_blast;')" in entry_src,
+          '★ `titan_blast` 进日志节流白名单（被节流掉 = 下次又是猜）')
+    check('titan_blast_deduped_no_new_upvalue',
+          "standoff_logged['blast:'..tostring(target.id)]" in aim_src,
+          '★ 复用已有的 `standoff_logged` 表（键加 `blast:` 前缀）—— 不给 `api:step` '
+          '的 pcall 匿名函数新增 upvalue（余量已紧张，多一个就整 chunk 编译失败）')
+    # ★★ 核心不变量：爆距**下限 ≥2.0**（不准回到 0.85 的"贴腹"）★★
+    check('standoff_min_is_200_not_085',
+          'titan_standoff=2.5,titan_standoff_min=2.0,' in entry_src
+          and 'env.titan_standoff_min or 2.0' in aim_src,
+          '★★ `titan_standoff_min` = **2.0**（用户 2026-10-02 逐级实测裁定：0.85 贴到腹下 '
+          '0.85 m；**1.75 仍偶尔炸不死**；2.5 过于严格 ⇒ 最终 2.0）。'
+          '⇒ 数学不变量：规划成功即保证引爆点在腹部下方 ≥ 2.0 m（收缩区间只剩 2.0~2.5）')
+    check('standoff_no_shrink_below_floor',
+          'route_standoff=math.max(lo,max_standoff)' in aim_src
+          and 'local lo=env.titan_standoff_min or 2.0' in aim_src
+          and 'titan_standoff_min=0.85' not in entry_src,
+          '★ 实现是 `max(lo, max_standoff)`，lo=2.0 ⇒ 结果恒 ≥2.0；'
+          '**旧的 0.85 必须已不存在**（不是"两条并存"）')
+    # 净空拒绝 = **等待**，不是引导失败（否则 0.5 秒就把手雷退休 ⇒ 白扔）
+    check('clearance_refusal_is_wait_not_failure',
+          "local waiting=type(status)=='string'" in _rt_src
+          and "status:find('clearance',1,true)~=nil" in _rt_src
+          and 'if waiting then' in _rt_src
+          and 'detail=WAITING_FOR_SAFE_BLAST' in _rt_src
+          and 'guide_fail[m.id]=0' in _rt_src,
+          '★ 净空/腹部过低的拒绝被识别为**等待**（腹部抬起后照常引爆）。'
+          '⚠ 逐项钉住（含 `if waiting then` 本身）：只钉两个字符串片段的话，'
+          '把条件改成 `if false then` 仍然全绿 —— 本次变异测试发现的空转')
+    check('clearance_wait_not_counted_as_failure',
+          _rt_src.index("if waiting then") < _rt_src.index('guide_fail[m.id]=0')
+          < _rt_src.index('local n=(guide_fail[m.id] or 0)+1'),
+          '★ 等待分支**不累加** `guide_fail`（顺序即语义：必须在真正的失败计数之前 return 掉）')
+    check('real_failure_still_retires',
+          'if n>=GUIDE_FAIL_LIMIT then' in _rt_src and 'guide_give_up;entity=' in _rt_src,
+          '★ **真正的**引导失败照旧计数并在 GUIDE_FAIL_LIMIT 后退休 —— '
+          '等待分支不得绕过那条熔断（2026-09-29 为"无限循环挂住"加的）')
+
+    print('=== 3c. 多个空标记 ⇒ 取最新 ping 的那个（2026-10-02，用户要求）===')
+    # 现状：玩家连 ping 多个点时，ping 环里会**并存**多个空白标记（实机日志
+    #   `point_marker;slot=52/53/54`、`slot=75/76/79` 都出现过）。
+    #   旧行为只按**扫描顺序**（head→tail 取最后扫到的槽）= "最后看到的"，
+    #   而 ping 环是**环形复用**的 ⇒ 先 ping 的标记可能落在更靠后的槽位，优先级反了。
+    ping_src = (ROOT / 'src/g60/native_ping.lua').read_text(encoding='utf-8')
+    runtime_src2 = (ROOT / 'src/g60/experimental_runtime.lua').read_text(encoding='utf-8')
+    check('point_seen_prefers_newest_age',
+          'or age<=point_seen.age)' in ping_src,
+          '★ 取 `age` 最小（= 存在时间最短 = 最近 ping 的），不再只看扫描顺序')
+    check('point_seen_keeps_scan_order_fallback',
+          'point_seen==nil or point_seen.age==nil or age==nil' in ping_src,
+          '★ 取不到 age 时回退"扫描顺序最后" ⇒ 与旧行为一致（不是硬依赖 age）')
+    check('point_seen_uses_le_not_lt',
+          'age<=point_seen.age' in ping_src and 'age<point_seen.age' not in ping_src,
+          '★ 用 `<=` 而非 `<`：同一帧（age 相同）时后扫到的槽胜出 = 旧行为兜底')
+    check('point_seen_is_pure_selection',
+          'point_seen={x=px,y=py,z=pz,dist=pd,slot=slot,age=age' in ping_src
+          and 'slot_point(r)' in ping_src,
+          '★ 只是选择逻辑 + 多带一个 age 字段（不多读字节、不改槽读写语义）')
+    # ★★ 2026-10-02：结构标记也改"只认活标记"（用户：取消标记后手雷仍飞向虫洞）★★
+    check('structure_mark_live_only_switch',
+          "return env.structure_mark_live_only==false" in runtime_src2
+          and "structure_mark_live_only=true," in entry_src
+          and "structure_mark_live_only=state.structure_mark_live_only," in entry_src
+          and ";structure_mark_live_only='..tostring(state.structure_mark_live_only)" in entry_src,
+          '★★ 结构/泰坦/变体不再"无条件长期记忆"：改用 `env.structure_mark_live_only`'
+          '（默认 true = 只认活标记 ⇒ **取消即失效**；置 false 回到旧行为）。'
+          '原写法 `if claim_profile(mark.resource) then return true end` 必须已不存在')
+    check('structure_mark_live_only_removed_old_grant',
+          "if claim_profile(mark.resource) then return true end" not in runtime_src2,
+          '★ 旧的"结构标记无条件放行"必须已删除（不是并存两条）')
+    check('point_marker_logs_age',
+          ';age=%.2f;source=ping_slot' in runtime_src2 and 'lp.age or -1' in runtime_src2,
+          '★ 诊断带 age —— 否则无法在日志里验证"取到的确实是最新的那个"')
 
     print('=== 4. 身份独立 ===')
     entry = (ROOT / 'addon' / 'entry.lua.in').read_text(encoding='utf-8')

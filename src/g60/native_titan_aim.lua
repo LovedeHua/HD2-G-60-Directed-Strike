@@ -157,7 +157,17 @@ function M.new(env)
                     --   max_standoff 连 1.5 都不到时 Route.step 依然拒绝 —— 硬底线保留。
                     local max_standoff=target.point[3]-(target.origin[3]+1.25)
                     if route_standoff and route_standoff>0 and max_standoff<route_standoff then
-                        local lo=env.titan_standoff_min or 0.85
+                        -- ★★ 2026-10-02：默认下限 **0.85 → 2.0**（用户裁定，逐级实测所得）。
+                        --   理由见 `addon/entry.lua.in` 里那段完整记录：
+                        --   · 0.85 太松：允许爆点贴到腹下 0.85 m ⇒ "偶尔在离腹部极近处引爆"
+                        --   · 1.75 实测**仍会偶尔炸不死**（贴腹区间还是太宽）
+                        --   · 2.5（= 不许缩短）过于严格：腹部压低时直接拒绝、手雷干等
+                        --   · 2.0 最终取值 ⇒ `max(lo, max_standoff)` 恒 ≥ 2.0
+                        --     （收缩区间只剩 2.0~2.5）
+                        --   腹部低到连 2.0 都放不下时 `titan_route` 拒绝规划，
+                        --   运行时把它当**等待**（不是引导失败）。
+                        --   回退：0.85（松）/ 1.75 / 2.5（严）。
+                        local lo=env.titan_standoff_min or 2.0
                         route_standoff=math.max(lo,max_standoff)
                         local tag=tostring(target.id)..'|'..string.format('%.2f',route_standoff)
                         if env.emit and not standoff_logged[tag] then
@@ -211,9 +221,87 @@ function M.new(env)
             if target and env.arrival then
                 local stage=(profile.kind and 'weakpoint/'..profile.kind or 'titan')..'/'..route.route.stage
                 local options=profile.kind and {point=true,below=not profile.structure and profile.kind~='head' and profile.kind~='rear',region=route.arrival_region or profile.region}
+                -- ★★ 泰坦「腹部提前引爆」余量（2026-10-02，用户要求"飞到腹部底下就引爆"）★★
+                --   与 native_arrival 的 `below` 配合：允许在爆点
+                --   （`blast_z = 腹点 - standoff`）**上方** belly 以内引爆，
+                --   让 G-60 不必先够到那个更深的爆点（那正是"在腹部盘旋很久"的来源）。
+                --   ★ 上限由 standoff 约束：引爆点最高 = blast_z + belly ≤ 腹点 - 0.25 m
+                --     ⇒ **仍在腹部下方**，不会退化成"在头顶炸"。
+                --   ★ 只对泰坦 baseline 生效：弱点路径（`profile.kind`）不传该字段
+                --     ⇒ native_arrival 侧缺省 0 ⇒ 弱点行为逐字节不变。
+                --   ⚠ `env.titan_belly_above` 置 0（或不配）⇒ 完全回到旧行为。
+                if not profile.kind and env.titan_belly_above and route_standoff then
+                    local limit=route_standoff-0.25
+                    if limit>0 then
+                        local belly=math.min(env.titan_belly_above,limit)
+                        if belly>0 then options={titan_belly_above=belly} end
+                    end
+                end
+                -- ★ 泰坦接近诊断（2026-10-02）：每 30 次调用一条，给出**实际几何**。
+                --   为什么必须：用户报"在腹部盘旋很久才引爆"时，日志里**只有 stage 变化**，
+                --   看不出"盘旋多久、卡在哪个高度、窗口差多少" ⇒ 只能猜。
+                --   ⚠ 用 `self._probe_n` 计数（`self` 是参数，不占 upvalue ——
+                --     `api:step` 的 pcall 匿名函数 upvalue 余量有限）。
+                if env.emit and not profile.kind then
+                    self.probe_n=(self.probe_n or 0)+1
+                    if self.probe_n>=30 then
+                        self.probe_n=0
+                        local dx,dy=own_position[1]-route.point[1],own_position[2]-route.point[2]
+                        -- ★ 2026-10-02 新增 `forward` / `under_dz`：
+                        --   `forward` = G-60 在泰坦**前后轴**上的偏移（来自 titan_route 的
+                        --     返回值，单一来源）—— 捷径② 要求 `<=2.5`（腿间侧带）。
+                        --     用户实机观察「站在泰坦正前方丢，G-60 仍从侧面绕」⇒
+                        --     这条是判断"放宽到多少能命中"的**唯一数据**。
+                        --   `under_dz` = 当前高度 − 捷径②解锁所需的 `under` 高度
+                        --     （<=0 表示高度条件已满足，剩下的只卡在 forward 上）。
+                        local udz=route.under and (own_position[3]-route.under) or 0
+                        -- ★ 2026-10-02 新增 `p_z` / `belly_dz`：
+                        --   `p_z` = **腹点高度**（`target.point[3]`，来自腹骨 pose ⇒ 随吐酸等
+                        --      动画下降）；`belly_dz` = `own_z - p_z`（**负 = 在腹部下方几米**）。
+                        --   为什么必须：`dz`/`goal_dist` 都是相对**目标点**的，而目标点会被
+                        --   地面净空抬高（`under=max(p_z-3.5, floor)`）⇒ 目标点与腹部**不重合**，
+                        --   光看 `dz` 判不出"爆点离腹部多远"（用户报"距离腹部极近"时正是如此）。
+                        env.emit(string.format(
+                            'titan_probe;target=%s;stage=%s;dist=%.2f;goal_dist=%.2f;dz=%.2f'
+                            ..';forward=%.2f;under_dz=%.2f;belly=%s;terminal=%s;p_z=%.2f;belly_dz=%.2f'
+                            ..';point=%s;own=%s',
+                            tostring(target.id),tostring(route.route.stage),
+                            route.distance or -1,math.sqrt(dx*dx+dy*dy),
+                            own_position[3]-route.point[3],
+                            route.forward or -1,udz,
+                            tostring(own_position[3]<=route.point[3]+(options and options.titan_belly_above or 0)),
+                            tostring(route.terminal==true),
+                            target.point[3],own_position[3]-target.point[3],
+                            table.concat(route.point,','),
+                            table.concat(own_position,',')))
+                    end
+                end
                 local value,why=env.arrival:step(scope,target,route.arrival_point or route.point,stage,
                     route.terminal,previous and previous.arrival_progress,nil,options)
                 assert(value,why)
+                -- ★★ 引爆瞬间的**腹部距离**（2026-10-02，用户：「还是偶尔会在距离腹部
+                --   极近的情况下引爆」/「准备吐酸时腹部会降低…杀不死泰坦」）★★
+                --
+                --   为什么必须有这一行：`arrival_detonated` 里的 `dz` = `own_z - 目标点z`，
+                --   而**目标点会被地面净空抬高**（`under=max(p_z-3.5, floor)`）
+                --   ⇒ 目标点 ≠ 腹部，`dz` 小并不代表"贴着腹部"、`dz` 大也不代表"离腹部远"。
+                --   判据只能是**腹点本身**：
+                --       `belly_dz = own_z - target.point[3]`（负 = 在腹部下方）
+                --   ⇒ 稳定 |belly_dz| 应落在 `standoff ~ standoff+depth`（2.5~3.7）区间；
+                --     若偶尔出现 |belly_dz| 明显偏小（<2.5）⇒ "极近腹部"被复现，
+                --     再按 `p_z` 判断是"腹部被动画压低"还是别的原因。
+                --   ⚠ 纯诊断、与决策无关；一次性（同一目标只打一条）。
+                --   ⚠ 复用 `standoff_logged` 表（键加 `blast:` 前缀）—— 不新增 upvalue
+                --     （`api:step` 的 pcall 匿名函数 upvalue 余量有限，见文件头注释）。
+                if value and value.kind=='detonate' and env.emit
+                    and not standoff_logged['blast:'..tostring(target.id)] then
+                    standoff_logged['blast:'..tostring(target.id)]=true
+                    env.emit(string.format(
+                        'titan_blast;target=%s;stage=%s;p_z=%.2f;own_z=%.2f;belly_dz=%.2f;standoff=%.2f',
+                        tostring(target.id),tostring(route.route.stage),
+                        target.point[3],own_position[3],own_position[3]-target.point[3],
+                        route_standoff or env.titan_standoff or 0))
+                end
                 if profile.structure and value.kind=='search' and env.emit then
                     env.emit('structure_stalled;entity='..L.u32(c.identity_bytes,8)..';target='..target.id
                         ..';resource='..profile.resource..';stage='..route.route.stage
@@ -258,7 +346,7 @@ function M.new(env)
             -- The setter may refresh the timestamp; all later bytes must match
             -- our submitted candidate, including the per-stage category mask.
             assert(after:sub(0x31,0x68)==ffi.string(data+24,56),'Titan candidate metadata changed')
-            return {kind='aim',point=route.point,stage=route.route.stage,own_position=profile.structure and own_position,
+            return {kind='aim',point=route.point,stage=route.route.stage,own_position=own_position,
                 track={target=target,candidate=candidate,point_bytes=point_bytes,route=route.route,arrival_progress=arrival_progress}}
         end)
         busy=false

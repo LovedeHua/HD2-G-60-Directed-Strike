@@ -582,8 +582,12 @@ def test_arrival_region_geometry(rt):
           "上游那句必须已在")
     e = (ROOT / "addon" / "entry.lua.in").read_text(encoding="utf-8")
     check("entry_retunes_region",
-          "titan_arrival_region={radius=2.25,depth=1.2,above=1.2}" in e,
-          "★ 到达区域（泰坦/变体专用，**圆柱** radius=2.25 / depth=1.2 / above=1.2）")
+          "titan_arrival_region={radius=1.5,depth=1.2,above=1.2}" in e,
+          "★ 到达区域（泰坦/变体专用，**圆柱** radius=1.5 / depth=1.2 / above=1.2）。"
+          "radius 的三次调整：2.25 → 1.75（偏侧）→ 1.0（**太紧、会整颗漏炸**：实机 entity=1320 "
+          "泰坦走动时 goal_dist 恒 1.2~3.0，从未满足水平≤1.0）→ **1.5**（用户裁定，落在"
+          "「1.0 太紧」与「1.75 体验还行」之间）。与 titan_belly_above=0 配对，"
+          "把爆点收进「正下方 + 离腹部约 standoff」的紧凑球，同时留出接住移动目标的余量")
 
 
 def lua_table(rows):
@@ -1616,7 +1620,15 @@ def test_adaptive_standoff():
     #            即爆点**贴近腹部**（伤害集中，才炸得死）。
     #   组合效果：接管门槛由 `p_z-origin_z ≥ 2.75` 降到 `≥ 1.75`，
     #             且净空不足时爆点会**贴着腹部**而不是被推到地面附近。
-    LO, HI, MARGIN = 0.85, 2.5, 1.25
+    # ★★ 2026-10-02：LO **0.85 → 2.5 → 1.75 → 2.0（最终，用户逐级实测裁定）** ★★
+    #   上面那段「爆点贴近腹部（伤害集中，才炸得死）」的**前提已被用户证伪**：
+    #     · 「如果手雷引爆点太靠近腹部就会炸不死」
+    #     · 「G60 杀死泰坦是靠**多部位**造成伤害，太靠近腹部会让**受伤部位减少**」
+    #   ⇒ 下限从 0.85 一路抬到 **2.0**（0.85 贴到腹下 0.85 m；1.75 仍偶尔炸不死；
+    #     2.5 过于严格 —— 腹部压低就直接拒绝、手雷干等 ⇒ 最终 2.0）。
+    #   腹部过低、连 2.0 都放不下时由 `titan_route` **拒绝规划**，运行时把这种拒绝当**等待**
+    #   （不是引导失败）—— 见 `test_bughole_scope.py` 的 `clearance_refusal_is_wait_not_failure`。
+    LO, HI, MARGIN = 2.0, 2.5, 1.25
 
     def adapt(pz, oz, target=HI, lo=LO):
         max_s = pz - (oz + MARGIN)
@@ -1632,21 +1644,23 @@ def test_adaptive_standoff():
     check("adapt_idle_when_clear", s == HI and not route_refuses(10.0, 0.0, s),
           f"净空充足时不改（standoff={s}）")
 
-    # B) 卡边：原值会撞地板，收到"刚好清空"的值并放行
+    # B) 卡边：收到"刚好清空地板"的 2.25（≥ LO=2.0 ⇒ 允许这个很小的收缩；但**不会**到 0.85）
     #    p_z-origin_z = 3.5 ⇒ max_standoff = 2.25
     s = adapt(3.5, 0.0)
-    check("adapt_shrinks_to_fit", abs(s - 2.25) < 1e-9 and not route_refuses(3.5, 0.0, s),
-          f"卡边时收到 {s}（应 2.25）且能放行")
+    check("adapt_shrinks_within_floor", abs(s - 2.25) < 1e-9 and not route_refuses(3.5, 0.0, s),
+          f"卡边时收到 {s}（应 2.25，≥ LO={LO}）且能放行 —— 收缩区间只剩 2.0~2.5")
     check("adapt_stays_within_range", LO <= s <= HI, f"落在 [{LO},{HI}] 内")
 
-    # C) ★ 本轮核心：泰坦离地较近（p_z-origin_z = 2.5）时
-    #    旧 LO=1.5 ⇒ 余量 1.25 < 1.5 ⇒ 整颗放弃（用户报的"贴地不引爆"）。
-    #    新 LO=0.5 ⇒ 用余量 1.25 放行，爆点**在腹部下方 1.25 m**（贴着腹部，伤害集中）。
+    # C) ★ 本轮核心（**方向反转**）：泰坦离地较近（p_z-origin_z = 2.5，
+    #    正是用户说的"准备吐酸时腹部会降低"）时：
+    #    旧 LO=0.85 ⇒ 放行并把爆点压到**腹部下方 1.25 m** ⇒ 实机"离腹部极近、炸不死"。
+    #    新 LO=2.0 ⇒ 余量只剩 1.25 < 2.0 ⇒ **触底并拒绝规划**（这一刻没有安全爆点）
+    #    ⇒ 运行时等待腹部抬起后照常引爆。
     s = adapt(2.5, 0.0)
-    check("adapt_near_ground_now_works", abs(s - 1.25) < 1e-9 and not route_refuses(2.5, 0.0, s),
-          f"余量 1.25 ≥ LO=0.5 ⇒ 放行，爆点离腹部 {s} m（旧版会放弃）")
+    check("adapt_near_ground_reaches_floor_then_refuses", s == LO and route_refuses(2.5, 0.0, s),
+          f"余量 1.25 < LO={LO} ⇒ 触底 {s} 并拒绝（旧 0.85 会放行并贴到腹下 1.25 m）")
 
-    # C2) 极贴地（余量 < LO）⇒ 取 LO 并拒绝：不把爆点压到泰坦身体里
+    # C2) 极贴地（余量 < LO）⇒ 同样拒绝：不把爆点压到泰坦身体里
     s = adapt(1.4, 0.0)
     check("adapt_keeps_hard_floor", s == LO and route_refuses(1.4, 0.0, s),
           f"余量 0.15 < {LO} ⇒ 取 LO={LO} 并拒绝（保留底线）")
@@ -1674,8 +1688,9 @@ def test_adaptive_standoff():
           "route_standoff=env.titan_standoff" in code,
           "上限取 env.titan_standoff（配置值 2.5），不是硬编码")
     check("adapt_lower_bound_is_config",
-          "env.titan_standoff_min or 0.85" in code and "titan_standoff_min=0.85" in e,
-          "★ 下限取 env.titan_standoff_min（2026-09-30 定为 0.5：让爆点能贴近腹部），可调")
+          "env.titan_standoff_min or 2.0" in code and "titan_standoff_min=2.0" in e,
+          "★ 下限取 env.titan_standoff_min。**2026-10-02 定为 2.0**（0.85 会贴到腹下 0.85 m；"
+          "1.75 仍偶尔炸不死；2.5 过于严格）⇒ 收缩区间只剩 2.0~2.5")
     check("adapt_caller_keeps_hard_reject_in_route",
           "max_standoff" not in route_code and "insufficient blast standoff clearance" in route,
           "★ titan_route 仍是**硬拒绝**（自适应逻辑只在调用方，没搬进守卫文件）")
@@ -2511,10 +2526,21 @@ def test_target_priority_tiers():
     check("unit_mark_live_only_wired",
           "unit_mark_live_only=state.unit_mark_live_only," in e,
           "开关已透传到 env（否则改了没效果）")
-    check("remembered_intent_keeps_structures",
+    # ★★ 2026-10-02（用户要求变更）：结构/泰坦/变体**不再**无条件长期记忆。
+    #   用户：「标记虫洞再取消标记丢出手雷，手雷还是会向虫洞飞过去爆炸」
+    #   ⇒ 改为受 `env.structure_mark_live_only`（默认 true = 只认活标记）。
+    #   ⚠ 原断言"照旧长期记忆"的前提**已被用户推翻**，此处同步更新（不是删掉约束，
+    #     而是改成钉**新**行为 + 可回退）。
+    check("remembered_intent_structures_follow_live_only",
           "remembered_intent=function(mark,live)" in r
-          and "if claim_profile(mark.resource) then return true end" in r,
-          "★ 结构/泰坦照旧长期记忆（'ping 一次虫洞、过会儿才扔'不能被这条改掉）")
+          and "return env.structure_mark_live_only==false" in r
+          and "if claim_profile(mark.resource) then return true end" not in r,
+          "★ 结构/泰坦/变体改为「只认活标记」（取消即失效）；"
+          "旧的「无条件 return true」必须已不存在（不是两条并存）")
+    check("structure_mark_live_only_default_true_wired",
+          "structure_mark_live_only=true," in e
+          and "structure_mark_live_only=state.structure_mark_live_only," in e,
+          "开关默认 true 且已透传（置 false 可回到'长期记忆'）")
     check("unit_mark_live_only_off_restores_old",
           "return env.unit_mark_live_only==false" in r,
           "置 false 即回到旧行为（一键可回退）")

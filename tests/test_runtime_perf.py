@@ -57,6 +57,19 @@ def extract_jobs_ready(text):
     return seg
 
 
+def strip_lua_comments(text):
+    """去掉 `--` 到行尾的注释（只服务 ⑦ 段）。
+
+    为什么必须去注释：文件头**故意**写了事故记录，里面**必然出现** `ffi.cdef` /
+    `QueryPerformanceCounter` 这些词（后人要看到）。守门要判的是**代码层有没有
+    真的调用它们** —— 按全文判会被自己的文档文本误伤（假红）。
+
+    局限（本文件足够）：只处理行尾 `--`，不认字符串里的 `--`；runtime 代码中
+    没有这样的字符串字面量。
+    """
+    return "\n".join(l.split("--", 1)[0] for l in text.splitlines())
+
+
 # ★ mock 环境：Readiness.capture 可计数、可注入失败。
 HARNESS = """
 local capture_count=0
@@ -148,7 +161,8 @@ def main():
           "有窗口常量（600 帧 ≈ 10 秒一行，收在 P table 里）")
     check("perf_line_emitted", "env.emit('perf;frame='" in text,
           "tick 里按窗口打 perf 行")
-    for fld in (";ready=", ";observe=", ";layout_reads=", ";layout_bytes="):
+    for fld in (";ready=", ";observe=", ";layout_reads=", ";layout_bytes=",
+                ";active=", ";idle=", ";frames_seen="):
         check("perf_has" + fld.replace(";", "_").rstrip("="), fld in text,
               f"perf 行含 {fld[1:]}")
     _i_lc = text.index("local observed=Layout.capture(read,base)")
@@ -177,9 +191,78 @@ def main():
     check("skip_before_pcall", _i_skip < _i_pcall,
           "跳帧判断在 pcall **之前**（否则等于没省：读都做完了）")
     _i_lc2 = text.index("local observed=Layout.capture(read,base)")
-    _i_idle = text.index("P.idle_skip=(#observed.matches>0) and 0 or 3")
-    check("idle_state_set_from_observation", _i_lc2 < _i_idle < _i_lc2 + 400,
-          "★ 降频状态由**真实观测**决定（有 G-60 ⇒ 0 恢复每帧；没有 ⇒ 隔 3 帧）")
+    _i_busy2 = text.index("local busy=(next(tracked)~=nil)")
+    _i_idle = text.index("P.idle_skip=busy and 0 or 3")
+    _i_pf2 = text.index("if frame-P.wframe>=P.window then")
+    check("idle_state_set_from_observation", _i_lc2 < _i_busy2 < _i_idle < _i_pf2,
+          "★ 降频判据在 capture **之后**、perf 打点**之前**（按本帧实际内容判）")
+
+    print()
+    print("=== ⑥ 降频判据 ='有事可做'（2026-10-02；旧判据在 state-3 空转时段白扫 600 帧）===")
+    # 实机日志：`frame=36600/37200 ready=600 observe=0` —— 整窗口 600 帧**一次接管
+    # 都没有**，却仍满速扫了 600 遍（141 读/帧）。原因是 G-60 停在 state 3 上千帧
+    # （≈27 秒），而 state 3 我们**一个字节都不写**。旧判据 `#matches>0` 分不出这种。
+    _i_busy = text.index("local busy=(next(tracked)~=nil)")
+    _i_setidle = text.index("P.idle_skip=busy and 0 or 3")
+    busy_block = text[_i_busy:_i_setidle]
+    check("idle_gate_is_busy_based",
+          _i_busy < _i_setidle,
+          "★ 降频由 `busy`（有没有事可做）决定，不再是 `#observed.matches>0`")
+    check("idle_gate_covers_state4",
+          "m.state==4" in busy_block,
+          "① 有 state 4 的 G-60 ⇒ 每帧（可接管 / 可引导）")
+    check("idle_gate_covers_state3_when_allowed",
+          "env.allow_state3 and (m.state==2 or m.state==3)" in busy_block,
+          "② allow_state3 打开时 state 2/3 也保满速（早期驱动路径要每帧）")
+    check("idle_gate_covers_veto",
+          "Filter.excluded(m.selection_resource)" in busy_block,
+          "③ 引擎选中的目标在排除表里 ⇒ 否决必须每帧重申，不能被降频漏掉")
+    check("idle_gate_covers_held",
+          "next(tracked)~=nil" in busy_block and "current~=nil" in busy_block,
+          "④ 本 mod 还持有某颗 ⇒ 每帧（disposal / arrival 靠每帧观测推进）")
+    check("idle_gate_covers_early_probe",
+          "env.early_nav_probe==true" in busy_block,
+          "⑤ early_nav_probe 打开 ⇒ 每帧（该探测每颗只跑一次，不能被降频漏掉）")
+    check("idle_gate_uses_captured_matches",
+          "local ms=observed.matches" in busy_block and "for i=1,#ms do" in busy_block,
+          "★ 遍历的是**本帧已捕获**的实体表 ⇒ 零新增内存读")
+    check("idle_gate_no_new_reads",
+          "read(" not in busy_block,
+          "★ 判据里不得出现任何内存读（降频本身不能有成本）")
+    check("idle_gate_covers_own_takeover",
+          "m.state==4" in busy_block,
+          "★ 我们刚接管的这颗必为 state 4（或 allow_state3 的 2/3）⇒ 判据天然覆盖，"
+          "不会出现'接管后被降频跳过'的滞后")
+    check("busy_frames_seen_counter",
+          "P.wframes=0" in text and "P.wframes=P.wframes+1" in text,
+          "perf 窗口统计'实际跑过 tick 体的帧数'（对比 frames 看省了多少）")
+    check("frames_seen_incremented_after_pcall",
+          text.index("P.wframes=P.wframes+1") > text.index("if not ok then"),
+          "★ 帧计数在 pcall **之后** ⇒ 提前 return / 抛错的帧也算'跑过了'")
+
+    print()
+    print("=== ⑦ ★★ 禁止进程内计时器（2026-10-02 实机崩溃：ffi.cdef 污染全局 C 命名空间）★★ ===")
+    code = strip_lua_comments(text)
+    check("runtime_never_cdefs",
+          "ffi.cdef" not in code,
+          "★ 代码层绝不许出现 `ffi.cdef` —— 它写的是**整个 Lua 状态共享**的 C 命名空间；"
+          "与其他 mod 的签名冲突时会让**对方**在 lua51 里访问违例（本机两次转储 "
+          "`AV @ lua51.dll+0x4a050`）")
+    check("runtime_no_ffi_load",
+          "ffi.load" not in code and "require('ffi')" not in code
+          and 'require("ffi")' not in code,
+          "★ 不加载新的 C 库（runtime 自身不 require ffi）")
+    check("no_wall_clock_fields",
+          "us_tick" not in code and "us_cap" not in code and "us_search" not in code
+          and "QueryPerformanceCounter" not in code,
+          "★ 不得残留任何进程内计时字段/调用（撤销要彻底，不能只停用）")
+    check("crash_lesson_documented",
+          "ffi.cdef" in text and "lua51" in text and "mod_lag_finder" in text,
+          "★ 事故与**替代方案**（看第三方 mod_lag_finder.log）写进代码注释 —— 后人不要再试")
+    check("ffi_consumers_are_not_definers",
+          "ffi.new(" in code or "ffi.cast(" in code,
+          "（知情）early_nav_probe 的只读探测用 ffi.new/cast **消费**内置类型、不做 cdef "
+          "—— 与崩溃根因性质不同，保留（本断言只记录这一点，不强制它存在）")
 
     print()
     print("=== ⑤ 泰坦/弱点到达判定 = 圆柱（2026-09-30 球形试过一版，实机效果差 ⇒ 已回滚）===")

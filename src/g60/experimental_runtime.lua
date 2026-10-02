@@ -23,6 +23,28 @@ local ArrivalPolicy=require('g60.arrival_policy')
 local TargetData=require('g60.native_target_data')
 local TargetContext=require('g60.titan_context')
 local U=require('g60.util')
+-- ★★★ 永远不要再在本模块引入**进程内计时器**（2026-10-02 实机崩溃事故）★★★
+--
+-- 事实：为了量"每帧耗时微秒"，这里曾用 `ffi.cdef` 声明并调用
+--   `QueryPerformanceFrequency/Counter`。结果是**游戏加载后立刻崩溃**，
+--   两次转储签名完全一致：`ACCESS_VIOLATION @ lua51.dll+0x4a050`（Lua VM 内核）。
+--
+-- 原因：**`ffi.cdef` 写的是整个 Lua 状态共享的全局 C 命名空间**。
+--   Bingus 加载器把所有 mod 合进同一批 `patch_N` —— 谁都能看见谁声明过什么。
+--   本机 mod 目录里已有**多个** mod 用**互不兼容**的签名声明同一批符号
+--   （`QueryPerformanceFrequency(int64_t *)` 与 `(void *)` 并存）。
+--   我们再声明一次 ⇒ cdef 报错（被 pcall 吞掉、日志里毫无痕迹），
+--   但 C 类型表已被写坏 ⇒ **别的 mod** 之后调用它时解引用垃圾指针。
+--   硬件访问违例**无法被 pcall 捕获**、mod 侧一行日志都不会有。
+--
+-- ⇒ 本模块**只用 env.read**（由 entry 的 ffi 提供）读游戏内存，自己不碰 ffi。
+--   ⚠ 注意：entry 自身那段 `ffi.cdef`（`ReadProcessMemory` / `GetCurrentProcess` 等，
+--     读内存所必需）是**既有且必需**的 —— 本禁区指的是"**再往那个共享命名空间里
+--     塞新符号**"，**不是**"addon 一律禁用 cdef"。
+--   想要"卡不卡"的数字：看第三方旁观者 `mod_lag_finder.log`
+--   （≥50 ms 的帧会**按 mod 拆分**，比自插桩更客观、且零风险）。
+--   守门：`tests/test_runtime_perf.py` 的 `runtime_never_cdefs` /
+--         `runtime_no_ffi_load`（按**去注释后的代码**判，注释里提到这些词不算违规）。
 local M={}
 function M.new(env)
     local read,base=assert(env.read),assert(env.base)
@@ -41,10 +63,12 @@ function M.new(env)
     -- 收成一个 local 后，它对 upvalue 的贡献从 10 降到 1。
     -- 守门：`tests/check_lua51_compile.py`（用游戏自带 lua51.dll 做**真实编译**）。
     --   · ready_*     —— readiness 每帧缓存（见 jobs_ready）
-    --   · idle_skip   —— 0=每帧观测；>0=空闲时每 N 帧观测一次（见 tick 开头）
-    --   · observe/lreads/lbytes/wframe/window —— perf 窗口统计
+    --   · idle_skip   —— 0=每帧观测；3=空闲（**无事可做**）时隔帧观测（见 tick 开头）
+    --   · observe/lreads/lbytes/wframe/window/wframes —— perf 窗口统计
+    --   ⚠ 时间量（微秒）**不在**这里，也不在本模块任何地方 —— 见下方
+    --     "永远不要再引入进程内计时器"的说明。
     local P={ready_frame=-1,ready_value=nil,ready_reads=0,
-        idle_skip=0,observe=0,lreads=0,lbytes=0,wframe=0,window=600,
+        idle_skip=0,observe=0,lreads=0,lbytes=0,wframe=0,window=600,wframes=0,
         -- ★ 空白标记诊断去重表（2026-10-01）。**放进 P 而不是新开 local** ——
         --   `host:tick` 的匿名函数 upvalue 已吃满 60（Lua 5.1 上限），
         --   新开一个 local 就可能让整个 chunk 编译失败（"mod 没生效"）。
@@ -237,7 +261,24 @@ function M.new(env)
         --     native_priority 的 sticky 复核（按实体 id 重读），不依赖这条记忆。
         remembered_intent=function(mark,live)
             if live then return true end
-            if claim_profile(mark.resource) then return true end
+            -- ★★ 2026-10-02（用户要求"取消标记后不要再用它"）★★
+            --   用户原话：「标记虫洞再取消标记丢出手雷，手雷还是会向虫洞飞过去爆炸」。
+            --
+            --   原来这里对**结构 / 泰坦 / 变体**一律 `return true`（脱离 UI 长期存活）——
+            --   当时的理由是"ping 一次虫洞、过一会儿才扔是常规操作"。但同一个机制让
+            --   **玩家取消标记之后**它依然生效（记忆里那条还在）⇒ 看起来就是"取消不掉"。
+            --   ⇒ 现在同样按"活标记"判（`live` = 本帧 ping 环里还看得到它）：
+            --     开关 `env.structure_mark_live_only`（默认 **true** = 只认活标记）。
+            --     置 false ⇒ 回到旧的"长期记忆"行为。
+            --
+            --   ⚠ 权衡（知情）：ping 之后**超过标记存活时长**（UI 约 8 秒）才扔，
+            --     结构标记已过期 ⇒ 不再接管。要保留"慢慢扔"的习惯就把该开关置 false。
+            --   ⚠ **已在飞向它的那颗不受影响**：它持有 `old.lock`，下一帧走
+            --     native_priority 的 sticky 复核（按实体 id 重读），不依赖这条记忆
+            --     ⇒ 不会"半路停手"。
+            if claim_profile(mark.resource) then
+                return env.structure_mark_live_only==false
+            end
             return env.unit_mark_live_only==false
         end})
     if ping or structure_ping then env.forget_mark=function(identity)
@@ -414,8 +455,48 @@ function M.new(env)
             local observed=Layout.capture(read,base)
             P.lreads=P.lreads+observed.read_calls      -- perf 窗口累计
             P.lbytes=P.lbytes+observed.bytes_read
-            -- ★ 空闲降频状态（见 tick 开头）：有 G-60 ⇒ 每帧（0）；没有 ⇒ 隔 3 帧
-            P.idle_skip=(#observed.matches>0) and 0 or 3
+            -- ★★★ 降频判据：从"有没有 G-60"改成"**有没有事可做**"（2026-10-02）★★★
+            --
+            --  旧判据（`#observed.matches>0`）在实机日志里暴露出一类**纯空转**：
+            --    `frame=36600 / 37200 ready=600 observe=0` —— 整窗口 600 帧
+            --    **一次接管都没有**，却仍满速扫了 600 遍（141 读/帧）。
+            --    原因：G-60 停在 state 3 上千帧（`sig=[4/3e@1620]` ≈ 27 秒），
+            --    而 `allow_state3=false` ⇒ state 3 **一个字节都不写**。
+            --    这与"场上没有 G-60"时的 40 读/帧是同一类空转。
+            --
+            --  新判据（任一成立才保满速，否则隔 3 帧）：
+            --    ① 有 state 4 的 G-60（可接管 / 可引导）
+            --    ② `allow_state3` 打开时的 state 2/3（早期驱动路径要每帧）
+            --    ③ 引擎选中了**要否决**的目标（运输船/增援飞船）—— 否决必须每帧重申
+            --    ④ 本 mod 还**持有**某颗（`tracked` 非空 / `current` 非 nil）——
+            --       disposal / arrival 要靠每帧观测推进
+            --    ⑤ `early_nav_probe` 打开（该探测每颗只跑一次，不能被降频漏掉）
+            --
+            --  ★ 判据只遍历**本帧刚捕获的实体表**（`observed.matches`），
+            --    不引入任何新的内存读（遍历是纯 CPU，十几~几十项，可忽略）。
+            --  ★ 判据 ①/② 天然覆盖"我们刚接管的这颗"（它是可接管的 ⇒ 必为
+            --    state 4，或 allow_state3 下的 2/3）⇒ 接管那帧必然置 0，
+            --    **不会**出现"接管后却被降频跳过"的滞后。
+            --  安全性同"优化二"：这些帧**不写任何内存**，跳过只是"晚 ≤2 帧
+            --    （≈33 ms）知道情况变了"。
+            --  ⚠ 副作用（知情）：`sig=[4/3e@N]` 的状态停留帧数在降频期按**观测帧**计，会偏小。
+            local busy=(next(tracked)~=nil) or (current~=nil) or (env.early_nav_probe==true)
+            if not busy then
+                local ms=observed.matches
+                for i=1,#ms do
+                    local m=ms[i]
+                    if m.behavior_id==4
+                        and (m.state==4 or (env.allow_state3 and (m.state==2 or m.state==3))) then
+                        busy=true;break
+                    end
+                    -- 引擎选中的目标若在排除表里 ⇒ 否决必须每帧重申，不能被降频漏掉
+                    if m.selection_flag~=0 and env.enemy_veto_enabled~=false
+                        and Filter.excluded(m.selection_resource) then
+                        busy=true;break
+                    end
+                end
+            end
+            P.idle_skip=busy and 0 or 3
             -- ★ perf 窗口打点（2026-09-30 性能优化）★
             --   放在 capture 之后、**任何早退之前**：游戏繁忙时 tick 会在下面
             --   `queues_complete=false` 处直接 return；若把打点放到 tick 末尾，
@@ -426,8 +507,18 @@ function M.new(env)
                 P.wframe=frame
                 env.emit('perf;frame='..frame..';frames='..span
                     ..';ready='..P.ready_reads..';observe='..P.observe
-                    ..';layout_reads='..P.lreads..';layout_bytes='..P.lbytes)
+                    ..';layout_reads='..P.lreads..';layout_bytes='..P.lbytes
+                    -- ★ 2026-10-02 新增（纯统计，**不含任何时间量**）：
+                    --   active      —— behavior 数组的**活跃前缀**（活跃之外的槽位
+                    --                  不可能被接管，用来解释 layout_reads 花在哪）
+                    --   idle        —— 当前降频间隔（0=每帧；3=空转隔帧）
+                    --   frames_seen —— 本窗口**实际跑过 tick 体**的帧数
+                    --                  （对比 frames 一眼看出降频省了多少）
+                    ..';active='..tostring(observed.active_prefix)
+                    ..';idle='..tostring(P.idle_skip)
+                    ..';frames_seen='..tostring(P.wframes))
                 P.ready_reads,P.observe,P.lreads,P.lbytes=0,0,0,0
+                P.wframes=0
             end
             if not observed.all_observed_queues_complete or observed.update_mode~=0
                 or observed.root_flags[1]~=1 or observed.root_flags[2]~=0 or observed.root_flags[3]~=0 then
@@ -488,8 +579,8 @@ function M.new(env)
                     if not P.pmark[tk] and P.pmark_n<120 then
                         P.pmark[tk]=true;P.pmark_n=P.pmark_n+1
                         env.emit(string.format(
-                            'point_marker;slot=%s;pos=%.2f/%.2f/%.2f;dist=%.2f;source=ping_slot',
-                            tostring(lp.slot),lp.x,lp.y,lp.z,lp.dist or -1))
+                            'point_marker;slot=%s;pos=%.2f/%.2f/%.2f;dist=%.2f;age=%.2f;source=ping_slot',
+                            tostring(lp.slot),lp.x,lp.y,lp.z,lp.dist or -1,lp.age or -1))
                     end
                 end
                 -- ★★ 点目标登记（2026-10-01，用户要求"ping 一个位置 ⇒ G-60 飞过去炸"）★★
@@ -1139,7 +1230,12 @@ function M.new(env)
                                 if result.kind=='detonate' then
                                     retired[m.id]=retired_key
                                     release_hold(m.id)
-                                    env.emit('arrival_detonated;entity='..m.id..';target='..result.target..';distance='..result.distance)
+                                    env.emit('arrival_detonated;entity='..m.id..';target='..result.target..';distance='..result.distance
+                                        -- ★ 2026-10-02：爆点几何分解（只诊断）——
+                                        --   三维 distance 分不清"偏侧"还是"贴脸"，
+                                        --   而两者的修法相反（见 native_arrival 处的说明）。
+                                        ..';horiz='..tostring(result.horizontal or -1)
+                                        ..';dz='..tostring(result.dz or -1))
                                 end
                             end
                         elseif point_drive then
@@ -1195,16 +1291,44 @@ function M.new(env)
                             guide_fail[m.id]=nil
                         else
                             self.skipped=self.skipped+1
-                            local n=(guide_fail[m.id] or 0)+1
-                            guide_fail[m.id]=n
-                            env.emit('skipped;entity='..m.id..';reason='..tostring(status)
-                                ..';detail='..tostring(detail)..';fail_count='..n)
-                            if n>=GUIDE_FAIL_LIMIT then
-                                guide_fail[m.id]=nil
-                                retired[m.id]=retired_key
-                                release_hold(m.id)
-                                env.emit('guide_give_up;entity='..m.id..';after='..n
-                                    ..';detail='..tostring((detail~=nil and detail) or status))
+                            -- ★★ 净空/腹部过低的拒绝 = **等待**，不是"引导失败"（2026-10-02）★★
+                            --
+                            --   背景：用户「泰坦准备吐酸时腹部会降低 ⇒ 手雷在离腹部极近处
+                            --   引爆 ⇒ 炸不死泰坦」+「G60 靠**多部位**伤害杀泰坦，太靠近腹部
+                            --   受伤部位会减少」⇒ `titan_standoff_min` 已抬到 2.5（爆距不再缩短）
+                            --   ⇒ 腹部过低时 `titan_route` 会**拒绝规划**（那一刻没有安全爆点）。
+                            --
+                            --   那种拒绝是**暂时的**（吐酸动画结束腹部就抬起来）。但原来它会计入
+                            --   `guide_fail`，连着 30 帧（0.5 秒）就 `guide_give_up` 把这颗手雷
+                            --   **退休** ⇒ 手雷白扔、一颗都不炸 —— 比"贴着腹部炸"更糟。
+                            --   ⇒ 现在：净空类拒绝**不计数**（保留持有、下一帧重试、腹部抬起后
+                            --     照常按 2.5 m 爆距引爆）。只打一条日志。
+                            --
+                            --   ⚠ 用 `guide_fail[m.id]==0` 当作"已在等待"的标记（0 ≠ nil）
+                            --     ⇒ 不新增状态、不新增 upvalue（tick 的 upvalue 余量紧张）。
+                            --   ⚠ **真正的**引导失败（如 `Titan selection changed`）照旧计数、
+                            --     照旧 30 帧退休 —— 那条熔断是 2026-09-29 为"无限循环挂住"加的，
+                            --     不能被这里绕过。
+                            local waiting=type(status)=='string'
+                                and status:find('clearance',1,true)~=nil
+                            if waiting then
+                                if guide_fail[m.id]==nil then
+                                    env.emit('skipped;entity='..m.id..';reason='..tostring(status)
+                                        ..';detail=WAITING_FOR_SAFE_BLAST;fail_count=0')
+                                end
+                                guide_fail[m.id]=0
+                            else
+                                local n=(guide_fail[m.id] or 0)+1
+                                guide_fail[m.id]=n
+                                env.emit('skipped;entity='..m.id..';reason='..tostring(status)
+                                    ..';detail='..tostring(detail)..';fail_count='..n)
+                                if n>=GUIDE_FAIL_LIMIT then
+                                    guide_fail[m.id]=nil
+                                    retired[m.id]=retired_key
+                                    release_hold(m.id)
+                                    env.emit('guide_give_up;entity='..m.id..';after='..n
+                                        ..';detail='..tostring((detail~=nil and detail) or status))
+                                end
                             end
                         end
                         if runner:disabled() or (titan and titan:disabled()) then self.disabled=true;error('native operation disabled after partial failure') end
@@ -1339,7 +1463,12 @@ function M.new(env)
                                 if result.kind=='detonate' then
                                     retired[m.id]=retired_key
                                     release_hold(m.id)
-                                    env.emit('arrival_detonated;entity='..m.id..';target='..result.target..';distance='..result.distance)
+                                    env.emit('arrival_detonated;entity='..m.id..';target='..result.target..';distance='..result.distance
+                                        -- ★ 2026-10-02：爆点几何分解（只诊断）——
+                                        --   三维 distance 分不清"偏侧"还是"贴脸"，
+                                        --   而两者的修法相反（见 native_arrival 处的说明）。
+                                        ..';horiz='..tostring(result.horizontal or -1)
+                                        ..';dz='..tostring(result.dz or -1))
                                 end
                             end
                         else
@@ -1390,6 +1519,10 @@ function M.new(env)
                 env.emit(status)
             end
         end)
+        -- ★ perf 窗口：本帧**跑过 tick 体**（放在 pcall **之后** ⇒ 正常跑完、
+        --   提前 return、抛错三种都算"跑过了"）。窗口内的重置在 pcall 之内，
+        --   所以窗口最后一帧的这次 +1 会落到下一个窗口（600 帧里差 1，可忽略）。
+        P.wframes=P.wframes+1
         if not ok then
             current=nil
             -- ★ 逐条刷屏会把真正的一次性错误埋掉（2026-09-27 实机日志：连续 60 条
