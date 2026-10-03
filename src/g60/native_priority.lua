@@ -176,6 +176,28 @@ function M.new(env)
             -- 返回：row（成功）/ nil + detail（失败原因，用于日志与 diagnostic）。
             local function generic_validate(e)
                 if not e then return nil,'ENTITY_GONE' end
+                -- ★★ 预约复查（2026-10-03，实机 `frame_error;target already reserved`）★★
+                --
+                -- 事故：`target_reservations.claim` 里
+                --     assert(targets[key]==nil or targets[key]==owner,'target already reserved')
+                -- 被触发一次。但 `available()` 门控**只接在两条路径上**
+                --   · `eligible`（第 127 行，虫洞 sticky 与虫洞新标记都走它）
+                --   · 第 373 行（虫洞白名单分支）
+                -- 而**通用目标**（标记的任意单位：运输船 / 通缉目标 / 中小型虫…）
+                -- 走的是本函数，三条入口（新标记 / 通用 sticky / 让位回退）**一条都没查**。
+                -- 于是 runtime 无条件 `reservations:claim(...)` ⇒ 同一个目标被两颗 G-60
+                -- 同时预约 ⇒ assert。
+                --
+                -- 后果是 **fail-closed**（不会真的双预约），但 `frame_error` 会中止当帧
+                -- 剩余处理（整个 tick 体被 pcall 包着）⇒ 排在后面的 G-60 被跳过一帧。
+                --
+                -- ⇒ 修法就是在**唯一**的通用复核里补这一条：三条入口一次性覆盖
+                --   （这正是本函数存在的意义 —— 抽成单一实现，杜绝"只改一份副本"，
+                --     同类事故在 2026-09-30 已经因为"两个 sticky 分支只给一份加白名单"发生过）。
+                -- ⚠ 顺序：放在 `target_valid` 查询**之前** —— 它是纯 Lua 表查找，零内存读；
+                --   被别 G-60 预约的目标不值得再为它花一次原生调用。
+                -- ⚠ 同 owner 幂等：`available` 对"自己已持有"返回 true ⇒ sticky 复用不受影响。
+                if available and not available(e.identity) then return nil,'TARGET_RESERVED' end
                 local ok_valid,valid_now=pcall(function()
                     return scope.calls.target_valid(nil,e.id,
                         ffi.cast('const void *',e.address))

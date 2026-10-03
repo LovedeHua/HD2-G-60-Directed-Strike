@@ -18,6 +18,33 @@ function M.new(env)
     local disabled,busy=false,false
     local api={}
     function api:disabled() return disabled end
+    -- ★★ 只读探测：这颗 G-60 的爆炸是否**已经触发**（2026-10-03）★★
+    --
+    -- 为什么要有它：runtime 需要在**写内存之前**短路掉一颗已爆的手雷。
+    --   实机 2026-10-03 13:16 那局：12 次标记**全部**是"锁上即发现已爆" ——
+    --   引擎（撞击 / 引信）在我们接管之前就把它炸了，实体还要留几帧；
+    --   而我们照样收它 ⇒ 走完整 priority 路径（**含一次 setter 写内存**）
+    --   + 打一条本来不该存在的 `priority_locked`，之后才在 arrival 段被
+    --   `Explosive.capture` 判成 `explosion already requested`。
+    --
+    -- 判据**逐字同源**：直接跑 `Explosive.capture` 并只认那两条"已完成"文案
+    --   —— 与 arrival 段、disposal 段、引导失败记账**同一把尺子**。
+    --   ⇒ 不存在"我们自造的假阳性"（假阳性会把一颗**健康**的手雷提前退休，
+    --     那比现在这点浪费严重得多 —— 所以不另造"轻量判据"）。
+    --
+    -- 成本：一次捕获（~20 次读）。调用方只在**首次接管那一帧**调它
+    --   （已锁定的实体每帧本就不写 setter，见 runtime 的门控）。
+    -- 返回：(true, 原始文案) = 已触发；(false) = 没有 / 无法判定 ⇒ 照常走。
+    function api:triggered(read,identity)
+        local ok,err=pcall(Explosive.capture,read,env.base,env.exe,identity,env.fuse_profile)
+        if ok then return false end
+        local s=tostring(err)
+        if s:find('explosion already requested',1,true)
+            or s:find('secondary explosion pending',1,true) then
+            return true,s
+        end
+        return false
+    end
     function api:step(scope,target,goal,stage,terminal,previous,mask_only,options)
         if disabled or busy then return nil,'ARRIVAL_DISABLED' end
         busy=true

@@ -366,13 +366,13 @@ def main():
     #   而否决必须每帧重申，所以降频判定必须查**同一张**排除表 ⇒ 这个字面量必然出现。
     #   改为钉**语义**（原意是"小怪/非白名单敌人不触发接管"，而不是"这行字不许出现"）：
     #     ① 该查询全文只出现一次
-    #     ② 它必须落在降频判据块内（`local busy=` … `P.idle_skip=busy and 0 or 3`），
+    #     ② 它必须落在降频判据块内（`local busy,veto_must=` … `P.idle_skip=busy and (veto_must and 1 or rb) or ri`），
     #        也就是**不参与接管决策** —— 原来的约束原封不动地保住了。
     check('runtime_excluded_not_computed',
           rt.count('Filter.excluded(m.selection_resource)') == 1
-          and rt.index('local busy=')
+          and rt.index('local busy,veto_must=')
           < rt.index('Filter.excluded(m.selection_resource)')
-          < rt.index('P.idle_skip=busy and 0 or 3'),
+          < rt.index('P.idle_skip=busy and (veto_must and 1 or rb) or ri'),
           '小怪/非白名单敌人不再触发接管（唯一的 excluded 查询只在降频判据里）')
     # 函数体有多行且含早退的 `if ... then ... end`，
     # 非贪婪匹配到第一个 `end` 会截断（我第一版就这么写，漏掉了后半段）。
@@ -577,6 +577,29 @@ def main():
           '★ 净空/腹部过低的拒绝被识别为**等待**（腹部抬起后照常引爆）。'
           '⚠ 逐项钉住（含 `if waiting then` 本身）：只钉两个字符串片段的话，'
           '把条件改成 `if false then` 仍然全绿 —— 本次变异测试发现的空转')
+    # ★★ 2026-10-03：引导失败记账必须**先问**"是不是已经炸了" ★★
+    #
+    #   实机日志（2026-10-03 11:29）：实体 16778567 走**泰坦**段时
+    #   `'explosion already requested'` 被当普通失败记 30 次 ⇒ `guide_give_up;after=30`
+    #   —— 一条**假的失败**（那颗手雷**已经炸了**）。终态相同但多花 1 秒 + 30 条误导日志。
+    #   根因：`note_already_exploded` 只接在 disposal / arrival 两段，本段没接。
+    _rt_code = strip_comments((ROOT / 'src/g60/experimental_runtime.lua').read_text(encoding='utf-8'))
+    _i_ae = _rt_code.find('note_already_exploded(tostring(status or detail))')
+    _i_fail = _rt_code.find('local n=(guide_fail[m.id] or 0)+1')
+    check('already_exploded_is_done_not_failure',
+          _i_ae >= 0 and _i_fail > _i_ae
+          and 'guide_fail[m.id]=nil' in _rt_code[_i_ae:_i_fail],
+          '★ 引导失败分支先调 `note_already_exploded` 并清零计数 ⇒ 已爆=**完成**，'
+          '不计 `fail_count`。⚠ 顺序即语义：放到计数之后就等于"已经记了一次失败"')
+    check('already_exploded_single_helper',
+          _rt_code.count('note_already_exploded(') == 5,
+          '★★ 定义 1 处 + 调用 **4** 处（disposal / arrival / 引导记账 / 已爆短路）'
+          '⇒ **同一个条件只用一个判定函数**。'
+          '（本项目反复栽在"同一判断写两份、只改一份"上 —— 该 helper 自己的注释就这么写着）')
+    check('already_exploded_check_is_before_clearance_wait',
+          _i_ae >= 0 and _rt_code.find('elseif waiting then') > _i_ae,
+          '★ 已爆（**终态**）判定排在净空等待（**瞬态**）之前 —— 终态优先，'
+          '不必再等腹部抬起')
     check('clearance_wait_not_counted_as_failure',
           _rt_src.index("if waiting then") < _rt_src.index('guide_fail[m.id]=0')
           < _rt_src.index('local n=(guide_fail[m.id] or 0)+1'),
@@ -585,6 +608,60 @@ def main():
           'if n>=GUIDE_FAIL_LIMIT then' in _rt_src and 'guide_give_up;entity=' in _rt_src,
           '★ **真正的**引导失败照旧计数并在 GUIDE_FAIL_LIMIT 后退休 —— '
           '等待分支不得绕过那条熔断（2026-09-29 为"无限循环挂住"加的）')
+
+    print('=== 3b-3. 已爆手雷短路：写内存**之前**先只读探一次（2026-10-03）===')
+    # 实机（2026-10-03 13:16 那局）12 次标记**全部**是"锁上即发现已爆"：
+    #   引擎的撞击/引信在我们接管之前就炸了，实体还要留几帧；
+    #   而我们照样收它 ⇒ 走完整 priority 路径（**含一次 setter 写内存**）
+    #   + 打一条误导性的 `priority_locked`，之后才在 arrival 段被判成
+    #   `explosion already requested`。
+    # ⇒ 在写内存之前先只读探一次；已经炸了就按"完成"收尾。
+    arr_src = (ROOT / 'src/g60/native_arrival.lua').read_text(encoding='utf-8')
+    check('already_exploded_precheck_exists',
+          'function api:triggered(read,identity)' in arr_src
+          and "pcall(Explosive.capture,read,env.base,env.exe,identity,env.fuse_profile)" in arr_src,
+          '★ 只读探测 = 跑一次 `Explosive.capture`（不写任何内存）')
+    check('already_exploded_precheck_same_criteria',
+          "'explosion already requested'" in arr_src
+          and "'secondary explosion pending'" in arr_src,
+          '★★ 判据与 arrival / disposal / 引导记账**逐字同源**（同一把尺子）⇒ '
+          '不存在我们自造的假阳性 —— 假阳性会把一颗**健康**的手雷提前退休')
+    check('already_exploded_precheck_requires_capture_failure',
+          'if ok then return false end' in arr_src
+          and 'return true,s' in arr_src,
+          '★ 只有「捕获**失败**」且文案命中才判已爆 ⇒ 健康的 G-60（捕获成功）'
+          '**永不**被误判，也不会被提前退休')
+    check('already_exploded_precheck_before_priority_write',
+          "env.emit('priority_precheck_exploded;entity='..m.id" in _rt_code
+          and 'note_already_exploded(why)' in _rt_code
+          and 'enters=false' in _rt_code,
+          '★ 探测命中 ⇒ 打一条可验证的 `priority_precheck_exploded` + 共用 '
+          '`note_already_exploded` 收尾 + 关掉本帧的 priority 段（**不写内存**）')
+    _i_pre = _rt_code.find('priority_precheck_exploded')
+    _i_ent = _rt_code.find('if enters then')
+    check('already_exploded_precheck_ordered_before_enters',
+          0 <= _i_pre < _i_ent,
+          '⚠ 顺序即语义：短路必须排在 `if enters then` **之前**，否则 priority 已经跑完、'
+          'setter 已经写过内存，探测就没有意义了。'
+          '⚠ 钉 `0 <= _i_pre`：只钉 `_i_pre < _i_ent` 的话，'
+          '整段被删（find 返回 -1）仍然全绿 —— 这是本次写测试时差点留下的空转')
+    check('already_exploded_precheck_only_on_first_takeover',
+          'if enters and not retired[m.id] and not (old and old.lock) then' in _rt_code,
+          '★ 门控 `not (old and old.lock)`：只在**首次接管**那一帧探 —— 已锁定的生存实体'
+          '每帧走粘性路径而那时 setter 本来就不写（`same_selection`），'
+          '不该为它每帧多付一次捕获成本')
+    check('already_exploded_precheck_no_new_upvalue',
+          "local Explosive=require('g60.explosive_context')" not in _rt_code
+          and 'arrival and arrival:triggered(read,m.identity_bytes)' in _rt_code,
+          '★★ 复用已有的 `arrival` / `read`（**都已是 tick 的 upvalue**）—— '
+          '不给那个 pcall 匿名函数新增 upvalue（余量已很紧，多一个整 chunk 编译失败）')
+    check('already_exploded_precheck_prefers_existing_state',
+          "not retired[m.id]" in _rt_code,
+          '★ 已退休的实体不重复探测（避免重复打日志）')
+    check('already_exploded_precheck_whitelisted',
+          "not line:match('^priority_precheck_exploded;')" in entry_src,
+          '★ 进日志节流白名单 —— 它是"短路真的生效了吗"的唯一判据'
+          '（被节流掉 = 诊断不存在；同日 arrival_already_exploded 已栽过一次）')
 
     print('=== 3c. 多个空标记 ⇒ 取最新 ping 的那个（2026-10-02，用户要求）===')
     # 现状：玩家连 ping 多个点时，ping 环里会**并存**多个空白标记（实机日志

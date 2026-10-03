@@ -106,6 +106,19 @@ local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets
     --   ▸ 排除表（small_filter）仍然生效（运输船等）。
     --   设为 false 可完全退回"只管虫洞/泰坦/变体"。
     generic_takeover_enabled=true,
+    -- ★★★ 体内爆点（2026-10-03，巨型构筑者 Bulk Fabricator）★★★
+    --
+    --   背景：本 mod 对"未登记目标"的既有做法是**把引爆位置交给引擎**（`calls.aim`，
+    --   见 README「它做什么」表）。对**虫洞**够用 —— 虫洞的摧毁判定是**距离**
+    --   （用户实测：引爆点 <4 m 即摧毁）。但**巨型构筑者不是**：
+    --   用户实测「会在巨型构筑者的底部引爆，但不会对其造成伤害」，
+    --   且「能摧毁的引爆点要**进入红色的通风口里面**」。
+    --   ⇒ 这一类必须显式给一个**模型体内**的爆点，不能沿用虫洞那套。
+    --
+    --   名册见 `compat/blast_sites.lua`（目前 1 项：4232ee48e2cfd24e =
+    --   content/env_cyborg/gameplay/colony_cyborg_spawner/cyborg_colony_spawner_base）。
+    --   设为 false ⇒ 退回旧行为（引擎 aim）。
+    blast_sites_enabled=true,
     -- ★★★ 早期导航探测（2026-10-01，用户要求"无敌人时也能炸虫洞"）★★★
     --   目的：测出 state 2/3（附近无敌人）时**能否拿到 movement 组件地址** ——
     --   这是"绕过 selection、直接用 orbit 写导航目的地"这条路的前提。
@@ -188,6 +201,18 @@ local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets
     --     G-60 飞向地面点时通常会悬在它**上方** ⇒ 必须给 `above` 留量，
     --     否则 dz>0 恒不成立、永远判不到达（虫洞那次的同款坑）。
     point_target_enabled=true,point_target_ttl_frames=1200,
+    -- ★★ 观测节流周期（2026-10-03，用户要求）★★
+    --   `Layout.capture`（遍历 behavior 数组找 G-60）原本是**每帧**跑一次；
+    --   2026-10-02 起改为"有事可做才每帧、纯空转隔 3 帧"；本次再把两档放宽：
+    --     · `scan_every_busy` —— 有事可做（持有/可接管/早期探测）时每 N 帧观测一次（默认 **2**）
+    --     · `scan_every_idle` —— 纯空转（没有可接管的 G-60）时每 N 帧观测一次（默认 **6**）
+    --   ⚠ **引擎选中要否决的目标那一路仍每帧重申**，不受这两个值影响
+    --     （见 runtime 的 `veto_must`；"否决必须每帧重申"是本工程的既有安全属性）。
+    --   ⚠ 代价（知情）：空转时投掷的 G-60 最多晚 5 帧（≈83 ms）被发现；
+    --     有事可做时最多晚 1 帧（≈17 ms）。
+    --   ⚠ 0 安全（闸门 `if P.idle_skip>0` 会短路），**负数危险**（会让
+    --     `frame%N` 恒为 0 ⇒ mod 永远不跑）；runtime 对非数/0/负数一律回默认值。
+    scan_every_busy=2,scan_every_idle=6,
     -- ★★ 单位标记的记忆判据（2026-10-01，用户实机反馈）★★
     --   用户原话：「标记过的单位，即使取消标记，G60 仍会追踪该单位」。
     --
@@ -213,6 +238,15 @@ local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets
     --   ⚠ 权衡：ping 之后超过标记存活时长（UI 约 8 秒）才扔 ⇒ 结构标记已过期 ⇒ 不接管。
     --   ⚠ 已在飞向它的那颗不受影响（持有 old.lock，走 sticky 复核）⇒ 不会半路停手。
     structure_mark_live_only=true,
+    -- ★★ 2026-10-02：**标记队列按优先级排序**（用户：「标记敌人单位时，泰坦的优先级不是最高的」）。
+    --   背景：队列默认按**新旧**排（队首 = 最晚 ping 的那个）⇒ 先标泰坦、后标一只小怪时，
+    --   小怪会盖住泰坦。名册（`compat/priority_catalog.lua`）里的 rank 本来就把泰坦/蟑龙
+    --   定为 10（最低数 = 最高优先级），但它只被**自动索敌**路径用过，而那条路径已裁掉。
+    --   · true（默认）⇒ 队内次序 = ① 虫洞/构筑(0) → ② 泰坦含变体(1000) →
+    --                    ③ 名册敌人(1000+rank) → ④ 其它单位(1500)；相等则仍按"最新 ping 优先"
+    --   · false ⇒ 回到旧行为（纯"最新 ping 优先"）
+    --   ⚠ 只影响**玩家标记**的那条队列；空白标记（ping 空地）与引擎自选都不受影响。
+    marked_unit_rank_first=true,
     --   ★ 2026-10-01 首次放宽：地面点不需要泰坦那种"贴腹"精度，取策略断言的上限附近
     --     （arrival_policy: radius<=3 / depth<=2 / above<=2）。
     --     首测若出现 `point_stalled`（4 秒内没满足到达）就继续在这一格调；日志里
@@ -362,6 +396,10 @@ local ok,why=pcall(function()
             --   实机"飞过去没炸"时日志里只有 point_taken、什么都看不出）
             and not line:match('^point_guide;')
             and not line:match('^point_stalled;')
+            -- ★ 2026-10-03：**体内爆点**的到达诊断。原来只有 `point_*`（判据 `old.point`）⇒
+            --   体内爆点走 `P.site` 时**完全静默**，"低抛那颗飞到哪了"无据可查。
+            and not line:match('^blast_guide;')
+            and not line:match('^blast_stalled;')
             -- ★ 2026-10-01：点目标"已就绪"（与结构标记并存时打一行，解释优先级）
             and not line:match('^point_armed;')
             -- ★ 2026-10-01：优先级让位事件（结构 > 标记单位 > 空白标记）。
@@ -369,6 +407,18 @@ local ok,why=pcall(function()
             --   诊断被节流掉 = 诊断不存在（同日 arrival_already_exploded 已栽过一次）。
             --   本次让位事件已按 (G-60, 结构) 去重，不会刷屏。
             and not line:match('^unit_lock_yielded;')
+            -- ★ 2026-10-03：已爆手雷短路（写内存**之前**的一次只读探测）。
+            --   它是"12 次标记全是锁上即已爆"这类局面的**唯一判据** ——
+            --   用于确认短路真的生效（不再出现误导性的 priority_locked）。
+            --   诊断被节流掉 = 诊断不存在（同日 arrival_already_exploded 已栽过一次）。
+            and not line:match('^priority_precheck_exploded;')
+            -- ★ 2026-10-03：体内爆点（巨型构筑者）—— 每目标一条，
+            --   是"lift 到底生效了没有 / 爆点落在哪"的**唯一判据**。
+            --   诊断被节流掉 = 诊断不存在（同日 arrival_already_exploded 已栽过一次）。
+            and not line:match('^blast_point;')
+            -- ★ 2026-10-03：体内爆点的**证据行**（"这颗实际在哪炸的"，每颗一条）——
+            --   它是"打没打准 / 抬高生效没有"的唯一量化依据。
+            and not line:match('^blast_hit;')
             -- ★ perf 窗口行必须常驻：它是"优化有没有效"的唯一判据，
             --   被节流掉就等于没测（同日 arrival_already_exploded 已栽过一次）。
             and not line:match('^perf;') then return end
@@ -459,13 +509,18 @@ local ok,why=pcall(function()
         dragonroach_enabled=state.dragonroach_enabled,dragonroach_resource=state.dragonroach_resource,
         enemy_veto_enabled=state.enemy_veto_enabled,
         generic_takeover_enabled=state.generic_takeover_enabled,
+        -- ★ 体内爆点名册（2026-10-03）：见 compat/blast_sites.lua 与 state 处的说明。
+        --   与虫洞的"距离<4m"机制**分开**；置 false ⇒ 退回"引擎 aim"。
+        blast_sites=state.blast_sites_enabled and BlastSites or nil,
         early_nav_probe=state.early_nav_probe,early_nav_orbit=state.early_nav_orbit,
         ping_slot_dump=state.ping_slot_dump,
         point_marker_enabled=state.point_marker_enabled,
         point_target_enabled=state.point_target_enabled,
         point_target_ttl_frames=state.point_target_ttl_frames,
+        scan_every_busy=state.scan_every_busy,scan_every_idle=state.scan_every_idle,
         unit_mark_live_only=state.unit_mark_live_only,
         structure_mark_live_only=state.structure_mark_live_only,
+        marked_unit_rank_first=state.marked_unit_rank_first,
         point_arrival_region=state.point_arrival_region,
         titan_arrival_region=state.titan_arrival_region,
         titan_belly_above=state.titan_belly_above,
@@ -475,7 +530,30 @@ local ok,why=pcall(function()
         state.filter_enabled=false;state.state='disabled';emit('disabled;applied='..host.applied);close()
     end)
     state.stats=host;state.filter_enabled=true;state.state='experimental filtering active'
-    emit('version=@@VERSION@@-bughole;runtime_baseline=@@RUNTIME_BASELINE@@'
+    -- ★★★ 状态行**拆成三段**（2026-10-03）★★★
+    --
+    --   原因（实机取证，不是预防性改动）：`emit` 有 **900 字符**上限 ——
+    --   见本文件 `line=tostring(line):gsub('[\r\n]',' '):sub(1,900)`。
+    --   而单行状态行早就超过 1000 字符 ⇒ 2026-10-03 的日志里能看到它被
+    --   **从中间切断**：
+    --     `...enemy_veto_resources=74e2285c01da4f71,db90077e76`   ← 第二个哈希断在这里
+    --   其后**所有**字段一个字都没写出来，包括那三个用户明确要求的开关：
+    --     `unit_mark_live_only` / `structure_mark_live_only` / `marked_unit_rank_first`
+    --   ⇒ 后果正是本项目的老毛病「**承诺了却看不到**」—— 那些行为用户要验证，
+    --     而唯一的确认途径（版本行）里根本没有它们。
+    --
+    --   改法：按语义拆成 3 段（`version=` / `titan_settings;` / `mark_settings;`），
+    --   每段都远低于上限；**字段名一个都不改**（已有文档/脚本按名 grep）。
+    --   末尾再打一条 `status_len` **自报长度** ⇒ 将来再变长也能直接从日志看出来
+    --   （> `cap` 就是被切了），而不是又一次静默截断。
+    -- ★ 体内爆点（2026-10-03）：开关 + lift + **专用到达区域** 都必须在状态行可见。
+    --   region 是"炸得准不准"的直接原因（爆心必须落进爆炸内半径 4 m）。
+    --   ⚠ 用 **段内 IIFE** 算，不新开段外 local：
+    --     ① 段外 local 会让 `test_status_line_fits_log_cap`（逐段求值那个测试）
+    --        报 `attempt to concatenate a nil value`；
+    --     ② 逐字段判空 —— `nil..'/'` 会当场抛错 ⇒ 又是加载期 disabled
+    --        （同一天已经在 `BlastSites[...]` 上栽过一次）。
+    local status_core='version=@@VERSION@@-bughole;runtime_baseline=@@RUNTIME_BASELINE@@'
         ..';build=BUGHOLE_PLUS_TITAN;scope=marked_bughole_and_bile_titan;'
         ..'bughole_profiles=16;enemy_priority=REMOVED;weakpoints=REMOVED;'
         ..'hole_variants=INCLUDED;spore_spewer_egg=REMOVED;target_valid=SOFT_SIGNAL;'
@@ -484,7 +562,11 @@ local ok,why=pcall(function()
         ..'disposal_gated=HELD_LOCK_ONLY;'
         ..'designed_targets_only='..tostring(state.designed_targets_only)..';'
         ..'mark_priority_enabled=false;exclusive_targets=true;marked_structures=true;'
-        ..'native_lifetime_verified=false;mode=EXPERIMENTAL_NATIVE_CALLS;titan_standoff='..state.titan_standoff
+        ..'native_lifetime_verified=false;mode=EXPERIMENTAL_NATIVE_CALLS'
+        -- ★ 2026-10-03：观测节流周期必须可见 —— "看不到就等于无法确认"（本工程老毛病）
+        ..';scan_every_busy='..tostring(state.scan_every_busy)
+        ..';scan_every_idle='..tostring(state.scan_every_idle)
+    local status_titan='titan_settings;titan_standoff='..state.titan_standoff
         ..';titan_arrival_radius='..state.titan_arrival_region.radius..';titan_arrival_depth='..state.titan_arrival_region.depth
         ..';titan_standoff_min='..tostring(state.titan_standoff_min)
         -- ★ 腹部提前引爆余量（2026-10-02）：必须能在日志里一眼确认它是否生效 ——
@@ -494,21 +576,47 @@ local ok,why=pcall(function()
         ..';dragonroach_resource='..tostring(state.dragonroach_resource)
         ..';titan_variants_enabled='..tostring(state.titan_variants_enabled)
         ..';generic_takeover_enabled='..tostring(state.generic_takeover_enabled)
+        -- ★ 2026-10-03：体内爆点开关 + 实际抬升量必须可见 ——
+        --   "看不到就等于无法确认它到底生效了没有"（本工程老毛病），
+        --   而它是唯一需要实机标定的量（改 lift 要能一眼看到日志里变了）。
+        ..';blast_sites='..tostring(state.blast_sites_enabled)
+        -- ★ 段内 IIFE：lift + 专用 region（逐字段判空，绝不 `nil..'/'`）
+        --   ★ 2026-10-03 追加 `blast_sweep`：标定档位表。**必须在状态行可见** ——
+        --   "扫高度的这一局到底扫了哪些档"是判读日志的前提，看不到就只能猜。
+        ..(function()
+            local s=BlastSites and BlastSites["4232ee48e2cfd24e"]
+            if not s then return ';blast_site_lift=nil;blast_site_region=none' end
+            local r=s.region
+            local sw='off'
+            local sc=BlastSites and BlastSites.scan
+            if type(sc)=='table' and #sc>0 then sw=table.concat(sc,'/') end
+            return ';blast_site_lift='..tostring(s.lift)
+                ..';blast_site_region='..(
+                    (r and r.radius and r.depth and r.above)
+                    and (r.radius..'/'..r.depth..'/'..r.above) or 'default')
+                ..';blast_sweep='..sw
+        end)()
         -- ★ 引擎选择否决：开关 + 实际排除的资源，便于日志确认是否生效
         ..';enemy_veto_enabled='..tostring(state.enemy_veto_enabled)
         -- ★ 必须从 Filter.excluded_resources() 派生，**不得硬编码哈希**：
         --   2026-09-29 就是这里硬编码了旧哈希(98152772a72f7838)，
         --   而实现里已换成 db90077e76faa025 ⇒ 日志与实现不一致，核对时被骗。
         ..';enemy_veto_resources='..table.concat(Filter.excluded_resources(),',')
-        -- ★ 2026-10-01 优先级（用户定：虫洞/构筑 > 标记单位 > 空白标记）
-        --   单位标记的记忆判据 —— 打出来才能确认"取消标记后不再追"这一条有没有生效。
-        ..';unit_mark_live_only='..tostring(state.unit_mark_live_only)
-        ..';structure_mark_live_only='..tostring(state.structure_mark_live_only)
         ..';titan_variants='..table.concat(TitanVariants and TitanVariants.resources() or {},',')
         -- ★ 2026-09-29：接管范围 = 标记虫洞 + 吐酸泰坦，其余交还引擎。
         --   titan_resource 打出实际哈希，方便日志确认是否命中预期目标。
         ..';titan_enabled='..tostring(state.titan_enabled)
-        ..';titan_resource='..tostring(TitanProfile and TitanProfile.resource))
+        ..';titan_resource='..tostring(TitanProfile and TitanProfile.resource)
+    -- ★ 2026-10-01 优先级（用户定：虫洞/构筑 > 标记单位 > 空白标记）
+    --   单位标记的记忆判据 —— 打出来才能确认"取消标记后不再追"这一条有没有生效。
+    --   ★ 2026-10-03：**必须带 `marked_unit_rank_first`** —— 标记队列的档位排序开关，
+    --     用户要求的功能，日志里看不到就无法确认（它此前正是被 900 截断切掉的那个）。
+    local status_marks='mark_settings;unit_mark_live_only='..tostring(state.unit_mark_live_only)
+        ..';structure_mark_live_only='..tostring(state.structure_mark_live_only)
+        ..';marked_unit_rank_first='..tostring(state.marked_unit_rank_first)
+    emit(status_core);emit(status_titan);emit(status_marks)
+    emit('status_len;core='..#status_core..';titan='..#status_titan
+        ..';marks='..#status_marks..';cap=900')
 end)
 if not ok then
     state.filter_enabled=false;state.state='disabled: '..tostring(why)

@@ -162,9 +162,14 @@ def main():
     check("perf_line_emitted", "env.emit('perf;frame='" in text,
           "tick 里按窗口打 perf 行")
     for fld in (";ready=", ";observe=", ";layout_reads=", ";layout_bytes=",
-                ";active=", ";idle=", ";frames_seen="):
+                ";active=", ";count=", ";idle=", ";frames_seen="):
         check("perf_has" + fld.replace(";", "_").rstrip("="), fld in text,
               f"perf 行含 {fld[1:]}")
+    check("perf_count_is_behavior_length",
+          "';count='..tostring(observed.behavior_count)" in text,
+          "★ `count` 取 `observed.behavior_count`（数组总长 = 逐槽扫描圈数），"
+          "**不是** `active_prefix` —— 两者差一个数量级，混了就看不出"
+          "\"读花在空槽上\"（2026-10-03 加它就是为了验证这一点）")
     _i_lc = text.index("local observed=Layout.capture(read,base)")
     _i_acc = text.index("P.lreads=P.lreads+observed.read_calls")
     check("layout_accrued_right_after_capture", _i_lc < _i_acc < _i_lc + 200,
@@ -191,8 +196,8 @@ def main():
     check("skip_before_pcall", _i_skip < _i_pcall,
           "跳帧判断在 pcall **之前**（否则等于没省：读都做完了）")
     _i_lc2 = text.index("local observed=Layout.capture(read,base)")
-    _i_busy2 = text.index("local busy=(next(tracked)~=nil)")
-    _i_idle = text.index("P.idle_skip=busy and 0 or 3")
+    _i_busy2 = text.index("local busy,veto_must=(next(tracked)~=nil)")
+    _i_idle = text.index("P.idle_skip=busy and (veto_must and 1 or rb) or ri")
     _i_pf2 = text.index("if frame-P.wframe>=P.window then")
     check("idle_state_set_from_observation", _i_lc2 < _i_busy2 < _i_idle < _i_pf2,
           "★ 降频判据在 capture **之后**、perf 打点**之前**（按本帧实际内容判）")
@@ -202,8 +207,8 @@ def main():
     # 实机日志：`frame=36600/37200 ready=600 observe=0` —— 整窗口 600 帧**一次接管
     # 都没有**，却仍满速扫了 600 遍（141 读/帧）。原因是 G-60 停在 state 3 上千帧
     # （≈27 秒），而 state 3 我们**一个字节都不写**。旧判据 `#matches>0` 分不出这种。
-    _i_busy = text.index("local busy=(next(tracked)~=nil)")
-    _i_setidle = text.index("P.idle_skip=busy and 0 or 3")
+    _i_busy = text.index("local busy,veto_must=(next(tracked)~=nil)")
+    _i_setidle = text.index("P.idle_skip=busy and (veto_must and 1 or rb) or ri")
     busy_block = text[_i_busy:_i_setidle]
     check("idle_gate_is_busy_based",
           _i_busy < _i_setidle,
@@ -236,6 +241,70 @@ def main():
     check("busy_frames_seen_counter",
           "P.wframes=0" in text and "P.wframes=P.wframes+1" in text,
           "perf 窗口统计'实际跑过 tick 体的帧数'（对比 frames 看省了多少）")
+    # ★★★ 2026-10-03：两档节流（用户要求：忙 1→2、空转 3→6）★★★
+    print()
+    print("=== ⑥b. 两档节流：忙=2 / 空转=6；否决仍每帧；敌意输入回默认 ===")
+    _code6 = strip_lua_comments(text)
+    check("scan_rates_read_from_env",
+          "tonumber(env.scan_every_busy)" in _code6 and "tonumber(env.scan_every_idle)" in _code6,
+          "★ 两档周期取自 `env`（entry 的 `scan_every_busy` / `scan_every_idle`），可调。"
+          "⚠ 必须按**去注释后的代码**判：注释里也写着这两个名字，按全文判时会**空转**"
+          "（变异「写死 ri=6」实测踩到）")
+    check("veto_stays_every_frame",
+          "veto_must=true;break" in _code6 and "veto_must and 1 or rb" in _code6,
+          "★★ **否决那一路仍每帧**（`veto_must and 1 or rb` ⇒ 取 1）—— 注释写明"
+          "\"否决必须每帧重申\"，节流是最容易被顺手放宽的东西 ⇒ 单列一档，"
+          "不跟着 busy 降到 2")
+    check("scan_rates_clamped",
+          "if rb<1 then rb=2 end" in text and "if ri<1 then ri=6 end" in text,
+          "★ 非数 / 0 / 负数 ⇒ 回默认。**负数最危险**：会让 `frame%N` 恒为 0 ⇒ 每帧 return "
+          "⇒ mod 永远不跑（静默整体失效）")
+    # entry 侧的默认值也必须钉住（否则改了 entry 而 runtime 的兜底不变 ⇒ 静默不同步）
+    check("scan_rate_defaults_in_entry_and_passthrough",
+          "scan_every_busy=2,scan_every_idle=6," in e
+          and "scan_every_busy=state.scan_every_busy,scan_every_idle=state.scan_every_idle," in e
+          and ";scan_every_busy=" in e and ";scan_every_idle=" in e,
+          "★ entry 默认 = 用户指定的 **2 / 6**，且**透传到 env**、**打进状态行**"
+          "（三处齐全；看不到 = 无法确认，本工程老毛病）")
+
+    # 真的求值：把这段源码抽出来，喂敌意输入
+    _a = text.index("local rb=math.floor(tonumber(env.scan_every_busy)")
+    _b = text.index("\n", text.index("P.idle_skip=", _a))
+    _tail = text[_a:_b]
+    rt = lupa.LuaRuntime(unpack_returned_tuples=True)
+    rt.execute("""
+    local P={}
+    function probe(busy,veto,eb,ei)
+        local busy,veto_must=busy,veto
+        local env={scan_every_busy=eb,scan_every_idle=ei}
+    """ + _tail + """
+        return P.idle_skip
+    end
+    """)
+
+    def lua(x):
+        if isinstance(x, bool):
+            return "true" if x else "false"
+        if isinstance(x, str):
+            return "'%s'" % x
+        return "nil" if x is None else str(x)
+
+    cases = [
+        ((False, False, None, None), 6, "缺省空转 ⇒ 6"),
+        ((True, False, None, None), 2, "缺省忙时 ⇒ 2"),
+        ((True, True, None, None), 1, "否决 ⇒ 1（**不**跟着降到 2）"),
+        ((False, False, -5, 8), 8, "忙档负数 ⇒ 回默认（空转档仍按配置 8）"),
+        ((False, False, 0, 0), 6, "0 ⇒ 回默认（0 本身安全：闸门 `>0` 会短路）"),
+        ((False, False, 2.9, "abc"), 6, "非数/小数 ⇒ 回默认"),
+        ((True, False, 3, None), 3, "忙档可配（读 env）"),
+        ((False, False, None, 12), 12, "空转档可配（读 env）"),
+    ]
+    for _i, (args, want, why) in enumerate(cases):
+        got = rt.eval("probe(%s)" % ",".join(lua(a) for a in args))
+        check("scan_rate_case_%d" % _i,
+              got == want and got >= 1,
+              f"{why} —— 实测 {got}（且恒 ≥1 ⇒ 不会出现 `frame%N` 恒 0）")
+
     check("frames_seen_incremented_after_pcall",
           text.index("P.wframes=P.wframes+1") > text.index("if not ok then"),
           "★ 帧计数在 pcall **之后** ⇒ 提前 return / 抛错的帧也算'跑过了'")

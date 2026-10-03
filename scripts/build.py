@@ -25,7 +25,7 @@ CONFIG = json.loads((ROOT / 'compat/build.json').read_text())
 #
 #   事故背景：发 Release v0.1.2 时成品包还叫 `G60-BugHole-Lock-0.1.0.zip`
 #   —— 因为 TITLE / ZIP_NAME 把 '0.1.0' 硬编码在代码里，与 Release 标签完全脱节。
-RELEASE_VERSION = '0.1.5'
+RELEASE_VERSION = '0.1.6'
 VERSION = RELEASE_VERSION
 # ★ 裁剪版身份：独立 GUID + 独立资源名 + 独立标题，与上游官方包互不覆盖(管理器槽位二选一)。
 NAME = 'mods/hd2test/g60_bughole_lock'
@@ -133,6 +133,9 @@ def assemble():
         # ★ 变体 profile（2026-09-29）：工厂函数，拿 TitanProfile 作为基线。
         #   与 structure_profiles 复用 common.getters 是同一机制。
         ('TitanVariants', 'titan_variants.lua', True),
+        # ★ 体内爆点名册（2026-10-03）：与虫洞的"距离<4m"机制**分开**，
+        #   见 compat/blast_sites.lua 文件头。无需工厂参数。
+        ('BlastSites', 'blast_sites.lua', False),
         ('PriorityCatalog', 'priority_catalog.lua', False),
         ('FuseProfile', 'fuse_profile.lua', False),
     ]:

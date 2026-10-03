@@ -288,6 +288,35 @@ function M.new(env,options)
                     selected=top
                 end
             end
+            -- ★★ 队列内部的**优先级**（2026-10-02，用户：「标记敌人单位时，泰坦的优先级不是最高的」）★★
+            --
+            --   背景：队列（ping_memory 的 history）是按**新旧**排的 —— 队首 = 最晚 ping 的那个。
+            --   于是"先标泰坦、后标一只小怪"时，小怪会盖住泰坦；而名册里的 rank
+            --   （泰坦/蟑龙 = 10，最高）**只在自动索敌路径用过**，那条路径本工程早已裁掉。
+            --   ⇒ 让调用方用 `options.priority(mark) -> number`（**小的先**）指定队内次序。
+            --   典型实现：虫洞/构筑 → 0；名册敌人 → 1000+rank；其它单位 → 1500（见 runtime）。
+            --
+            --   ⚠ **只在"最高优先级不是队首"时才换** ⇒
+            --     · 未提供 `options.priority`（如空白标记那条队列）⇒ 完全原行为（不复制、不换）
+            --     · 队首本来就是最优 ⇒ 也不动（`bi<=1`）⇒ 零行为变化
+            --   ⚠ 相等优先级**保持原顺序**（"最新优先"）—— 用严格 `<` 逐个比较实现，
+            --     不用 `table.sort`（Lua 的 sort 不稳定，相等项会被打乱）。
+            --   ⚠ `top.queue=base` 仍是**原顺序**（与 ping_memory 的写法一致：queue 是完整队列，
+            --     top 是其中的一个 copy）⇒ 顺着 queue 走的消费者语义不变。
+            if selected and options.priority then
+                local base=selected.queue or {selected}
+                local best,bi
+                for i=1,#base do
+                    local p=options.priority(base[i])
+                    if p~=nil and (best==nil or p<best) then best,bi=p,i end
+                end
+                if bi and bi>1 then
+                    local top={}
+                    for k,v in pairs(base[bi]) do top[k]=v end
+                    top.queue=base
+                    selected=top
+                end
+            end
             -- ★ 空白标记位置：只在**本帧确实看到**时才更新，看不到就清空 ——
             --   位置随标记存活而失效，不会拿一个已经过期的 ping 点去引导 G-60。
             last_point=point_seen

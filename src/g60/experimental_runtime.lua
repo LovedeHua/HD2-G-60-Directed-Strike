@@ -63,7 +63,8 @@ function M.new(env)
     -- 收成一个 local 后，它对 upvalue 的贡献从 10 降到 1。
     -- 守门：`tests/check_lua51_compile.py`（用游戏自带 lua51.dll 做**真实编译**）。
     --   · ready_*     —— readiness 每帧缓存（见 jobs_ready）
-    --   · idle_skip   —— 0=每帧观测；3=空闲（**无事可做**）时隔帧观测（见 tick 开头）
+    --   · idle_skip   —— 当前观测周期：**1**=每帧（否决重申）·2=有事可做（`scan_every_busy`）
+    --                   ·6=纯空转（`scan_every_idle`）；见 tick 开头的两档节流
     --   · observe/lreads/lbytes/wframe/window/wframes —— perf 窗口统计
     --   ⚠ 时间量（微秒）**不在**这里，也不在本模块任何地方 —— 见下方
     --     "永远不要再引入进程内计时器"的说明。
@@ -78,7 +79,26 @@ function M.new(env)
         --   `seen` = 上一帧是否看到该标记（用于"消失后又出现 ⇒ 重新计时"）
         pt={token=nil,frame=-1000000000,seen=false},
         -- ★ 点目标"每 60 帧报一次距离"的节流表（见 point_guide 诊断）
-        pg={}}
+        pg={},
+        -- ★ 体内爆点的"每目标报一次"去重表（2026-10-03，见 compat/blast_sites.lua）。
+        --   同样放进 P 而不是新开 local（upvalue 上限 60）。
+        blast={},
+        -- ★ 体内爆点标定用（2026-10-03）：site=该 G-60 是体内爆点目标；
+        --   orig=目标原点；hit=这颗手雷**最后一次已知位置**（每帧免费从 scope 里取，
+        --   因为 `scope.prepared.own_position_bytes` 本来就被读过了）；
+        --   hl=hit 日志去重。**全部放进 P**（不新增 local/upvalue）。
+        --
+        --   ★ 2026-10-03 追加两个 **P 内**状态：
+        --     · `pex` = "已判过'手雷已爆'"的去重表。少了它，同一颗手雷会**每帧**
+        --       重跑一次 `arrival:triggered`（pcall + Explosive.capture）并**每帧**
+        --       重复打同一条日志 —— 实机抓到一起 45 行 `priority_precheck_exploded;entity=1566`。
+        --       （根因：`retired` 的键 `identity_bytes..flight_start` 每帧都变 ⇒
+        --         上面那行 `retired[m.id]=nil` 把它清掉 ⇒ 外层 `not retired[m.id]` 门又开了。）
+        --     · `swk`/`swn` = 体内爆点的**标定档位**计数器（见 compat/blast_sites.lua）。
+        --       必须**按手雷**推进、不能按帧推进，否则同一颗手雷飞行途中会一直换目标点。
+        --       同样因为 upvalue 上限 60 而放进 P（不新增 local）。
+        site={},orig={},hit={},hl={},
+        pex={},swk={},swn=0}
     local frame_errors={}
     local structure_issue_counts={}
     local last_structure_issue
@@ -224,6 +244,42 @@ function M.new(env)
         allowed=function(resource)
             return claim_profile(resource)~=nil or generic_claimed(resource)
         end,
+        -- ★★ 队列内部的**优先级**（2026-10-02，用户：「标记敌人单位时，泰坦的优先级不是最高的」）★★
+        --
+        --   队列默认按**新旧**排（队首 = 最晚 ping 的那个）⇒ 先标泰坦、后标一只小怪时，
+        --   小怪会盖住泰坦。名册里的 rank（泰坦/蟑龙 = 10 最高）**只在自动索敌路径用过**，
+        --   而那条路径本工程早已裁掉 ⇒ 标记路径上根本没有"重量级"概念。
+        --   ⇒ 用 `options.priority` 给队内次序（**数值小的先**），分五段：
+        --     ① 虫洞 / 构筑            → **0**      （用户定的最高档；不能被下面的 rank 顶掉）
+        --     ② 蟑龙（Dragonroach）     → **500**    （2026-10-03 用户指定：排在虫洞之后、泰坦之前）
+        --     ③ 泰坦（含变体）          → **1000**   （任何泰坦都排在任何"其它"单位之前）
+        --     ④ 名册里的其它敌人        → 1000+rank（冲锋者 50 ⇒ 1050；rank 越小越优先）
+        --     ⑤ 名册外的其它单位        → 1500      （排在有名册的敌人之后；彼此仍按"最新"）
+        --   ⚠ 相等优先级**保持原顺序**（= "最新 ping 优先"），见 native_ping 的说明。
+        --   ⚠ 空白标记**不在这条队列里**（走 `ping` / `point_marker`）⇒ 完全不受影响。
+        --   ⚠ `marked_unit_rank_first=false` ⇒ 不传该选项 ⇒ 回到"最新 ping 优先"（一键回退）。
+        --
+        --   ★★ ② 蟑龙的识别：**复用准入路径的同一判据**（精确哈希 + 开关）★★
+        --     `env.dragonroach_enabled` + `env.dragonroach_resource`（entry 里的常量
+        --     `960b48a421a3faaa`）—— 与上面 `claim_profile` 的蟑龙分支**逐字同源**。
+        --   ⚠ **不按 `kind=='thorax'` 推断**：那是本工程明令禁止的做法
+        --     （测试 `no_kind_based_admission` 钉着）—— 按 kind 会把同 kind 的
+        --     其它敌人一起算进来，属未经要求的范围扩张。
+        --     「能瞄准谁」与「谁优先」用同一把尺子 ⇒ 不会出现"优先了却瞄不了"的错配。
+        priority=(env.marked_unit_rank_first~=false) and function(mark)
+            local r=mark.resource
+            if not r then return 2000 end
+            if env.structure_profiles and env.structure_profiles[r]~=nil then return 0 end
+            if env.dragonroach_enabled~=false and env.dragonroach_resource
+                and r==env.dragonroach_resource then
+                return 500
+            end
+            if env.titan_profile and env.titan_profile.resource==r then return 1000 end
+            if env.titan_variant_profiles and env.titan_variant_profiles[r]~=nil then return 1000 end
+            local spec=env.priority_catalog and env.priority_catalog[r]
+            if spec and spec.rank then return 1000+spec.rank end
+            return 1500
+        end or nil,
         position=function(e)
             local profile=claim_profile(e.resource)
             if profile then
@@ -438,10 +494,13 @@ function M.new(env)
         -- 用户反馈"G60 没投掷时也有挺大的性能开销" —— 说的正是这部分**纯空转**：
         -- 没有手雷时我们仍然每帧把整张数组扫一遍，只为确认"还是没有"。
         --
-        -- 处置：上一次捕获**没有任何 G-60** ⇒ 之后隔 3 帧才做一次完整观测；
-        -- 一旦任一帧发现 G-60 立即恢复每帧（`P.idle_skip=0`），直到它消失。
+        -- 处置（2026-10-03 起为**两档**，见下方 `两档节流` 那段）：
+        --   · 没有可接管的 G-60 ⇒ 每 `scan_every_idle`（默认 **6**）帧做一次完整观测
+        --   · 一旦有事可做（持有/可接管/早期探测）⇒ 收紧到 `scan_every_busy`（默认 **2**）
+        --   · 引擎选中要否决的目标 ⇒ **每帧**重申，不跟着降
         --
-        -- 代价（知情）：投掷后最多延迟 2 帧被发现 ≈ 33 ms @60fps ——
+        -- 代价（知情）：空转时投掷的 G-60 最多晚 **5 帧（≈83 ms）** 被发现；
+        --   有事可做时最多晚 1 帧（≈17 ms）。
         --   远小于 G-60 从投掷到可接管 state-4 的时间（`EARLY_MIN_AGE`≥15 帧）。
         --   标记（ping）读取同样最多延迟这么多帧；标记在 UI ring 里**持续存在**
         --   （`age<duration`，数秒），因此不会因降频而漏掉。
@@ -464,7 +523,7 @@ function M.new(env)
             --    而 `allow_state3=false` ⇒ state 3 **一个字节都不写**。
             --    这与"场上没有 G-60"时的 40 读/帧是同一类空转。
             --
-            --  新判据（任一成立才保满速，否则隔 3 帧）：
+            --  新判据（任一成立 ⇒ `busy`；具体周期见下面的"两档节流"）：
             --    ① 有 state 4 的 G-60（可接管 / 可引导）
             --    ② `allow_state3` 打开时的 state 2/3（早期驱动路径要每帧）
             --    ③ 引擎选中了**要否决**的目标（运输船/增援飞船）—— 否决必须每帧重申
@@ -480,7 +539,7 @@ function M.new(env)
             --  安全性同"优化二"：这些帧**不写任何内存**，跳过只是"晚 ≤2 帧
             --    （≈33 ms）知道情况变了"。
             --  ⚠ 副作用（知情）：`sig=[4/3e@N]` 的状态停留帧数在降频期按**观测帧**计，会偏小。
-            local busy=(next(tracked)~=nil) or (current~=nil) or (env.early_nav_probe==true)
+            local busy,veto_must=(next(tracked)~=nil) or (current~=nil) or (env.early_nav_probe==true),false
             if not busy then
                 local ms=observed.matches
                 for i=1,#ms do
@@ -492,11 +551,29 @@ function M.new(env)
                     -- 引擎选中的目标若在排除表里 ⇒ 否决必须每帧重申，不能被降频漏掉
                     if m.selection_flag~=0 and env.enemy_veto_enabled~=false
                         and Filter.excluded(m.selection_resource) then
-                        busy=true;break
+                        busy=true;veto_must=true;break
                     end
                 end
             end
-            P.idle_skip=busy and 0 or 3
+            -- ★★★ 两档节流（2026-10-03，用户要求）★★★
+            --
+            --   · 有事可做（持有 ✓ / 可接管 ✓ / 早期探测 ✓）⇒ `env.scan_every_busy`（默认 **2** 帧一次）
+            --   · 纯空转（没有可接管的 G-60）          ⇒ `env.scan_every_idle`（默认 **6** 帧一次）
+            --
+            --   历史：最初是"有 G-60 就每帧 / 没有就隔 3 帧"；2026-10-02 把前者改成
+            --   "**有事可做**才每帧"（治 state-3 空转），本次再把两档分别放宽到 2 / 6。
+            --
+            --   ⚠ **否决那一路**（`veto_must`）**仍保持每帧**（⇒ 1）：
+            --     上面注释写明"否决必须每帧重申"，而节流是**最容易顺手放宽**的东西
+            --     ⇒ 单列一档，不跟着 `busy` 一起降到 2。代价可忽略（否决本身罕见）。
+            --
+            --   防呆：非数 / 0 / 负数 ⇒ 回默认值。
+            --     `0` 本身是安全的（闸门 `if P.idle_skip>0` 会短路），
+            --     但**负数**会让 `frame%N` 恒为 0 ⇒ 每帧都 return ⇒ **mod 永远不跑**
+            --     （静默整体失效，正是本项目最怕的那种）。
+            local rb=math.floor(tonumber(env.scan_every_busy) or 0);if rb<1 then rb=2 end
+            local ri=math.floor(tonumber(env.scan_every_idle) or 0);if ri<1 then ri=6 end
+            P.idle_skip=busy and (veto_must and 1 or rb) or ri
             -- ★ perf 窗口打点（2026-09-30 性能优化）★
             --   放在 capture 之后、**任何早退之前**：游戏繁忙时 tick 会在下面
             --   `queues_complete=false` 处直接 return；若把打点放到 tick 末尾，
@@ -514,7 +591,15 @@ function M.new(env)
                     --   idle        —— 当前降频间隔（0=每帧；3=空转隔帧）
                     --   frames_seen —— 本窗口**实际跑过 tick 体**的帧数
                     --                  （对比 frames 一眼看出降频省了多少）
+                    --   count       —— behavior 数组的**总长度**（= 逐槽 identity 扫描的
+                    --                  圈数）。★ 2026-10-03 新增，**只读诊断**：
+                    --                  实测 `layout_reads` 中位 204/次而 `active` 只有 1~9
+                    --                  ⇒ 按固定开销（≈34 次：5 条队列 + 指针 + guards 复验）
+                    --                  反推 `count ≈ 170~300` —— 也就是说**绝大部分内存读
+                    --                  花在不可能有 G-60 的空槽上**（G-60 上限 16 颗）。
+                    --                  把 count 打进日志是为了**验证这个推断**，而不是猜。
                     ..';active='..tostring(observed.active_prefix)
+                    ..';count='..tostring(observed.behavior_count)
                     ..';idle='..tostring(P.idle_skip)
                     ..';frames_seen='..tostring(P.wframes))
                 P.ready_reads,P.observe,P.lreads,P.lbytes=0,0,0,0
@@ -723,6 +808,36 @@ function M.new(env)
                 -- （disposal 段 328 行 / arrival 段 727 行）。我第一版只改了后者，
                 -- 实机 entity=1205 走的正是前者 ⇒ 修复没生效（arrival_already_exploded=0）。
                 -- **同一个判断出现两处，就是我今天反复踩的那类坑。**
+                -- ★★ 标定：把这颗手雷**实际在哪炸的**打出来（相对目标原点）★★
+                --
+                --   这是"**哪一点能稳定拆毁**"的唯一实测依据（2026-10-03，用户要求）：
+                --   引擎自己撞进通风口引爆的那次能拆、我们自己下发的那次不能
+                --   ⇒ 必须知道两者的**实际偏移**差在哪。
+                --   `via=arrival` = 本 mod 调的 explode；`via=engine` = 引擎的撞击/引信。
+                --   ⚠ 每颗 G-60 只打一条（`P.hl` 去重）。
+                --
+                --   ⚠⚠ 必须定义在 `note_already_exploded` **之前**：
+                --     Lua 的 `local function` 只在**定义点之后**可见 ——
+                --     写在后面时，`note_already_exploded` 里的调用会解析成**全局 nil**
+                --     ⇒ 运行时 `attempt to call a nil value`（本项目踩过同类事故，
+                --       见 tests/test_lua_upvalue_order.py 的说明）。
+                local function note_blast_hit(via)
+                    if not (P.site[m.id] and P.hit[m.id] and P.orig[m.id]) then return end
+                    if P.hl[m.id] then return end
+                    P.hl[m.id]=true
+                    local v,o=P.hit[m.id],P.orig[m.id]
+                    env.emit(string.format(
+                        'blast_hit;entity=%s;target=%s;via=%s;own=%.2f,%.2f,%.2f'
+                        ..';origin=%.2f,%.2f,%.2f;delta=%.2f,%.2f,%.2f',
+                        -- ⚠ 目标 id 取自 **P.site**（建爆点时写进去的）。
+                        --   原来写 `old and old.lock and old.lock.id` —— 而 `old` 是
+                        --   下面那段循环里的局部量，在这个 `local function` 里**不可见**
+                        --   ⇒ 解析成全局 nil ⇒ 实机 14 条全是 `target=-`，白丢一轮标定数据。
+                        --   （本项目的老毛病：诊断字段看着有、其实永远是占位值。）
+                        tostring(m.id),tostring(P.site[m.id] or '-'),via,
+                        v[1],v[2],v[3],o[1],o[2],o[3],
+                        v[1]-o[1],v[2]-o[2],v[3]-o[3]))
+                end
                 local function note_already_exploded(why)
                     local s=tostring(why)
                     if not (s:find('explosion already requested',1,true)
@@ -733,6 +848,7 @@ function M.new(env)
                     release_hold(m.id)
                     env.emit('arrival_already_exploded;entity='..m.id
                         ..';detail=EXPLOSIVE_ALREADY_TRIGGERED')
+                    note_blast_hit('engine')
                     return true
                 end
                 if retired[m.id] and retired[m.id]~=retired_key then retired[m.id]=nil end
@@ -953,6 +1069,43 @@ function M.new(env)
                     end
                     local abandoned=false
                     local enters=priority~=nil and gate.drive
+                    -- ★★ 已爆手雷短路 —— 在**写内存之前**（2026-10-03）★★
+                    --
+                    -- 实机（13:16 那局）12 次标记**全部**是"锁上即发现已爆"：
+                    --   引擎的撞击 / 引信在我们接管之前就把它炸了，实体还要留几帧。
+                    --   而我们照样收它 ⇒ 走完整 priority 路径（**含一次 setter 写内存**）
+                    --   + 打一条本来不该存在的 `priority_locked`，之后才在 arrival 段
+                    --   被 `Explosive.capture` 判成 `explosion already requested`。
+                    --
+                    -- ⇒ 先只读探一次；已经炸了就按"完成"收尾 —— 与 disposal / arrival /
+                    --   引导失败记账共用**同一个** `note_already_exploded`
+                    --   （终态：`retired` + `release_hold` + `arrival_already_exploded`）。
+                    --
+                    -- ⚠ 门控 `not (old and old.lock)`：只在**首次接管**那一帧探。
+                    --   已锁定的生存实体每帧走粘性路径，而那时 setter 本来就不写
+                    --   （`same_selection` ⇒ 跳过）⇒ 不为它每帧多付一次捕获成本。
+                    -- ⚠ 判据用 `arrival:triggered`（= `Explosive.capture` 自己的两条文案），
+                    --   **不造轻量判据** —— 假阳性会把一颗健康的手雷提前退休，
+                    --   代价远大于现在这点浪费。
+                    -- ⚠ 不新增 upvalue：复用已有的 `arrival` / `read`（都已是本函数的 upvalue）
+                    --   —— `host:tick` 里那个 pcall 匿名函数的 upvalue 余量已经很紧。
+                    --   ⚠ `P.pex` 去重：判过一次就不再重复捕获、也不再重复打日志
+                    --     （实机抓到同一颗手雷刷 45 行 —— 见 P 表定义处的根因说明）。
+                    --     仍然要把 `enters` 关掉：已爆的手雷**绝不能**被接管写内存。
+                    if enters and not retired[m.id] and not (old and old.lock) then
+                        if P.pex[m.id] then
+                            enters=false
+                        else
+                            local triggered,why=arrival and arrival:triggered(read,m.identity_bytes)
+                            if triggered then
+                                P.pex[m.id]=true
+                                env.emit('priority_precheck_exploded;entity='..m.id
+                                    ..';detail=EXPLOSIVE_ALREADY_TRIGGERED')
+                                note_already_exploded(why)
+                                enters=false
+                            end
+                        end
+                    end
                     if enters then
                         diag.entered=diag.entered+1
                         if not old then
@@ -1311,7 +1464,29 @@ function M.new(env)
                             --     不能被这里绕过。
                             local waiting=type(status)=='string'
                                 and status:find('clearance',1,true)~=nil
-                            if waiting then
+                            -- ★★★ 爆炸已触发 ⇒ **完成**，不是失败（2026-10-03）★★★
+                            --
+                            --   实机取证（2026-10-03 11:29 那局）：实体 16778567 走**泰坦**段
+                            --   （`native_titan_aim` 的 `assert(value,why)`）时，`explosive_context`
+                            --   的 `'explosion already requested'` 被这条**引导失败记账**当成
+                            --   普通失败记了 **30 次** ⇒ 打出 `guide_give_up;after=30`
+                            --   —— 一条**假的失败**（那颗手雷其实**已经炸了**）。
+                            --
+                            --   根因：`note_already_exploded`（把该条件判为"完成"：`retired` +
+                            --   `release_hold` + 打 `arrival_already_exploded`）原来只接在
+                            --   **disposal 段**与 **arrival 段**，而本段（泰坦/点目标/runner 三条
+                            --   引导路径共用的记账处）**没接**。★ 连 `note_already_exploded`
+                            --   自己的注释都在警告"同一个判断出现两处" —— 这就是第三处。
+                            --
+                            --   代价（实测）：多花 **1 秒**（30 次 × 忙档 2 帧 = 60 帧）重试一颗
+                            --   已爆的手雷，期间还**持有**它（保持忙档扫描），外加 30 条误导日志。
+                            --   终态本来相同（`retired` + `release_hold`）⇒ 功能无害，所以长期未暴露。
+                            --   ⇒ 现在统一走**同一个判定函数**（三处共用），并清零计数。
+                            --   ⚠ 它在 `if result then` 之后、真失败计数之前 —— 顺序即语义：
+                            --     放到后面就等于"已经记了一次失败"。
+                            if note_already_exploded(tostring(status or detail)) then
+                                guide_fail[m.id]=nil
+                            elseif waiting then
                                 if guide_fail[m.id]==nil then
                                     env.emit('skipped;entity='..m.id..';reason='..tostring(status)
                                         ..';detail=WAITING_FOR_SAFE_BLAST;fail_count=0')
@@ -1364,13 +1539,69 @@ function M.new(env)
                         m.selection_id=Layout.u32(m.record_bytes,0x18);m.selection_flag=m.record_bytes:byte(0x79)
                         current={ref=old.ref,match=m}
                         local ok_arr,result,reason=pcall(with_observation,old.ref,function(scope)
-                            local target
+                            local target,blast_point,blast_site
                             if old.lock then
                                 local d=TargetData.new(read,base,env.exe)
                                 local e=d.entity(old.lock.id)
                                 if e and (not env.target_allowed or env.target_allowed(e.resource))
                                     and e.identity==old.lock.identity and d.unit(e)==old.lock.unit then
                                     e.validate=d.validate;target=e
+                                    -- ★★★ 体内爆点（2026-10-03，巨型构筑者 Bulk Fabricator）★★★
+                                    --
+                                    -- 见 `compat/blast_sites.lua` 文件头：虫洞的摧毁判定是**距离**
+                                    -- （用户实测 <4 m 即摧毁），所以引擎 `aim` 落在原点附近就够；
+                                    -- 而巨型构筑者**要求爆炸进入正面红色通风口内部**，
+                                    -- 引擎 `aim` 落在实体原点（地表/地下）⇒ 炸在底部**不掉血**
+                                    -- （用户实测原话：「会在底部引爆，但不会对其造成伤害」）。
+                                    --
+                                    -- ⇒ 这一类显式给"**原点 + lift**"的体内点，并按**点目标**交给
+                                    --   arrival 段 —— 与 ping 地面点走**同一条已验证过的路径**
+                                    --   （`options.point_target`：写 `invalid_id` + 三维坐标，
+                                    --     按 `point_arrival_region` 判定到达/引爆）。
+                                    -- ⚠ lift 是**唯一需要实机标定**的量（见 compat/blast_sites.lua）。
+                                    -- ⚠ 只在 `d.position` 读成功时启用；读不到就退回旧行为（引擎 aim）。
+                                    local site=env.blast_sites and env.blast_sites[e.resource]
+                                    if site and type(site.lift)=='number' then
+                                        local okp,p=pcall(d.position,e)
+                                        if okp and p then
+                                            -- ★★ 标定档位（2026-10-03，见 compat/blast_sites.lua）★★
+                                            --   用户给了关键事实：「通风口只是入口，G60 是穿模进入的，
+                                            --   不会受到阻拦」⇒ 手雷能飞进模型内部 ⇒
+                                            --   **爆心高度**就是唯一变量 ⇒ 逐颗换档，一局扫出判定区。
+                                            --   ⚠ 必须按**手雷**推进（`P.swk[m.id]` 记住这一颗分到的档）；
+                                            --     按帧推进的话，同一颗手雷飞行途中会不停换点 ⇒ 等于没测。
+                                            --   ⚠ `scan` 缺席 ⇒ 完全退回单一 `site.lift` 的确定性行为。
+                                            local blast_lift,sw_i=site.lift,'-'
+                                            local scan=env.blast_sites.scan
+                                            if scan and #scan>0 then
+                                                sw_i=P.swk[m.id]
+                                                if not sw_i then
+                                                    P.swn=P.swn+1
+                                                    sw_i=(P.swn-1)%#scan+1
+                                                    P.swk[m.id]=sw_i
+                                                end
+                                                blast_lift=scan[sw_i] or blast_lift
+                                            end
+                                            blast_point={p[1],p[2],p[3]+blast_lift}
+                                            blast_site=site
+                                            -- ⚠⚠ 爆点日志的去重键必须**含手雷 id**（2026-10-03 实机发现）：
+                                            --   原来只用目标 id ⇒ 同一个目标上的第 2、3 颗
+                                            --   **一条 `blast_point` 都不打**，而那正是标定扫描要读的档号
+                                            --   （实机那局 445/444/446 只剩 `sweep=1/4/7`，
+                                            --     中间 2/3/5/6 档只能靠 `blast_hit` 的 delta 反推补回来）。
+                                            local bkg=tostring(m.id)..'|'..tostring(e.id)
+                                            P.site[m.id]=tostring(e.id);P.orig[m.id]=p
+                                            if env.emit and not P.blast[bkg] then
+                                                P.blast[bkg]=true
+                                                env.emit(string.format(
+                                                    'blast_point;entity=%s;resource=%s;lift=%.2f;sweep=%s'
+                                                    ..';origin=%.2f,%.2f,%.2f;point=%.2f,%.2f,%.2f',
+                                                    tostring(e.id),e.resource,blast_lift,tostring(sw_i),
+                                                    p[1],p[2],p[3],
+                                                    blast_point[1],blast_point[2],blast_point[3]))
+                                            end
+                                        end
+                                    end
                                 end
                             end
                             local titan_point=old.titan and not old.titan.cancelled
@@ -1392,7 +1623,17 @@ function M.new(env)
                             -- 早期驱动：传 titan 同款到达区域 + early 标记
                             -- （early 让 arrival 内部失败不永久禁用，熔断由 state3_danger 管）
                             local arr_opts
-                            if point then
+                            if blast_point then
+                                -- ★ 体内爆点（体内点优先）：与 ping 点目标同一套写法，
+                                --   但点是**从已锁定目标算出来的**（见上面的 blast_point），
+                                --   而且到达区域用**本目标专用**的紧区域 ——
+                                --   默认那套（radius 3 / depth 2 / above 2）是给"ping 空地"
+                                --   的宽松值；实测会让爆点落在上方 1.4~1.9 m，
+                                --   从而掉出爆炸内半径（4 m）⇒ 拆毁判定不触发。
+                                arr_opts={region=(blast_site and blast_site.region)
+                                        or env.point_arrival_region,point=true,
+                                    point_target=blast_point}
+                            elseif point then
                                 arr_opts={region=env.point_arrival_region,point=true,
                                     point_target={point.x,point.y,point.z}}
                             elseif early_drive then
@@ -1401,7 +1642,14 @@ function M.new(env)
                             -- mask_only 原为 `not target`；有点目标时**必须放行**
                             -- （否则 arrival 会走 mask_all 分支、我们一个字节都写不进去）。
                             local mask_only=(old.force_search or blocked_selected) and 'search'
-                                or (not target and not point) and true or nil
+                                or (not target and not point and not blast_point) and true or nil
+                            -- ★ 标定：这颗手雷**当前在哪**（相对坐标由日志侧与 orig 相减）。
+                            --   `own_position_bytes` 本来就被 with_observation 读过了 ⇒ 解码免费。
+                            --   在 step **之前**取 ⇒ 这一帧若爆了，拿到的就是"爆炸那一帧的位置"。
+                            if blast_point then
+                                local okv,v=pcall(TargetData.vector,scope.prepared.own_position_bytes,0)
+                                if okv then P.hit[m.id]=v end
+                            end
                             return arrival:step(scope,target,nil,'vanilla',true,old.arrival_progress,
                                 mask_only,arr_opts)
                         end)
@@ -1446,16 +1694,32 @@ function M.new(env)
                                 --   "飞过去了但没炸"时日志里只有 point_taken，什么线索都没有。
                                 --   · point_stalled：到达判定 4 秒内没满足 ⇒ 交回引擎（要调区域）
                                 --   · point_guide  ：每 60 帧报一次当前距离（看它到底靠没靠近）
-                                if old.point then
+                                -- ★★ 体内爆点的到达诊断（2026-10-03 17:0x，"低抛炸底部"那局）★★
+                                --   **为什么必须加**：那一局那颗"低抛"的手雷
+                                --   **一条 `arrival_detonated` 都没有** —— 而下面这段诊断的判据是
+                                --   `old.point`（**只覆盖 ping 空地**），体内爆点走的是 `P.site[m.id]`
+                                --   ⇒ **完全静默** ⇒ "那颗到底飞到哪了"日志里一个字都没有，只能靠猜。
+                                --   ⚠ 复用 `P.pg` 做节流（不新增 local/upvalue；两者 key 都是手雷 id）。
+                                local guide_tag=(old.point and 'point') or (P.site[m.id] and 'blast') or nil
+                                if guide_tag then
                                     if result.kind=='search' then
-                                        env.emit('point_stalled;entity='..m.id
+                                        env.emit(guide_tag..'_stalled;entity='..m.id
                                             ..';dist='..tostring(result.distance)..';frame='..frame)
                                     elseif result.kind=='guide' and env.emit then
                                         if frame-(P.pg[m.id] or -1000)>=60 then
                                             P.pg[m.id]=frame
-                                            env.emit('point_guide;entity='..m.id
+                                            -- 体内爆点额外报"这颗雷现在有多高（相对目标原点）"——
+                                            -- 这是**判断"低抛到底是上不去，还是根本没被引导"的唯一依据**。
+                                            local oh=''
+                                            if P.hit[m.id] and P.orig[m.id] then
+                                                local v,o=P.hit[m.id],P.orig[m.id]
+                                                oh=';own_z='..string.format('%.2f',v[3])
+                                                    ..';origin_z='..string.format('%.2f',o[3])
+                                                    ..';above_origin='..string.format('%.2f',v[3]-o[3])
+                                            end
+                                            env.emit(guide_tag..'_guide;entity='..m.id
                                                 ..';dist='..string.format('%.2f',result.distance or -1)
-                                                ..';frame='..frame)
+                                                ..oh..';frame='..frame)
                                         end
                                     end
                                 end
@@ -1469,6 +1733,8 @@ function M.new(env)
                                         --   而两者的修法相反（见 native_arrival 处的说明）。
                                         ..';horiz='..tostring(result.horizontal or -1)
                                         ..';dz='..tostring(result.dz or -1))
+                                    -- ★ 标定：**我们自己**引爆时的实际位置（相对目标原点）
+                                    note_blast_hit('arrival')
                                 end
                             end
                         else
