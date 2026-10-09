@@ -2,9 +2,9 @@
   "derived_from": "etxp/HD2-G60-Smart-Targeting 0.1-beta.1",
   "resource_name": "mods/hd2test/g60_directed_strike",
   "resource_id": "C1D1E56A4AE73B26",
-  "entry_sha256": "c087370725f7bc62344ac21bc5c2947a9d460970e24457d0163a95a1a905f8df",
+  "entry_sha256": "a691e67803054fba51ac92f7d3133283480830b26807d978641359147df319b0",
   "addon_sha256": {
-    "Addon/9ba626afa44a3aa3.patch_0": "a03d9972b9ba7bb6cf2bb65fd2e6c1fee7fa89a77296c3cf5fdd9100f5acbe63",
+    "Addon/9ba626afa44a3aa3.patch_0": "274db17bc573f2604e68328f1e84d64bf1d619cb4d856c5aa40b33e964daab59",
     "Addon/9ba626afa44a3aa3.patch_0.stream": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "Addon/9ba626afa44a3aa3.patch_0.gpu_resources": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
   }

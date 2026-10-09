@@ -528,6 +528,10 @@ local ok,why=pcall(function()
             -- ★ 2026-10-09：强制提升 state=4 的结果（写前/写后值）——
             --   它是"写内存这条路到底成不成"的**唯一判据**，被节流掉 = 实验没法判读
             and not line:match('^force_lock;')
+            -- ★ 2026-10-09：停机时的 frame_error 汇总（**必须白名单**）——
+            --   `emit` 超过 60 行后只写白名单行，而汇总正是在停机那一刻打的
+            --   ⇒ 不白名单化就会被**静默丢掉**，等于没加。
+            and not line:match('^errors;')
             -- ★ 2026-10-03：体内爆点（巨型构筑者）—— 每目标一条，
             --   是"lift 到底生效了没有 / 爆点落在哪"的**唯一判据**。
             --   诊断被节流掉 = 诊断不存在（同日 arrival_already_exploded 已栽过一次）。
@@ -923,6 +927,18 @@ local ok,why=pcall(function()
         thread=function() return tonumber(k.GetCurrentThreadId()) end,
         engine=assert(rawget(_G,'stingray'),'engine API unavailable'),emit=emit})
     state.stop=Runtime.install(_G,host,function()
+        -- ★ 2026-10-09：把 `frame_error` 的**重复次数**打出来。
+        --   此前 `host:error_summary()` 定义了却**没有任何调用点** ⇒ "被折叠掉的次数"
+        --   从来没打出来过 ⇒ `pointer bound` 到底发生 1 次还是 60 次无从得知
+        --   （`frame_error` 是按消息去重的，只打第一条）。
+        --   ⚠ 必须在 `close()` **之前** emit —— close 之后写的行会丢。
+        local ok_sum,sum=pcall(function() return host:error_summary() end)
+        if ok_sum and sum then
+            emit('errors;kinds='..tostring(sum.kinds)..';total='..tostring(sum.total)
+                ..';details='..tostring(sum.details))
+        else
+            emit('errors;detail=summary failed:'..tostring(sum))
+        end
         state.filter_enabled=false;state.state='disabled';emit('disabled;applied='..host.applied);close()
     end)
     state.stats=host;state.filter_enabled=true;state.state='experimental filtering active'

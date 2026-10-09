@@ -553,7 +553,15 @@ function M.new(env)
         -- 安全性：无 G-60 时本帧**不做任何写**，跳过观测不改变任何行为，
         --   只是"晚一点知道有手雷出现"。
         if P.idle_skip>0 and (frame%P.idle_skip)~=0 then return end
-        local ok,why=pcall(function()
+        -- ★★ 2026-10-09：`pcall` → `xpcall` + 内联 handler，为的是**抓到出错处的调用栈**。
+        --   背景：`frame_error` 只打一条消息、**不带调用者** ⇒ `pointer bound` 一直
+        --   无法归因（`expired observation key` 那次也是靠猜才找到的）。
+        --   ⚠ 必须 xpcall：handler 在**栈展开之前**执行，`debug.traceback` 才有栈；
+        --     等 pcall 返回后再调 traceback，看到的只有 handler 自己。
+        --   ⚠ handler 写成**内联匿名函数**（它自己捕获 P），不给 tick 闭包新增 upvalue
+        --     —— 那个闭包的 upvalue 已近 Lua 5.1 的 60 上限。
+        --   ⚠ `debug` 可能被裁剪 ⇒ 必须判空，否则错误路径本身再抛一次。
+        local ok,why=xpcall(function()
             -- Keep observation keys across a skipped frame so an owned Titan
             -- waypoint can be cleaned up on the next eligible update.
             if not jobs_ready() then current=nil;return end
@@ -1971,6 +1979,11 @@ function M.new(env)
                 last_link_status=status
                 env.emit(status)
             end
+        end,function(e)
+            -- ★ 出错时**在栈展开之前**抓调用栈（xpcall 的 handler 才有这个时机）。
+            --   放进 P（不新开 local ⇒ 不动 upvalue 预算）。
+            P.err_tb=(debug and debug.traceback) and debug.traceback(e,2) or tostring(e)
+            return e
         end)
         -- ★ perf 窗口：本帧**跑过 tick 体**（放在 pcall **之后** ⇒ 正常跑完、
         --   提前 return、抛错三种都算"跑过了"）。窗口内的重置在 pcall 之内，
@@ -1983,7 +1996,31 @@ function M.new(env)
             --   `priority setter target mismatch`）。启动期 root 指针未初始化会让观测段
             --   连续几十帧失败，那是"还没准备好"，不是"坏了"。
             -- 改成：每种 detail 只打第一条，重复的计入计数，停机时汇总一次。
+            -- ★★ 2026-10-09：detail 里**附上调用栈头几帧** ★★
+            --   此前只有消息、没有调用者 ⇒ `pointer bound` 无法归因。
+            --   栈来自 xpcall 的 handler（见 tick 体收尾处），只在**出错那帧**有效，
+            --   用完立刻清掉 —— 否则下一帧的错误会继承上一次的栈（误归因）。
             local detail=tostring(why)
+            if P.err_tb then
+                -- ⚠ 取帧逻辑必须**跳过前两行**（消息 + `stack traceback:`）并留足帧数：
+                --   第一版写成"最多 4 行、再跳过第 1 行" ⇒ 实际只剩 assert/ptr 两帧，
+                --   **调用者正好被切掉**（离线用 lua51.dll 实测抓出来的：middle 在第 5 行）。
+                local frames={}
+                for fl in tostring(P.err_tb):gmatch('[^\n]+') do
+                    fl=fl:gsub('^%s+',''):gsub('%s+$','')
+                    if fl~='' and fl~='stack traceback:' then frames[#frames+1]=fl end
+                end
+                P.err_tb=nil
+                local tb={}
+                for i=2,#frames do            -- frames[1] 是消息本身
+                    if #tb>=4 then break end  -- 留 4 帧：assert / ptr / **调用者** / 再上一层
+                    tb[#tb+1]=frames[i]
+                end
+                -- ⚠ 分隔符**不能用模板占位符那种双 at 标记** —— 那是 entry 模板的保留
+                --   标记（如 MODULES 占位符），`build.py` 的禁用词表会直接拒绝出包。
+                --   而且**注释里也不许写它的字面量**（本工程为此栽过两次，本次又一次）。
+                if #tb>0 then detail=detail..' ~~ '..table.concat(tb,' | ') end
+            end
             local seen_before=frame_errors[detail] or 0
             frame_errors[detail]=seen_before+1
             self.frame_error_total=(self.frame_error_total or 0)+1

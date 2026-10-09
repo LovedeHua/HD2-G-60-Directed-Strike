@@ -2573,10 +2573,47 @@ def test_force_lock():
     check("force_lock_whitelisted",
           "and not line:match('^force_lock;')" in e,
           "★ 实验判据进节流白名单（被节流掉 = 实验没法判读）")
+    # 4b2) ★★ 2026-10-09：把 `pointer bound` 钉死 —— frame_error 必须能归因 ★★
+    rt = RUNTIME.read_text(encoding="utf-8")
+    #      此前只有消息、没有调用者 ⇒ 那条错误一直无法归因（`expired observation key`
+    #      那次也是靠猜）。做法：tick 的 pcall 换 xpcall + handler 抓栈（handler 在
+    #      **栈展开之前**执行才有栈），detail 里附头几帧，用完立刻清（防误归因）。
+    check("frame_error_carries_traceback",
+          "local ok,why=xpcall(function()" in rt
+          and "P.err_tb=(debug and debug.traceback) and debug.traceback(e,2)" in rt
+          and "detail=detail..' ~~ '..table.concat(tb,' | ')" in rt,
+          "★★ tick 用 xpcall + handler 抓调用栈，frame_error 里附头几帧 —— "
+          "否则 `pointer bound` 这类错误无法指名调用者")
+    check("traceback_frame_cap_sufficient",
+          "if #tb>=4 then break end" in rt and "fl~='stack traceback:'" in rt,
+          "★★ 取帧必须**跳过前两行**（消息 + `stack traceback:`）并留足 4 帧 —— "
+          "第一版写成「最多 4 行、再跳第 1 行」，实际只剩 assert/ptr 两帧、"
+          "**调用者正好被切掉**（离线用游戏自带 lua51.dll 实测抓出来的：middle 在第 5 行）")
+    check("traceback_cleared_after_use",
+          "P.err_tb=nil" in rt,
+          "★ 栈用完立刻清掉：否则下一帧的错误会继承上一次的栈（误归因）")
+    check("traceback_handler_does_not_add_upvalue",
+          "end,function(e)" in rt and "P.err_tb=" in rt,
+          "★ handler 写成内联匿名函数（自己捕获 P）—— tick 闭包的 upvalue 已近 60 上限")
+    check("traceback_debug_guarded",
+          "(debug and debug.traceback)" in rt,
+          "★ `debug` 可能被裁剪 ⇒ 必须判空，否则错误路径本身再抛一次")
+    #      ② 停机汇总：`host:error_summary()` 此前**定义了却没有任何调用点** ⇒
+    #        "被折叠掉的次数"从来没打出来过（frame_error 是按消息去重的）。
+    #        ⚠ 还必须**白名单**：emit 超过 60 行后只写白名单行，而汇总正是在停机那刻打的。
+    check("error_summary_is_emitted",
+          "host:error_summary()" in e and "emit('errors;kinds='" in e,
+          "★ 停机时必须打 frame_error 汇总（否则重复次数永远不可见）")
+    check("error_summary_before_close",
+          e.index("emit('errors;kinds='") < e.index("emit('disabled;applied='"),
+          "★ 汇总必须在 `close()` **之前** emit —— close 之后写的行会丢")
+    check("errors_line_whitelisted",
+          "and not line:match('^errors;')" in e,
+          "★★ `errors;` 必须进节流白名单：emit 超 60 行后只写白名单行，"
+          "而汇总正是在停机那一刻打的 ⇒ 不白名单化 = 静默丢弃 = 等于没加")
     # 4b) ★★ 同一机制接到 **ping 空地** 那条路（2026-10-09，用户要求）★★
     #     那条路不经过 priority:step —— 点是由 native_arrival 经 options.point_target 写的
     #     （native_arrival 在 SAFETY_LAYER 里、不可改）⇒ 提升放在**调用侧**的运行时。
-    rt = RUNTIME.read_text(encoding="utf-8")
     check("promote_state4_exported",
           "M.promote_state4=promote_state4" in r,
           "★ 提升函数从 priority 导出，供运行时复用（**不复制实现**，避免两套逻辑漂移）")
