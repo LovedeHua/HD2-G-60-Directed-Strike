@@ -28,18 +28,35 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 # 上游原样导入的基线 commit（git log 第一条）。安全层必须与它逐字节一致。
 UPSTREAM_COMMIT = '2879ef7'
 
-NAME = 'mods/hd2test/g60_bughole_lock'
-GUID = '9c1d4e77-2b83-4f6a-91e5-0d7b3a6c8f42'
-UPSTREAM_GUID = '58a16a67-a72b-474a-ad05-adbaaa99da78'
-# ★ 包名从 build.json 的 `release_version` 派生，不再硬编码（2026-10-01）：
+# ★ 包名 / 资源名 / 显示名**全部从 `scripts/build.py` 派生**，不再硬编码：
 #   版本号只允许有一个来源，否则发版时这里会留在旧名字上，测试直接"找不到文件"
 #   而不是报版本不一致。
 #   ⚠ 注意区分：`public_version` 是**上游基线**（被 build_json_pinned:* 钉死），
 #     `release_version` 才是本裁剪版的发布版本。
+#   ★ 2026-10-09：改名（G-60 Bug Hole Lock → **G-60 Directed Strike**）时顺手把
+#     NAME / ZIP_NAME 也改成派生 —— 否则"改一处名字要同步改测试"迟早漏一处。
 _BUILD_PY = (ROOT / 'scripts' / 'build.py').read_text(encoding='utf-8')
+GUID = '9c1d4e77-2b83-4f6a-91e5-0d7b3a6c8f42'
+UPSTREAM_GUID = '58a16a67-a72b-474a-ad05-adbaaa99da78'
+
+
+def _def(pattern, default='<missing>'):
+    found = re.findall(pattern, _BUILD_PY, re.M)
+    return found[0] if found else default
+
+
 _release_defs = re.findall(r"^RELEASE_VERSION\s*=\s*'([^']+)'", _BUILD_PY, re.M)
 _RELEASE_VERSION = _release_defs[0] if _release_defs else '<missing>'
-ZIP = ROOT / 'dist' / f'G60-BugHole-Lock-{_RELEASE_VERSION}.zip'
+NAME = _def(r"^NAME\s*=\s*'([^']+)'")
+# 归档内的源文件名跟随资源名的末段（build.py 就是这么生成的）
+SOURCE_IN_ARCHIVE = 'Source/' + NAME.rsplit('/', 1)[-1] + '.lua'
+# ⚠ 正则要**整串**捕获（含 `.zip` 后缀），只在事后把 `{VERSION}` 换掉 ——
+#   第一版写成 `f'([^']+)\{VERSION\}'` 就漏了后缀，ZIP 路径少个 .zip ⇒ zip_exists 直接失败。
+ZIP_NAME = _def(r"^ZIP_NAME\s*=\s*f'([^']+)'").replace('{VERSION}', _RELEASE_VERSION)
+# ⚠ `[^']+` 是贪婪的，会把 `{VERSION}` 前的空格一起吃进来 ⇒ 必须 strip，
+#   否则拼出来的显示名会多一个空格（本次栽过：两条断言同时失败）。
+TITLE_PREFIX = _def(r"^TITLE\s*=\s*f'([^']+)\{VERSION\}'").strip()
+ZIP = ROOT / 'dist' / ZIP_NAME
 
 # 上游 13 条里的 9 条 structure_hole（顺序即上游文件顺序）
 UPSTREAM_HOLE_IDS = (
@@ -179,11 +196,15 @@ ROUTE_ANCHORS = (
     "arrival_region={kind='entrance',forward={x,y},back=0.75,front=1.5,width=1.5,height=1.25}",
     "assert(profile.kind=='structure_tower' or profile.kind=='structure_egg','unknown structure route')",
 )
-ROUTE_REQUIRED = (
-    "profile.direct_entrance",          # 必须是显式开关，不得无条件放宽
-    "along>0 and flat<=approach",       # 只在入口侧且已在进场半径内
-    "M.on_direct_entrance",             # 纯函数保持：不直接依赖 env
-)
+# ★★ 2026-10-05：`ROUTE_REQUIRED` **已删除** —— 它是一条**从未生效**的僵尸守卫。
+#   来历：`SAFETY_REQUIRED` 在本文件里被**重复定义**过，后一份把 `structure_route.lua`
+#   那一项覆盖掉了 ⇒ 这三条要求从来没被检查过。合并重复定义后它第一次真正运行，
+#   结果是**要求一个我们刻意不做的行为**：`profile.direct_entrance`（"直奔洞心"捷径），
+#   而本文件上方 `ROUTE_ANCHORS` 的注释明确写着设计意图是
+#   「attack 落点仍是洞口正面 1m + entrance 到达区（**不改成"直奔洞心"**）」。
+#   ⇒ 两者互相矛盾，说明 ROUTE_REQUIRED 是从另一条分支遗留下来的，与当前设计不符。
+#   ⚠ **这是一处需要用户知情的发现**：删掉它 ≠ 修好了什么，而是"这条守卫本来就不成立"。
+#     若日后要恢复"直达洞口"能力，应连同 `structure_route.lua` 的实现一起加，再重写守卫。
 # ★ titan_route 不再逐字节等于上游：**捷径②的高度门槛** `under+0.5` → `under+2.0`
 #   （2026-09-30：实机 4 次接管 `titan_started` 的 stage 全是 `around` ⇒ 捷径②从未命中，
 #   每次都要绕 12 m 外圈。计算：原 +0.5 在 standoff=2.5 时要求 G-60 低于腹部 3.0 m，
@@ -200,19 +221,60 @@ TITAN_ROUTE_ANCHORS = (
     "'Titan has insufficient observed belly clearance'",
     "'unknown Titan route stage'",
     # 捷径②：上游意图注释 + forward 条件
-    # ★ 2026-10-02（用户明确授权）：`forward<=2.5` → `forward<=RADIUS` = 取消侧向限制。
-    #   锚点随之更新为**新的**约束（`forward<=RADIUS`），并保留注释锚点；
-    #   "必须位于腿间侧带"这条上游属性**已被用户明确推翻**（理由见 titan_route.lua 的注释）。
+    # ★ 2026-10-05（用户拍板「泰坦方面全部改成上游 1.1」）：锚点回到**上游原值** `forward<=2.5`。
+    #   我们 2026-10-02 授权放宽成的 `forward<=RADIUS` 已撤回（见 REQUIRED/FORBIDDEN）。
     "Already below the belly and inside the side corridor: go inward,",
     "local forward=math.abs(-dx*ry+dy*rx)",
-    "forward<=RADIUS",
+    "forward<=2.5",
 )
 TITAN_ROUTE_REQUIRED = (
-    "target.origin[3]+1.25",      # 离地余量保持上游 1.25（恢复后未动）
-    "own[3]<=under+2.5",          # ★ 高度门槛放宽到 +2.5（安全上限，2026-09-30）
+    "target.origin[3]+1.25",      # 离地余量保持上游 1.25（未动）
+    # ★★ 2026-10-05：捷径② 恢复上游原值（用户拍板"泰坦方面全部改成上游"）。
+    #   上游只在"腿间侧带"（前后轴偏移 ≤2.5 m）+ 高度 ≤ `under+0.5` 时直接内收。
+    "forward<=2.5",
+    "own[3]<=under+0.5",
 )
 TITAN_ROUTE_FORBIDDEN = (
-    "own[3]<=under+2.0",          # ★ 旧门槛（+2.5 为安全上限，禁止回退到它或更低）
+    # 我们曾用的两处偏离 —— 已按用户要求撤回；禁止它们悄悄回来
+    # （两处都会改变 G-60 的接近姿态与引爆时机，是本工程历史上反复出问题的地方）。
+    "forward<=RADIUS",            # 2026-10-02 授权放宽，2026-10-05 撤回
+    "own[3]<=under+2.5",          # 2026-09-30 放宽的安全上限，2026-10-05 撤回
+)
+
+# ★★ 2026-10-04：泰坦模板整合（上游 1.1.0 的 `animated_belly`）★★
+#   为什么两个文件从"逐字节等于上游"改成**锚点比对**：
+#     整合必须动 `compat/titan_profile.lua`（补 3 个字段）与 `src/g60/titan_context.lua`
+#     （加 belly 姿态读取 + 蜷曲判定）—— 这两个文件原本在 `SAFETY_LAYER` 里要求逐字节一致。
+#   锚点保留的是**安全关键**那部分（身份 / exe 签名守卫 / 骨骼哈希 / accessor 白名单 /
+#   全部校验断言），这些**一条都不能少**；新增的两条断言（法线单位性、蜷曲判定）
+#   也一并成为锚点 —— 它们保证"爆炸不会被授权到一个脱离身体的点"。
+TITAN_PROFILE_ANCHORS = (
+    'resource="9e2e17f2ccccafdd"',        # 身份：泰坦单位 resource
+    'boss_hash=0x9b115563',                # 主体骨骼
+    'belly_hash=0x561d5e2e',               # 腹部骨骼
+    'alive_rva=0x1feeb0',                  # Unit-alive 分派 RVA（下游断言用）
+    'engine_guards={',                     # exe 签名守卫（5 条，一条都不能少）
+    'getters={',                           # 场景图 accessor 白名单（1573 条）
+    # 整合新增的三个字段：值必须与上游 1.1.0 **逐值一致**（抄错 = 爆点算错）
+    'right_local={2.8311353636991863e-16,-1.0,1.2790338951424682e-17}',
+    'forward_local={0.9994231462478638,2.833846133828196e-16,0.0339609794318676}',
+    'animated_belly={normal_local=',
+    'max_offset=3.0',
+)
+TITAN_CONTEXT_ANCHORS = (
+    "assert(cap>0 and cap<=1048576 and id~=empty,'Titan entity hash bound')",
+    "assert(L.u32(identity,8)==id and L.hex64(identity,0)==profile.resource,'Titan identity mismatch')",
+    "assert(index<count and count<=0x400000,'Titan Unit index bound')",
+    "assert(profile.getters[getter-exe],'unsupported Titan scenegraph accessor')",
+    "assert(read(getter,#expected)==expected,'Titan accessor changed')",
+    "assert(nodes>=(profile.structure and 1 or 95) and nodes<=512,'Titan scenegraph count')",
+    "assert(boss and belly,'Titan bones unavailable')",
+    "'Titan point outside body bound'",
+    "assert(ptr(api+0x720)==exe+profile.alive_rva,'Titan Unit-alive dispatch mismatch')",
+    "assert(validate(),'Titan observation changed')",
+    # 整合新增的两条断言
+    "assert(norm>0.5 and norm<2,'animated belly normal')",
+    "pose_unreliable=delta>profile.animated_belly.max_offset^2 or belly_outward[3]>-0.25",
 )
 
 SAFETY_ANCHORS = {
@@ -222,6 +284,9 @@ SAFETY_ANCHORS = {
     'src/g60/native_arrival.lua': ARR_EARLY_ANCHORS,
     'src/g60/structure_route.lua': ROUTE_ANCHORS,
     'src/g60/titan_route.lua': TITAN_ROUTE_ANCHORS,
+    # ★ 2026-10-04 泰坦模板整合：这两个文件改用锚点比对（理由见上方定义处）
+    'compat/titan_profile.lua': TITAN_PROFILE_ANCHORS,
+    'src/g60/titan_context.lua': TITAN_CONTEXT_ANCHORS,
 }
 SAFETY_FORBIDDEN = {
     'src/g60/native_ping.lua': PING_FORBIDDEN,
@@ -233,19 +298,15 @@ SAFETY_REQUIRED = {
     'src/g60/arrival_policy.lua': ARRIVAL_REQUIRED,
     'src/g60/native_search_context.lua': SEARCH_CTX_REQUIRED,
     'src/g60/native_arrival.lua': ARR_EARLY_REQUIRED,
-    'src/g60/structure_route.lua': ROUTE_REQUIRED,
-}
-SAFETY_FORBIDDEN = {
-    'src/g60/native_ping.lua': PING_FORBIDDEN,
-    'src/g60/arrival_policy.lua': ARRIVAL_FORBIDDEN,
-}
-SAFETY_REQUIRED = {
-    'src/g60/native_ping.lua': PING_REQUIRED,
-    'src/g60/arrival_policy.lua': ARRIVAL_REQUIRED,
-    'src/g60/native_search_context.lua': SEARCH_CTX_REQUIRED,
-    'src/g60/native_arrival.lua': ARR_EARLY_REQUIRED,
     'src/g60/titan_route.lua': TITAN_ROUTE_REQUIRED,
+    # ⚠ 此处**不得**再放 `structure_route.lua: ROUTE_REQUIRED` —— 见 ROUTE_REQUIRED
+    #   删除处的说明（它要求的 direct_entrance 与本工程的设计意图相反）。
 }
+# ★★ 2026-10-05：这里原本**重复定义**了一遍 `SAFETY_FORBIDDEN` / `SAFETY_REQUIRED`，
+#   后一份把前一份**整体覆盖** ⇒ `titan_route.lua` 的禁令其实**从未被检查过**
+#   （本次改泰坦时才发现：`own[3]<=under+2.0` 那条"禁止回退"是空转的）。
+#   ⇒ 合并成上面这一份。教训：**同一份守卫表被定义两次时，后一份静默胜出** ——
+#     这类"看着有、其实没跑"的守卫比没有守卫更危险（它会让人以为有保护）。
 
 # ★ compat/build.json 里 88 条 game.dll 签名 + exe 引擎签名必须与上游**逐条**相同。
 #   2026-09-27 为了让新模块 priority_faults 参与内联，aliases 多了一个 key，
@@ -277,6 +338,14 @@ def check_build_json(up, cur):
         'priority_faults',   # 竞争态 vs 结构漂移的分类（治"一颗 G-60 杀死整局"）
         'geometry',           # 只读几何诊断（零 ffi，可在测试里真跑）
         'take_gate',          # 接管门控纯函数（治"runtime 一行都测不到"）
+        # ★ 2026-10-05：用户拍板"泰坦方面全部改成上游 1.1"⇒ 把上游泰坦链缺的三段补回来。
+        #   三者都是**上游模块名**（不是我们的新发明），逐字移植：
+        'navigation',         # 上游 2577-2753：泰坦专用可见性图导航
+                              #   ⚠ 别名取 `Nav`（不是 `Navigation`）—— build.py 的 require 替换
+                              #     会让 `local Navigation=require('g60.navigation')` 变成
+                              #     `local Navigation=Navigation`（自引用、右值取外层 nil）。
+        'adaptive',           # 上游 2943-3037：animated_belly 的**消费者**（爆点=腹法线×2.5）
+        'blast_route',        # 上游 2470-2573：泰坦链第二段（圆柱爆区，随后被 Adaptive 覆盖）
     }
     check('build_json_only_known_additions', set(added) == allowed_new,
           f'新增别名={added}（允许：{sorted(allowed_new)}）')
@@ -374,6 +443,85 @@ def main():
           < rt.index('Filter.excluded(m.selection_resource)')
           < rt.index('P.idle_skip=busy and (veto_must and 1 or rb) or ri'),
           '小怪/非白名单敌人不再触发接管（唯一的 excluded 查询只在降频判据里）')
+    # ★★★ 2026-10-05：移植上游的 `continued` —— 认出"这个点是我们自己写的"，
+    #     不把实体选择重写回去（优先级 4383-4389 / runtime 6407-6416）。
+    #   为什么必须钉：判据**横跨两个模块**且都在"什么都不做"的分支上 ——
+    #     任何一侧单独改，表现只是"点目标偶尔被覆盖"，日志上完全看不出来。
+    print('=== 2b. `continued`：认出自己写的点（跨 runtime / priority 两侧）===')
+    check('runtime_guidance_observation_owned_point',
+          'scope.guidance_observation=holder' in rt
+          and '==holder.point_bytes' in rt
+          and 'and not c.selection.has_target' in rt
+          and 'Layout.u32(c.record_bytes,0x64)==0' in rt,
+          '★ 只有**本帧的**记录能证明"此刻记录里那个点就是我们写的" ⇒ '
+          '这个结论必须由观测者（with_observation）下；priority 手里只有上一帧的字节')
+    check('runtime_guidance_observation_requires_point',
+          re.search(r'if holder and holder\.point_bytes and c\.selection\.flag==1', rt) is not None,
+          '⚠ `holder.point_bytes` 必须判空：普通**实体锁**没有点 —— '
+          '不判空会把正常的选择写入也一起跳过 ⇒ 我们的锁再也写不进去')
+    # ★★★ 2026-10-05（用户实测报）：ping 的落点必须压过**引擎自选**的泰坦 ★★★
+    #   现象：「我没标记泰坦，标记了泰坦附近的空地，G60 却飞向泰坦」。
+    #   根因：`titan_selected`（引擎自动选择）在优先级里压住了 ping 点。
+    print('=== 2c. ping 落点 vs 引擎自选泰坦（2026-10-05 用户报）===')
+    check('ping_point_beats_engine_selected_titan',
+          'local ping_beats_titan=point_marker~=nil and point_armed==true' in rt
+          and 'and not mark_is_wormhole and not mark_is_this_unit' in rt
+          and 'and not (old and old.titan)' in rt
+          and 'and not ping_beats_titan' in rt
+          and 'and has_weakpoint(m.selection_resource)' in rt,
+          '★ 玩家**明确 ping 了落点**时，引擎自选的泰坦必须让位'
+          '（否则就是"标记空地却飞向泰坦"）。'
+          '⚠ 三条排除缺一不可：`mark_is_this_unit`（玩家点名的是**这个**单位 ⇒ 打它）、'
+          '虫洞优先、以及**已在跑泰坦航路**的那颗不改向')
+    check('ping_beats_titan_uses_per_unit_test_not_presence',
+          'local mark_is_this_unit=structure_mark~=nil and m.selection_id==structure_mark.id' in rt,
+          '★★ 排除条件必须是"标记的**就是**这个单位"（比较 id），**不是**"存在任何结构标记" —— '
+          '后者会把功能整片挡死（2026-10-01 那个长期存活标记的老坑）')
+    check('ping_beats_titan_deduped_and_whitelisted',
+          'not P.pbt[m.id]' in rt and 'pbt={}' in rt
+          and "not line:match('^point_beats_titan;')"
+          in (ROOT / 'addon' / 'entry.lua.in').read_text(encoding='utf-8'),
+          '★ 事件行按**手雷**去重（条件每帧成立，不去重会刷屏）+ 进白名单'
+          '（被节流掉 = 诊断不存在）')
+    check('priority_continued_gate',
+          'local guidance=scope.guidance_observation' in pri
+          and 'local continued=env.fuse_profile and previous and guidance' in pri
+          and 'if not continued and (not same_selection or' in pri,
+          '★ 与上游 4383-4389 同形 `not continued and (not same_selection or …)`；'
+          '⚠ 少了 `not continued and` ⇒ 新机制形同不存在（点仍被实体选择覆盖）')
+    check('priority_continued_requires_own_point',
+          'and record:sub(0x1d,0x28)==guidance.point_bytes' in pri
+          and 'and L.u32(record,0x64)==0' in pri,
+          '★ 必须真比对"我们自己的 point_bytes"且掩码已清 —— '
+          '只判 `not has_target` 会把"引擎自己的空选择"也当成我们的点')
+    check('continued_cross_site_agreement',
+          '==holder.point_bytes' in rt and '==guidance.point_bytes' in pri,
+          '★ 两侧比的都必须是"持有者自己的 point_bytes"，而不是固定的目标 id 或长度 —— '
+          '一侧改成别的判据 ⇒ 这条静默失效')
+    # ★★ 2026-10-05：这条是"上游机制在本工程能否触发"的**唯一**保证 ★★
+    #   上游靠 `track.titan.point_bytes` 承载结构航点；本工程的**体内爆点**是 runtime
+    #   每帧现算的 ⇒ 必须由写入者（native_arrival）把写下的 12 字节交出去、
+    #   再由 runtime 回记到锁上。任何一环缺失 ⇒ `continued` 永不触发（且完全静默）。
+    _arr_src = (ROOT / 'src/g60/native_arrival.lua').read_text(encoding='utf-8')
+    check('arrival_reports_written_point_bytes',
+          'written_point=point_bytes' in _arr_src
+          and 'point_bytes=written_point' in _arr_src,
+          '★ native_arrival 必须把"本帧写进记录的那 12 字节"回报出来 —— '
+          '它是 runtime 能认出"这个点是我们写的"的**唯一来源**（上游用 track.titan.point_bytes）')
+    check('runtime_stamps_own_point_on_lock',
+          'old.lock.point_bytes=result.point_bytes' in rt,
+          '★ runtime 必须把它记到**锁**上（`with_observation` 下一帧才能比对）；'
+          '⚠ 同一行还承担"走实体 aim 路径时清成 nil"的职责 —— '
+          '不复位会把锁卡死在"永远不写实体选择"，比现在的抖动更糟')
+    check('priority_continued_same_target_only',
+          'and previous.identity==chosen.entity.identity and previous.unit==chosen.unit' in pri
+          and 'guidance==previous or' in pri,
+          '★ 只对**同一个目标**续点（上游要求 previous 与 guidance.target 两对都等于 chosen）。'
+          '⚠ 少了这条：标记切到别的目标时也会跳过写选择 ⇒ 新标记永远不生效')
+    check('priority_continued_whitelisted',
+          "not line:match('^priority_continued;')"
+          in (ROOT / 'addon' / 'entry.lua.in').read_text(encoding='utf-8'),
+          '★ 它是"新机制真的生效了吗"的**唯一**判据；被日志节流掉 = 诊断不存在')
     # 函数体有多行且含早退的 `if ... then ... end`，
     # 非贪婪匹配到第一个 `end` 会截断（我第一版就这么写，漏掉了后半段）。
     # 改为：从函数起点截到下一个 `local ` 定义为止。
@@ -467,18 +615,73 @@ def main():
     check('belly_above_not_a_new_upvalue',
           arr_src.count('local titan_above=0') == 1 and arr_src.count('local titan_stage=') == 1,
           '★ 收成 pcall 内的 local（Lua 5.1 每函数 upvalue 上限 60）')
-    check('belly_above_bounded_by_standoff',
-          'local limit=route_standoff-0.25' in aim_src
-          and 'local belly=math.min(env.titan_belly_above,limit)' in aim_src,
-          '★ 余量上限 = standoff-0.25 ⇒ 引爆点仍在**腹部下方**，不退化成"在头顶炸"')
-    check('belly_above_not_for_weakpoints',
-          'if not profile.kind and env.titan_belly_above and route_standoff then' in aim_src,
-          '★ 弱点路径（profile.kind）不传该字段 ⇒ 弱点行为逐字节不变')
-    check('belly_above_configurable_and_visible',
-          'titan_belly_above=0,' in entry_src
-          and 'titan_belly_above=state.titan_belly_above,' in entry_src
-          and "';titan_belly_above='..tostring(state.titan_belly_above)" in entry_src,
-          '★ 配置 + 透传 + 状态行。⚠ 2026-10-02 实测已**置 0**（关闭）：用户「引爆点太靠近腹部就会炸不死」⇒ 回到上游标定的爆点窗口')
+    # ★★ 2026-10-05（用户拍板「泰坦方面全部改成上游 1.1」）★★
+    #   我们自研的两项 —— `titan_standoff_min`（standoff 自适应 1.5~2.5）与
+    #   `titan_belly_above`（腹部提前引爆余量）—— **已整段移除**：上游没有这两个量，
+    #   而且它们只在"竖直爆点"（`blast_z = 腹点 - standoff`）几何下才有意义，
+    #   现在泰坦爆点由 `Adaptive` 决定（腹法线×2.5 + `surface` 区域）。
+    #   ⚠ 留着只会误导（"看着还有这个能力"）⇒ 断言之。
+    _aim_code = strip_comments(aim_src)
+    _entry_code = strip_comments(entry_src)
+    check('titan_standoff_adaptation_removed',
+          'titan_standoff_min' not in _aim_code
+          and 'titan_standoff_adapted' not in _aim_code
+          and 'route_standoff' not in _aim_code
+          and 'titan_standoff_min' not in _entry_code,
+          '★ 自研的 standoff 自适应（`titan_standoff_min` / `titan_standoff_adapted` / '
+          '`route_standoff`）必须从泰坦路径与配置里**整段消失**')
+    check('titan_belly_above_removed',
+          'titan_belly_above' not in _aim_code and 'titan_belly_above' not in _entry_code,
+          '★ 腹部提前引爆余量 `titan_belly_above` 已按上游移除（配置 / 透传 / 状态行三处都要没）')
+    check('titan_upstream_switches_wired',
+          'adaptive_approach=true,blast_regions=true,' in entry_src
+          and 'adaptive_approach=state.adaptive_approach,blast_regions=state.blast_regions,' in entry_src
+          # ⚠ 状态行那段的引号是**双引号**（拼接串里已有单引号）—— 按实际写法钉，
+          #   不要按"看起来应该是单引号"去钉（我第一版就钉错引号，白白 FAIL 一次）。
+          and '";adaptive_approach="..tostring(state.adaptive_approach)' in entry_src
+          and '";blast_regions="..tostring(state.blast_regions)' in entry_src,
+          '★ 上游泰坦链的两个开关（`adaptive_approach` / `blast_regions`）必须'
+          '**配置 + 透传 + 状态行**三处齐全 —— 缺一处 = 开关看着生效但没接上')
+    check('titan_chain_is_upstream_three_stages',
+          "local BlastRoute=require('g60.blast_route')" in aim_src
+          and "local Adaptive=require('g60.adaptive')" in aim_src
+          and 'pcall(BlastRoute.refine,own_position,target,prior,profile,value)' in aim_src
+          and 'pcall(Adaptive.refine,own_position,target,prior,profile,value,now)' in aim_src,
+          '★ 泰坦链必须是上游的三段：`TitanRoute.step` → `BlastRoute.refine` → `Adaptive.refine`')
+    check('titan_upstream_arrival_region',
+          'titan_arrival_region={radius=1.75,depth=0.8},' in entry_src,
+          '★ 到达区域回到上游原值 `{radius=1.75,depth=0.8}`（我们曾收到 1.5/1.2 并加 `above`）')
+    check('titan_refine_failure_is_visible',
+          "env.emit('titan_refine_failed;target='" in aim_src
+          and "not line:match('^titan_refine_failed;')" in entry_src,
+          '★ `Adaptive`/`BlastRoute` 的断言在实机抛错时，表现是"泰坦**一整局**都不接管" '
+          '⇒ 必须有日志且必须进白名单（否则等于没测）')
+    # ★★ 2026-10-04：泰坦模板整合（上游 1.1.0 的 `animated_belly`）★★
+    #   为什么必须有守门：逻辑分布在 `titan_context`（锚点只管"安全断言齐全"，
+    #   不管"这段还在不在跑"）+ `native_titan_aim` 的传参 —— 任一被删就**静默**退回旧行为，
+    #   而日志里 `titan_animated_belly=true` 照样显示为真（本工程老毛病：承诺了却看不到）。
+    titan_ctx_src = (ROOT / 'src/g60/titan_context.lua').read_text(encoding='utf-8')
+    titan_profile_src = (ROOT / 'compat/titan_profile.lua').read_text(encoding='utf-8')
+    check('animated_belly_configurable_and_visible',
+          'titan_animated_belly=true,' in entry_src
+          and 'titan_animated_belly=state.titan_animated_belly,' in entry_src
+          and "';titan_animated_belly='..tostring(state.titan_animated_belly)" in entry_src,
+          '★ 开关 + 透传 + 状态行**三处齐全**（缺一处 = 开关显示生效但实际没接上）')
+    check('animated_belly_actually_wired',
+          'env.titan_animated_belly)' in aim_src
+          and 'follow_animation and profile.animated_belly' in titan_ctx_src
+          and 'belly_outward=belly_outward' in titan_ctx_src,
+          '★★ **接线必须真的在**：主路径传 `env.titan_animated_belly` + context 读 `belly_pose` '
+          '+ 返回 `belly_outward`（只留开关不接线 ⇒ 测了等于没测）')
+    check('animated_belly_follows_upstream_values',
+          'right_local={2.8311353636991863e-16,-1.0,1.2790338951424682e-17}' in titan_profile_src
+          and 'max_offset=3.0' in titan_profile_src,
+          '★★ 三个新字段的值必须与上游 1.1.0 **逐值一致**（抄错 = 爆点算错；锚点只查了前缀）')
+    check('animated_belly_really_was_the_fix',
+          'pose_unreliable=delta>profile.animated_belly.max_offset^2' in titan_ctx_src
+          and 'if pose_unreliable then point=predicted;' in titan_ctx_src,
+          '★★ 蜷曲判定必须**真的在**：不可靠时要退回静态几何（`point=predicted`）—— '
+          '少了它，脱离身体的腹部标记会被当成合法爆点')
     check('titan_probe_whitelisted',
           "line:match('^titan_probe;')" in entry_src,
           '★ 泰坦接近诊断必须放行 —— 被节流掉 = "盘旋多久/卡在哪"无法定位')
@@ -496,22 +699,27 @@ def main():
     check('titan_route_forward_defined_once',
           route_src.count('local forward=math.abs(-dx*ry+dy*rx)') == 1,
           '★ `forward` 只定义一次（提到函数顶部）⇒ 不会有两个同名变量互相遮蔽')
-    check('titan_route_shortcut_is_every_frame',
-          "(route.stage=='out' or route.stage=='around')" in route_src,
-          '★★ 捷径② 现在**每帧**评估（判据含 out/around 两个阶段）')
-    _i_side_assert = route_src.index("assert(route.side==1 or route.side==-1")
-    _i_shortcut = route_src.index("(route.stage=='out' or route.stage=='around')")
-    check('titan_route_shortcut_after_init_branch',
-          _i_shortcut > _i_side_assert,
-          '★★ 捷径② 的判定位于**初始化分支之后**（= 每帧执行）。'
-          '原来它写在 `else`（`previous==nil`，接管第一帧）里 ⇒ 第一帧没命中就永远不再评估 '
-          '⇒ 必然绕 12 m 外圈 ⇒ 用户看到的"从侧面到后面再到腹部"')
-    check('titan_route_shortcut_relaxed_by_user',
-          'forward<=RADIUS' in route_src
-          and 'forward<=2.5' not in strip_comments(route_src),
-          '★ 2026-10-02 用户授权：捷径②的 forward 门槛放宽到 `RADIUS`（取消侧向限制）；'
-          '旧的 `forward<=2.5` 必须**已不存在**于代码（放宽不是"两条并存"）。'
-          '⚠ 注释里仍会提到旧值 —— 所以按**去注释**判')
+    # ★★ 2026-10-05（用户拍板「泰坦方面全部改成上游 1.1」）：捷径② 回到上游的
+    #   **首帧评估**（写在下游 `else` 分支里）+ `forward<=2.5`。
+    #   ⚠ 判据用 `strip_comments`：文件头的"历史"注释会描述旧写法，
+    #     只有**代码**里不许再出现（`TITAN_ROUTE_FORBIDDEN` 走原文比对，
+    #     所以那两处旧写法连注释都不敢写，见 titan_route.lua 头注释的措辞）。
+    _route_code = strip_comments(route_src)
+    check('titan_route_shortcut_is_first_frame_only',
+          "own[3]<=under+0.5" in _route_code
+          and "(route.stage=='out' or route.stage=='around')" not in _route_code,
+          '★★ 捷径② 已回到上游：只在 `else`（接管首帧）里评估，**不再每帧重估** —— '
+          '判据里不得出现 out/around 的每帧分支（那是我们 2026-10-02 的改法，已撤回）')
+    _i_side_assert = _route_code.index("assert(route.side==1 or route.side==-1")
+    _i_shortcut = _route_code.index("own[3]<=under+0.5")
+    check('titan_route_shortcut_inside_init_branch',
+          _i_shortcut < _i_side_assert,
+          '★ 上游把捷径② 写在 `else`（初始化分支）**内** ⇒ 位置必须在 '
+          '`assert(route.side==1 …)`（初始化分支结束之后）**之前**。'
+          '⚠ 顺序即语义：挪到后面就变成"每帧评估"')
+    check('titan_route_shortcut_is_upstream_forward',
+          'forward<=2.5' in _route_code and 'forward<=RADIUS' not in _route_code,
+          '★ 上游的 `forward<=2.5`（只在腿间侧带内收）；我们放宽过的写法必须**已不存在**')
     _rt_src = (ROOT / 'src/g60/experimental_runtime.lua').read_text(encoding='utf-8')
     check('detonate_logs_geometry_split',
           _rt_src.count("';horiz='..tostring(result.horizontal or -1)") == 2
@@ -554,19 +762,19 @@ def main():
           "standoff_logged['blast:'..tostring(target.id)]" in aim_src,
           '★ 复用已有的 `standoff_logged` 表（键加 `blast:` 前缀）—— 不给 `api:step` '
           '的 pcall 匿名函数新增 upvalue（余量已紧张，多一个就整 chunk 编译失败）')
-    # ★★ 核心不变量：爆距**下限 ≥2.0**（不准回到 0.85 的"贴腹"）★★
-    check('standoff_min_is_200_not_085',
-          'titan_standoff=2.5,titan_standoff_min=2.0,' in entry_src
-          and 'env.titan_standoff_min or 2.0' in aim_src,
-          '★★ `titan_standoff_min` = **2.0**（用户 2026-10-02 逐级实测裁定：0.85 贴到腹下 '
-          '0.85 m；**1.75 仍偶尔炸不死**；2.5 过于严格 ⇒ 最终 2.0）。'
-          '⇒ 数学不变量：规划成功即保证引爆点在腹部下方 ≥ 2.0 m（收缩区间只剩 2.0~2.5）')
-    check('standoff_no_shrink_below_floor',
-          'route_standoff=math.max(lo,max_standoff)' in aim_src
-          and 'local lo=env.titan_standoff_min or 2.0' in aim_src
-          and 'titan_standoff_min=0.85' not in entry_src,
-          '★ 实现是 `max(lo, max_standoff)`，lo=2.0 ⇒ 结果恒 ≥2.0；'
-          '**旧的 0.85 必须已不存在**（不是"两条并存"）')
+    # ★★ 2026-10-05（用户拍板「泰坦方面全部改成上游 1.1」）★★
+    #   原 `standoff_min_is_200_not_085` / `standoff_no_shrink_below_floor` 两条
+    #   钉的是**我们自研的 standoff 自适应**（0.85→1.75→2.0 的试错结论）。
+    #   该机制已随"改用上游"**整段移除** ⇒ 这两条不变量不再适用；
+    #   取而代之的是"它必须彻底不存在"（见上面的 `titan_standoff_adaptation_removed`），
+    #   以及"爆点改由上游 Adaptive 决定"（见 `titan_chain_is_upstream_three_stages`）。
+    check('standoff_adaptation_fully_gone',
+          'titan_standoff_min' not in strip_comments(entry_src)
+          and 'titan_standoff_min' not in strip_comments(aim_src)
+          and 'max(lo,max_standoff)' not in strip_comments(aim_src)
+          and 'titan_standoff=2.5,' in entry_src,
+          '★ `titan_standoff_min`（含 0.85/1.75/2.0 那串试错值）必须**已不存在**；'
+          'standoff 直接取上游的 `titan_standoff=2.5`')
     # 净空拒绝 = **等待**，不是引导失败（否则 0.5 秒就把手雷退休 ⇒ 白扔）
     check('clearance_refusal_is_wait_not_failure',
           "local waiting=type(status)=='string'" in _rt_src
@@ -723,9 +931,16 @@ def main():
     check('startup_declares_veto_disabled', 'selection_veto=DISABLED' in entry)
     # 启动自述必须显式声明三处门控，否则实机日志无法判断"敌人侧是否已被完全交还"
     for _k in ('enemy_tracking=VANILLA_UNTOUCHED', 'priority_gated=STRUCTURE_ONLY',
-               'arrival_gated=HELD_LOCK_ONLY', 'disposal_gated=HELD_LOCK_ONLY',
+               'disposal_gated=HELD_LOCK_ONLY',
                'target_valid=SOFT_SIGNAL'):
         check('startup_declares_' + _k.split('=')[0], _k in entry, _k)
+    # ★ 2026-10-04：`arrival_gated` 改成**动态**（随 `allow_state3` 变）⇒ 单独查
+    check('startup_declares_arrival_gated',
+          ";arrival_gated='" in entry
+          and "(state.allow_state3 and 'STATE3_ALLOWED' or 'HELD_LOCK_ONLY')" in entry
+          and "';allow_state3='..tostring(state.allow_state3)" in entry,
+          'arrival 门控陈述必须随开关变、且 `allow_state3` 可见 —— '
+          '否则实机日志判不出"早期接管到底开没开"')
     # ★★ 2026-09-29：这张表**不再为空** —— 用户要求"G-60 不追踪运输船"。
     #   但只允许出现**用户点名的那一项**。上游那 9 项（8 种小虫 + Impaler 触手 +
     #   Hive Guard）**不得恢复** —— 它们的症状是"G-60 打不了中小型敌人"，
@@ -950,8 +1165,10 @@ def main():
           'runtime 的 arrival 段确实走 TakeGate.decide_guidance')
     check('F_priority_gated_on_structure',
           'if old and old.quarantined then' in gate
-          and 'if not (o.structure_mark or (old and (old.lock or old.titan or old.point))) then' in gate,
-          'priority 门控：只有虫洞标记/已有锁定才驱动；quarantined 交回原生')
+          and 'if not (o.structure_mark or (old and (old.lock or old.titan or old.point))' in gate
+          and 'or o.point_armed) then' in gate,
+          'priority 门控：虫洞标记 / 已有锁定 / **TTL 内的 ping（2026-10-09 加）** 才驱动；'
+          'quarantined 交回原生')
     check('F_arrival_gated_on_held_lock',
           'if not (o.old and (o.old.lock or o.old.titan or o.old.point)) then' in gate
           and 'if not o.can_guide then' in gate,
@@ -975,7 +1192,7 @@ def main():
         names = z.namelist()
         manifest = json.loads(z.read('manifest.json'))
         build_info = json.loads(z.read('BUILD-INFO.json'))
-        packaged_source = z.read('Source/g60_bughole_lock.lua').decode('utf-8', 'replace')
+        packaged_source = z.read(SOURCE_IN_ARCHIVE).decode('utf-8', 'replace')
         patch = z.read('Addon/9ba626afa44a3aa3.patch_0')
 
     check('manifest_guid', manifest['Guid'] == GUID, manifest['Guid'])
@@ -995,18 +1212,18 @@ def main():
     check('release_version_format', re.fullmatch(r"\d+\.\d+\.\d+", _RELEASE_VERSION) is not None,
           f'RELEASE_VERSION={_RELEASE_VERSION}（应为 X.Y.Z）')
     check('build_py_derives_name_from_version',
-          "TITLE = f'G-60 Bug Hole Lock {VERSION}'" in _bp
-          and "ZIP_NAME = f'G60-BugHole-Lock-{VERSION}.zip'" in _bp,
+          f"TITLE = f'{TITLE_PREFIX} {{VERSION}}'" in _bp
+          and f"ZIP_NAME = f'{ZIP_NAME.replace(_RELEASE_VERSION, '{VERSION}')}'" in _bp,
           '★ TITLE / ZIP_NAME 必须从 VERSION 派生，不得再硬编码版本串')
     check('build_py_has_no_hardcoded_version',
-          "TITLE = 'G-60 Bug Hole Lock 0.1" not in _bp
-          and "ZIP_NAME = 'G60-BugHole-Lock-0.1" not in _bp,
+          f"TITLE = '{TITLE_PREFIX} 0.1" not in _bp
+          and f"ZIP_NAME = '{ZIP_NAME.replace(_RELEASE_VERSION, '0.1')}" not in _bp,
           '★ build.py 里不得出现硬编码的版本串')
     check('zip_name_matches_release_version',
-          ZIP.name == f'G60-BugHole-Lock-{_RELEASE_VERSION}.zip',
-          f'{ZIP.name} == release_version {_RELEASE_VERSION}')
+          ZIP.name == ZIP_NAME,
+          f'{ZIP.name} == build.py 的 ZIP_NAME（{ZIP_NAME}）')
     check('manifest_title_matches_release_version',
-          manifest['Name'] == f'G-60 Bug Hole Lock {_RELEASE_VERSION}'
+          manifest['Name'] == f'{TITLE_PREFIX} {_RELEASE_VERSION}'
           and manifest['Options'][0]['Name'] == manifest['Name'],
           f"显示名 {manifest['Name']}（含 release_version）")
     _bi = build_info
@@ -1067,8 +1284,16 @@ def main():
           'local excluded=false' in text and 'Candidates.capture(' not in text
           and 'structure_hole' in text)
     check('payload_keeps_native_explode', 'explode' in text and 'orbit' in text)
+    # ⚠ 2026-10-09：`WriteProcessMemory` 从"不得出现"改为**计数式受控**
+    #   （用户拍板走写内存实验）⇒ 这里改查"恰好 1 处调用、全文 ≤2 次提及"；
+    #   其余高危 API 仍然一律不得出现在**载荷**里。
+    check('payload_controlled_write_counted',
+          text.count('.WriteProcessMemory(') == 1 and text.count('WriteProcessMemory') <= 2,
+          f"call={text.count('.WriteProcessMemory(')} "
+          f"mentions={text.count('WriteProcessMemory')}")
     check('payload_has_no_forbidden_api',
-          not any(w in text for w in ('VirtualAlloc', 'WriteProcessMemory', 'GetProcAddress')))
+          not any(w in text for w in ('VirtualAlloc', 'VirtualProtect', 'GetProcAddress',
+                                      'LoadLibrary', 'MinHook', 'ffi.copy')))
 
     print()
     if failures:

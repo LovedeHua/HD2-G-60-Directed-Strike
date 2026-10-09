@@ -25,16 +25,28 @@ CONFIG = json.loads((ROOT / 'compat/build.json').read_text())
 #
 #   事故背景：发 Release v0.1.2 时成品包还叫 `G60-BugHole-Lock-0.1.0.zip`
 #   —— 因为 TITLE / ZIP_NAME 把 '0.1.0' 硬编码在代码里，与 Release 标签完全脱节。
-RELEASE_VERSION = '0.1.6'
+RELEASE_VERSION = '0.1.7'
+# ★ v0.1.7 的内容（2026-10-09，全部实机验证）：
+#   · **无敌人时也能炸毁标记虫洞** —— 强制提升 state=4（`force_lock_enabled`，
+#     本工程唯一的受控写通道；实机 5 颗雷 / 5 个虫洞全部炸毁）。
+#   · **ping 空地路同样支持无敌人** —— 同一套提升 + 门控把"TTL 内的 ping"
+#     当成与标记同级的玩家意图（实机生效）。
+#   · 清理：研究脚手架（code_probe 默认关闭、候选组探针移除）。
+#   ⚠ 这是本工程第一次绕过引擎 API 直接写游戏状态；`force_lock_enabled=false` 一键回退。
 VERSION = RELEASE_VERSION
 # ★ 裁剪版身份：独立 GUID + 独立资源名 + 独立标题，与上游官方包互不覆盖(管理器槽位二选一)。
-NAME = 'mods/hd2test/g60_bughole_lock'
+# ★ 2026-10-09 改名（用户拍板）：**G-60 Bug Hole Lock → G-60 Directed Strike**。
+#   旧名（Bug Hole Lock）是 v0.1.6 之前的能力写照；v0.1.7 之后它不只打虫洞，而是
+#   「**只打玩家点的目标**」（虫洞 / 构筑 / 泰坦 / ping 空地）—— 这也正是它与上游
+#   `Smart Targeting` 的本质区别。三处名字（资源名 / 显示名 / 包名）一起改，
+#   归档槽位 `ARCHIVE` 与 `GUID` **不动** ⇒ 加载器那边是原地升级，不是新 mod。
+NAME = 'mods/hd2test/g60_directed_strike'
 GUID = '9c1d4e77-2b83-4f6a-91e5-0d7b3a6c8f42'
-TITLE = f'G-60 Bug Hole Lock {VERSION}'
+TITLE = f'G-60 Directed Strike {VERSION}'
 # ★ ZIP_NAME / TITLE 都从 `release_version` 派生（见文件头注释）。
 #   `derived_from` 里的 'etxp/HD2-G60-Smart-Targeting 0.1-beta.1' 指的是**上游基线**，
 #   与我们的版本号无关，**不要**跟着改。
-ZIP_NAME = f'G60-BugHole-Lock-{VERSION}.zip'
+ZIP_NAME = f'G60-Directed-Strike-{VERSION}.zip'
 ARCHIVE = 'Addon/9ba626afa44a3aa3.patch_0'
 
 
@@ -153,7 +165,22 @@ def assemble():
     text = text.replace('@@RUNTIME_BASELINE@@', CONFIG['runtime_version'])
     text = text.replace('@@GAME_GUARDS@@', CONFIG['game_guards_lua'])
     text = text.replace('@@ENGINE_CODE@@', CONFIG['engine_code'])
-    for forbidden in ('VirtualAlloc', 'VirtualProtect', 'WriteProcessMemory', 'LoadLibrary',
+    # ★★ 2026-10-09 受控例外（用户明确拍板"走写内存这条路"）★★
+    #   `WriteProcessMemory` 从"一律禁止"改为**计数式允许**：
+    #     · 恰好 1 处调用（`.WriteProcessMemory(`）—— 防被顺手复制到别处；
+    #     · 全文提及 ≤ 2 次（cdef 声明 + 那唯一一处调用）。
+    #   配套硬边界写在 addon/entry.lua.in 的 write() 与 src/g60/native_priority.lua
+    #   的 promote_state4 里，并有守门钉着：单次 ≤64 字节、写前复核 + 写后回读、
+    #   只允许用于状态记录的 3 个 dword（state/behavior/mid）。
+    #   其余高危能力（VirtualAlloc / VirtualProtect / LoadLibrary / GetProcAddress /
+    #   MinHook / ffi.copy）**仍然一律禁止** —— 那些才是真正的高危面。
+    assert text.count('.WriteProcessMemory(') == 1, (
+        'WriteProcessMemory 必须恰好 1 处调用（受控例外），实际 '
+        + str(text.count('.WriteProcessMemory(')) + ' 处')
+    assert text.count('WriteProcessMemory') <= 2, (
+        'WriteProcessMemory 全文提及不得超过 2 次（cdef + 调用点），实际 '
+        + str(text.count('WriteProcessMemory')) + ' 次')
+    for forbidden in ('VirtualAlloc', 'VirtualProtect', 'LoadLibrary',
                       'GetProcAddress', 'MinHook', 'ffi.copy', "require('g60.", '@@'):
         assert forbidden not in text, 'Unexpected runtime capability: ' + forbidden
     assert 'native_lifetime_verified=true' not in text
@@ -203,7 +230,7 @@ def package_files():
         for path in ROOT.glob(pattern):
             if path.is_file():
                 files[path.relative_to(ROOT).as_posix()] = path.read_bytes()
-    files['Source/g60_bughole_lock.lua'] = body
+    files['Source/' + NAME.rsplit('/', 1)[-1] + '.lua'] = body
     files['BUILD-INFO.json'] = json_bytes({'version': VERSION, 'runtime_baseline': CONFIG['runtime_version'],
         'derived_from': 'etxp/HD2-G60-Smart-Targeting 0.1-beta.1',
         'entry_sha256': sha(entry), 'resource_name': NAME, 'resource_id': f'{resource_hash(NAME):016X}',

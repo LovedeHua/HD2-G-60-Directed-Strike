@@ -16,7 +16,7 @@
 --   ⇒ 本文件只登记后者。**不要**把虫洞的 offset 搬过来（两者判据不同）。
 --
 -- 资源身份（离线反查，2026-10-03）：
---   MurmurHash64A 命中 10.7 万条名字库（`hd2-charge-mod/offline/datalibrary/hashes.txt`）：
+--   MurmurHash64A 命中 10.7 万条名字库（`Hd2-Armory-Tuning-Bench/offline/datalibrary/hashes.txt`）：
 --     4232ee48e2cfd24e = content/env_cyborg/gameplay/colony_cyborg_spawner/cyborg_colony_spawner_base
 --   交叉来源：Darctor `ref_rawdata/Hash.csv` 第 766 行
 --     「机器人-杂项 / Bulk Fabricator / 巨型构筑者」= 十进制 4770136952149103182（= 同一个值）。
@@ -144,4 +144,5 @@ sites["4232ee48e2cfd24e"]={resource="4232ee48e2cfd24e",lift=LIFT,
 --   runtime 侧：每颗**新的** G-60 推进一档（**不是每帧**推进 —— 否则同一颗手雷
 --   会在飞行途中不停换目标点，等于没测；见 `P.swk`）。
 sites.scan=SCAN
+
 return sites

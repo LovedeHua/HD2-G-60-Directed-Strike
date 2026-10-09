@@ -34,6 +34,17 @@ M.rejected_targets={}
 -- 让位之后如果结构标记这一帧**拿不到**（被别的 G-60 预约 / 超距），
 -- 下一帧会再次让位 ⇒ 不按 (G-60, 结构) 去重就会逐帧刷屏。
 M.yield_reported={}
+-- 「认出自己写的点、跳过冗余 setter」的去重集合（2026-10-05）。
+-- 理由同 yield_reported：这条日志是"新机制真的生效了吗"的**唯一**判据，
+-- 而它**每帧**都成立（点被引擎保留着就一直成立）⇒ 不去重会逐帧刷屏。
+-- 按 (G-60, 目标) 去重；带容量上限，长会话也不会无限增长。
+M.continued_reported={}
+M.continued_n=0
+-- ★★ 目标字段探针的去重集合（2026-10-08）★★
+--   按 (来源, entity id) 去重：同一个目标只打一条。
+--   它是"引擎凭什么接受/拒绝这个目标"的**唯一判据** ——
+--   配合 0x13e1b50 / 0x4a9710 的反汇编，用来定位是哪条判据挡掉虫巢。
+M.probed_fields={}
 local setter=ffi.typeof('void (*)(void **, const void *)')
 local valid=ffi.typeof('bool (*)(void *, uint32_t, const void *)')
 -- ★ 故障域隔离（2026-09-27 实机事故的直接修复）★ 判定规则见 g60.priority_faults：
@@ -43,6 +54,118 @@ local valid=ffi.typeof('bool (*)(void *, uint32_t, const void *)')
 --
 -- 判定必须从 g60.priority_faults 走（tests/test_priority_fault_isolation.py 真跑它），
 -- 不能就地硬编码表 —— 上游那种"无差别永久停手"就是没有这一步。
+-- ★★ 目标字段探针（2026-10-08）★★
+--   把"被标记目标"的三个关键字段 + 引擎自己的 target_valid 结论打一行出来。
+--   目的：对比「引擎拒绝的虫洞」与「引擎接受的敌人」到底差在哪个字段 ——
+--   光有反汇编只知道判据长什么样，还得有实际值才知道是哪一条在挡。
+--   三个偏移来自 target_valid / category_mask 的反汇编（不是猜的）：
+--     +0x08  f08 —— 作 hash key 参与全局集合查询，并喂给 0x4a9710（取 bit25 标志）
+--     +0x0c  f0c —— 喂给间接调用与 0x13e1b50（返回值 >=1 即拒）
+--     +0x4c  f4c —— category_mask 拿它做位测试（实体类别掩码）
+--   ⚠ 纯只读：只做 read 与 target_valid（只读查询，本工程在别处早就在调它当门槛）。
+--   ⚠ 按 (来源,id) 去重；不写任何内存、不改任何决策。
+local function probe_target_fields(scope,env,e,tag)
+    if not (env and env.target_fields_probe and env.emit and scope and e and e.address) then
+        return
+    end
+    local key=tostring(tag)..':'..tostring(e.id)
+    if M.probed_fields[key] then return end
+    M.probed_fields[key]=true
+    local function field(off)
+        local ok,v=pcall(scope.read,e.address+off,4)
+        if not ok or type(v)~='string' or #v<4 then return 'ERR' end
+        local b1,b2,b3,b4=v:byte(1,4)
+        return tostring(b1+b2*256+b3*65536+b4*16777216)
+    end
+    local okq,verdict=pcall(scope.calls.target_valid,nil,e.id,
+        ffi.cast('const void *',e.address))
+    env.emit('target_fields;tag='..tostring(tag)
+        ..';entity='..tostring(e.id)..';resource='..tostring(e.resource)
+        ..';f08='..field(8)..';f0c='..field(0xc)..';f4c='..field(0x4c)
+        ..';valid='..(okq and tostring(verdict) or ('ERR:'..tostring(verdict))))
+end
+-- ★★ 状态记录里的代码指针探针（2026-10-09）★★
+--   目的：找"让 G-60 开始索敌 / 状态转换"的函数。
+--   做法：手雷的 0x1f8 状态记录里若存着函数指针或 vtable 指针，把它们挑出来。
+--   判据：小端 qword 的高 32 位为 0（用户态指针）且值落在**代码节**
+--         [base+0x1000, base+0x2110a93) —— 实测该节 char=0x60000020(code)，
+--         其余大节 char=0x40000040(data) ⇒ 不掺数据指针。
+--   ⚠ 零新增内存读取：`record` 是调用方本来就已经读好的字符串，这里只是扫它。
+--   ⚠ 纯只读、按手雷去重（同一颗只打一条）。
+local function probe_record_pointers(env,record,gid)
+    if not (env and env.code_probe_enabled and env.emit and record) then return end
+    local key='rec:'..tostring(gid)
+    if M.probed_fields[key] then return end
+    M.probed_fields[key]=true
+    local out={}
+    for off=0,0x1f8-8,8 do
+        local q1,q2,q3,q4,q5,q6,q7,q8=record:byte(off+1,off+8)
+        if q1 and q5==0 and q6==0 and q7==0 and q8==0 then
+            local v=q1+q2*256+q3*65536+q4*16777216
+            if v>=env.base+0x1000 and v<env.base+0x2110a93 then
+                out[#out+1]=string.format('%x@%x',v-env.base,off)
+            end
+        end
+    end
+    if #out>0 then
+        env.emit('recptr;entity='..tostring(gid)..';n='..tostring(#out)
+            ..';list='..table.concat(out,','))
+    end
+end
+-- ★★ 强制提升 state=4（2026-10-09，用户拍板"走写内存这条路"）★★
+--
+--   背景（完整因果链见工作日志）：引擎**只在"候选分数 > 0"时**才置 state 4 ——
+--   seek 函数 0xbafb0 里：阈值 `xorps xmm9,xmm9`(=0.0)、取最大分、
+--   `0xbbc2e test ebx,ebx; js 0xbbc49` 无候选就**直接返回、不置 4**；
+--   而**建筑/虫洞从来不在引擎的自动候选列表里**（上游原话
+--   `Never discover structures from the automatic candidate list`）
+--   ⇒ 无敌人时永远进不去 state 4 ⇒ 引导不跑 ⇒ 我们写的点被每 0.25 s 一次的
+--   orbit（state-3 转换，重置飞行计时器）冲掉 ⇒ 手雷原地飘走、超时自爆。
+--
+--   做法：**完全照抄引擎自己的提升块**（偏移与值都来自反汇编，不是猜的）：
+--     game.dll 0xbbc91  `mov dword [rax+8],4`          → [obj+8] = 4   （state）
+--     game.dll 0xbbc9c  `mov dword [rax+4],0xffffffff` → [obj+4] = -1
+--     game.dll 0xbbcb0  `mov dword [rcx],4`            → [obj+0] = 4   （behavior）
+--   其中 `obj = c.state_address`（`clear(pair,…)` 内部就是 `mov r8,[rcx+8]`，
+--   而 pair[1] 正是 state_address）。
+--
+--   ⚠ 只写这 **3 个 dword（12 字节）**，不碰记录里任何别的字段。
+--   ⚠ 写前复核：必须仍是 behavior=4 且 state∈{2,3}（否则一个字都不写）。
+--   ⚠ 写后回读：必须变成 4；写前/写后值都进 `force_lock` 日志（进白名单）。
+--   ⚠ **用户点名的风险**：候选分数 > 0 那道门是我们**绕过**的。如果引擎的引导
+--     内部还复查候选/分数，强写 state 就不够 —— 那时日志会表现为
+--     "state=4 了但手雷仍不飞"，届时要伪造候选数据（远比这侵入），届时再议。
+local function promote_state4(env,scope,c)
+    if not (env and env.force_lock_enabled~=false and env.write and scope and c) then
+        return false,'DISABLED'
+    end
+    local rec=scope.read(c.state_address-8,12)
+    local behavior,mid,state=L.u32(rec,0),L.u32(rec,4),L.u32(rec,8)
+    if behavior~=4 then return false,'BEHAVIOR_'..tostring(behavior) end
+    if state~=2 and state~=3 then return false,'STATE_'..tostring(state) end
+    local ok1=env.write(c.state_address+8,'\4\0\0\0')
+    local ok2=env.write(c.state_address+4,'\255\255\255\255')
+    local ok3=env.write(c.state_address,'\4\0\0\0')
+    local after=L.u32(scope.read(c.state_address,4),0)
+    return after==4,('state='..tostring(state)..'->'..tostring(after)
+        ..';mid='..tostring(mid)..';w='..tostring(ok1 and 1 or 0)
+        ..tostring(ok2 and 1 or 0)..tostring(ok3 and 1 or 0))
+end
+-- ★ 2026-10-09 导出：experimental_runtime 的 **ping 空地**路要用同一套提升
+--   （那条路不经过 priority:step，点是由 native_arrival 经 options.point_target 写的）。
+--   语义完全一致：开关检查 / 写前复核 / 写后回读 / 只写 3 个 dword。
+M.promote_state4=promote_state4
+-- ★ 2026-10-09：候选组探针（原 probe_candidate_groups / cand_probe_enabled）**已移除**。
+--   它服务于「写入候选分数」那条路；实机结论是**那条路不需要**：
+--   强制提升 state=4 之后引擎自己接管了引导（5/5 炸毁虫洞）。
+--   保留的知识（别丢，见 README 与工作日志）：
+--     · 候选分数**确实是内存字段** `候选记录+0x44`（float；引擎在 0xbbac9 写 max(分,0)）；
+--     · 接受判据 = 分数>0 且 `+0x48`≠0 且 `+0x4c`≠0（native_candidates.lua:29）；
+--     · 但提升判据读的是 seek 函数**栈帧副本**（0xbbb81），且**虫洞从来不在候选列表里**
+--       ⇒ 无敌人时无候选可评分 ⇒ 只能靠 force_lock 直接提升状态。
+--     · 组布局（备用）：manager=[base+0x3326548]、组记录=key*0x13f8+header[0x50]、
+--       计数 0x310/0x818/0xd20、数组 0x318/0x820/0xd28、条目步长 80。
+--     ⚠ 该 manager 槽在无候选时读到 `0xffffffff`（哨兵值），当时没产出有效数据。
 function M.new(env)
     local disabled,busy=false,false
     -- early_probe 的去重状态：只在"水平距离跨过 0.5m 档位"或首次/状态翻转时打。
@@ -58,6 +181,15 @@ function M.new(env)
             assert(scope.experimental and not scope.native_lifetime_verified
                 and scope.reference_is_observation_key,'experimental priority scope required')
             local c=scope.prepared;local record=c.record_bytes
+            -- ★★ 状态记录里的代码指针（2026-10-09）★★
+            --   找"让 G-60 开始索敌的函数"的第二条路子：手雷的 0x1f8 状态记录里
+            --   如果存着函数指针/vtable，那就是行为代码的直接线索。
+            --   ⚠ **零新增读取** —— `record` 是这一步本来就已经读好的 Lua 字符串，
+            --     只是扫它内部的小端 qword，看哪些落在**代码节**里。
+            --   ⚠ 只取第一个节 [0x1000,0x2110a93)：本工程实测该节 char=0x60000020(code)，
+            --     其余大节是 data ⇒ 这个范围天然只捞代码指针，不掺数据。
+            --   ⚠ 只打"相对基址的 RVA + 字段偏移"，一行一条，按手雷去重。
+            probe_record_pointers(env,record,L.u32(c.identity_bytes,8))
             assert(c.ownership.local_ownership_observed and scope.validate(),'priority scope unavailable')
             -- ★ 末项 `L.u32(record,8)==4` 就是 state==4 的硬门槛。
             --   state-3 实验打开时放宽到 3（**只用于设置目标**，不用于航点/引爆）；
@@ -176,6 +308,10 @@ function M.new(env)
             -- 返回：row（成功）/ nil + detail（失败原因，用于日志与 diagnostic）。
             local function generic_validate(e)
                 if not e then return nil,'ENTITY_GONE' end
+                -- ★ 目标字段探针（见文件上方 probe_target_fields 的说明）：通用/敌人路径。
+                --   放在**最前面**：它是"引擎接受的对照组"——只记通过复核的目标
+                --   就看不到被拒的那些，而对比恰恰需要两侧都有。
+                probe_target_fields(scope,env,e,'generic')
                 -- ★★ 预约复查（2026-10-03，实机 `frame_error;target already reserved`）★★
                 --
                 -- 事故：`target_reservations.claim` 里
@@ -232,10 +368,40 @@ function M.new(env)
                 local distance=0
                 for k=1,3 do distance=distance+(p[k]-own[k])^2 end
                 if distance>=40000 then return nil,'OUT_OF_RANGE' end
+                -- ★★ 方案一（2026-10-07，用户拍板）：认领 profile 的目标用**几何爆点** ★★
+                --
+                --   实机取证（2026-10-07 War Strider 整合测试局）：generic 写的
+                --   `point=p`（motion 位置 ≈ 模型原点）⇒ 爆点永远打不到 profile
+                --   的弱点（如 War Strider 头部 offset {-1.268,-0.272,1.735}）。
+                --   ⇒ `claim_profile` 命中（蟑龙 / 泰坦变体等有专门几何的认领目标）
+                --     改用 `Context.capture` 的 pose.point —— 与结构标记分支（上方
+                --     `point=pose.point`）同一套几何来源。
+                --   ⚠ 本函数是 generic 的**唯一**复核实现（sticky 复核也走这里，
+                --     见 `generic_validate(e)` 调用点）⇒ 只改这一处，点就跟着
+                --     会动的敌人走（每帧重算），不会出现"认领帧快照、续帧漂移"。
+                --   ⚠ 成本：只有 `claim_profile` **命中**的目标才付一次
+                --     `Context.capture`（约几十次内存读）；普通 generic 目标零增量。
+                --   ⚠ 失败语义：pose capture 抛错（关节缺失 / 布局变化）⇒ **回落
+                --     motion 位置**并打 `generic_pose_fallback`（进节流白名单）——
+                --     比"认领失败"好：锁与引爆链路保住，只是爆点退化到实体位置。
+                --     （与「不假装成功」不冲突：motion 位置本身是真实读到的坐标。）
+                local point=p
+                local claimed=env.claim_profile and env.claim_profile(e.resource)
+                if claimed then
+                    local ok_pose,pose=pcall(Context.capture,
+                        scope.read,env.base,env.exe,e.id,claimed)
+                    if ok_pose and pose and type(pose.point)=='table' then
+                        point=pose.point
+                    elseif env.emit then
+                        env.emit('generic_pose_fallback;target='..tostring(e.id)
+                            ..';resource='..tostring(e.resource)
+                            ..';detail='..tostring(pose))
+                    end
+                end
                 local raw=ffi.new('uint8_t[80]',record:sub(0x19,0x68))
                 ffi.cast('uint32_t *',raw)[0]=e.id
                 return {entity=e,raw=ffi.string(raw,80),score=1,unit=unit,
-                    marked_structure=true,generic=true,point=p}
+                    marked_structure=true,generic=true,point=point}
             end
             local chosen,reason,mark_candidate,chosen_mark_index
             -- An explicit structure mark may interrupt an existing enemy lock.
@@ -391,6 +557,11 @@ function M.new(env)
                         end
                         return
                     end
+                    -- ★ 目标字段探针（见文件上方 probe_target_fields 的说明）：虫洞路径。
+                    --   ★ 位置刻意放在**最前面**（白名单一过就记）：这样连
+                    --     后面会被拒（存活复核 / 预约 / 超距）的虫洞也能留下
+                    --     "引擎怎么看它"的证据 —— 只记成功的样本会漏掉关键对照。
+                    probe_target_fields(scope,env,e,'structure')
                     if e.identity~=structure_mark.identity or d.unit(e)~=structure_mark.unit then return end
                     if available and not available(e.identity) then return end
                     if blocked_now and e.identity==blocked.identity then return end
@@ -515,6 +686,29 @@ function M.new(env)
                 local after=check()
                 assert(L.u32(after,0x18)==scope.invalid_id and L.u32(after,0x70)==scope.invalid_id
                     and after:sub(0x1d,0x28)==point_bytes,'priority point setter mismatch')
+                -- ★★ 强制提升 state=4（见文件上方 promote_state4 的完整说明）★★
+                --   放在点写入**之后**：先让记录里装好我们的目标，再提升状态 ——
+                --   顺序与引擎自己的提升块一致（candidates → clear → 置 state 4）。
+                --   ⚠ 只对**虫洞**做：通用敌人引擎自己会提升，不需要我们插手；
+                --     少碰一类目标 = 少一类风险面。
+                --   ⚠ 按 (flight_start, 结果) 去重：一颗雷最多留两条（成功/失败），
+                --     既能看到"到底成没成"，又不会逐帧刷屏。
+                if chosen.marked_structure and not chosen.generic then
+                    local okp,pdetail=promote_state4(env,scope,c)
+                    local fkey='fl:'..tostring(c.flight_start)..':'..tostring(okp)
+                    if env.emit and not M.probed_fields[fkey] then
+                        M.probed_fields[fkey]=true
+                        -- ★ 顺带记**提升那一刻的水平距离**：实机 5/5 成功时
+                        --   `held=0`（引擎在开，我们不打点引导）⇒ 旧日志里没有任何距离，
+                        --   只能靠人眼确认"到底炸没炸"。把基线距离写进这一行，
+                        --   以后日志自己就带上下文（后续是否收敛看 sel_probe/arrival_*）。
+                        local dx,dy=own[1]-chosen.point[1],own[2]-chosen.point[2]
+                        env.emit('force_lock;entity='..tostring(L.u32(c.identity_bytes,8))
+                            ..';resource='..tostring(chosen.entity.resource)
+                            ..';ok='..tostring(okp)..';detail='..tostring(pdetail)
+                            ..';dist='..string.format('%.2f',math.sqrt(dx*dx+dy*dy)))
+                    end
+                end
                 -- 到达检测（早期 state 2/3）。
                 --
                 -- 【不要再臆测几何】之前这里写死 ER=3.2，依据是"native_minimal:108
@@ -563,7 +757,66 @@ function M.new(env)
                         point=chosen.point,point_bytes=point_bytes}}
             end
             local same_selection=c.selection.has_target and c.selection.id==chosen.entity.id
-            if not same_selection or (env.fuse_profile and L.u32(record,0x64)~=0) then
+            -- ★★★ 认出"这个自定义航点是我们自己写的" ⇒ **不重写实体选择**（2026-10-05）★★★
+            --
+            -- 【移植自上游 1.1.0 的 `continued`，其 priority 第 4383-4389 行】
+            --   上游原话两句，就是这条判断的全部理由：
+            --     · `Continue our already observed custom point without temporarily
+            --        restoring an entity selection.`
+            --     · `Do not briefly re-enable native proximity between priority
+            --        acquisition and the separate route/arrival observation.`
+            --
+            -- 【不写这段会怎样】
+            --   下面那个 setter 的判据是 `same_selection`，而 `same_selection` 要求
+            --   `c.selection.has_target` 为真。可是**点目标**（`+0x18 = invalid_id`）
+            --   天生就是"没有实体目标"⇒ `same_selection` **恒为 false**
+            --   ⇒ 每一帧都把**实体选择**重新写一遍，把上一帧我们自己下发的点覆盖掉。
+            --   点 ↔ 实体选择来回打架：手雷在两点之间被反复改向，而靠近判定
+            --   （`Policy.step` 的 `dist`）算的是**上一点**，于是永远"没到位"。
+            --
+            -- 【谁会写这个点】两条路，都要认：
+            --   ① `old.titan`（泰坦/航点路径，native_titan_aim 每帧写 point_bytes）——
+            --      与上游同款；
+            --   ② `old.lock` **自己**（本工程的**体内爆点**：runtime 每帧从已锁目标
+            --      现算 `blast_point`，由 native_arrival 的 `options.point_target` 写进去，
+            --      再把写下的 12 字节回记到这把锁上）。上游用 `track.titan` 承载结构航点，
+            --      我们是在 runtime 现算的 ⇒ 不认这一条，上游这套机制在本工程**永不触发**。
+            --   runtime 的 `with_observation` 负责挑出匹配的那个塞进 `scope.guidance_observation`。
+            --
+            -- 【判据全部来自只读观测，不做任何推断】（与 runtime 那侧同源）
+            --   · `c.selection.flag==1`（选择槽活着）、`not c.selection.has_target`（不是实体 ⇒ 是点）
+            --   · 记录里 `0x1d..0x28` == 我们自己的 `point_bytes`（真的是我们写的那个点）
+            --   · `+0x64 == 0`（类别掩码已清 ⇒ 原生 proximity 是关的）
+            --   · `previous` 非 nil 且 `previous.unit/identity` 与 `chosen` **是同一个目标**
+            --     —— 上游写的是"`previous` 与 `guidance.target` 两对都要等于 `chosen`"，
+            --     在本工程里 `guidance` 要么就是 `previous` 本身（②），要么是 `old.titan`
+            --     （①，此时才需要单独比 `.target`）。语义一致：**只对同一个目标续点**。
+            --   ⇒ 仍然由下面的 sticky 分支逐帧复核目标实体（identity/unit/白名单）与
+            --     到达判定，**不是无条件放行**。
+            local guidance=scope.guidance_observation
+            local continued=env.fuse_profile and previous and guidance
+                and not guidance.cancelled and guidance.point_bytes
+                and previous.identity==chosen.entity.identity and previous.unit==chosen.unit
+                and (guidance==previous or (guidance.target
+                    and guidance.target.identity==chosen.entity.identity
+                    and guidance.target.unit==chosen.unit))
+                and not c.selection.has_target and c.selection.flag==1
+                and record:sub(0x1d,0x28)==guidance.point_bytes and L.u32(record,0x64)==0
+            if continued and env.emit then
+                local cr=M.continued_reported
+                local ck=L.u32(c.identity_bytes,8)..'|'..chosen.entity.id
+                if not cr[ck] then
+                    if M.continued_n>=512 then
+                        cr={};M.continued_reported=cr;M.continued_n=0
+                    end
+                    cr[ck]=true;M.continued_n=M.continued_n+1
+                    env.emit('priority_continued;entity='..tostring(L.u32(c.identity_bytes,8))
+                        ..';target='..tostring(chosen.entity.id)
+                        ..';resource='..tostring(chosen.entity.resource)
+                        ..';detail=OWN_CUSTOM_POINT_KEPT')
+                end
+            end
+            if not continued and (not same_selection or (env.fuse_profile and L.u32(record,0x64)~=0)) then
                 local data=ffi.new('uint8_t[80]',same_selection and record:sub(0x19,0x68) or chosen.raw)
                 -- Do not briefly re-enable native proximity between priority
                 -- acquisition and the separate route/arrival observation.

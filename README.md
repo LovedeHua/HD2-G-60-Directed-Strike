@@ -1,13 +1,41 @@
-# G-60 Bug Hole Lock —— 标记虫洞 / 大型虫族 专用版
+# G-60 Directed Strike —— 只打你点的目标
 
-《绝地潜兵2》G-60 反坦克追踪者手雷的**目标专用**接管 mod：只接管**玩家标记的虫洞 / 构筑物**与
-**吐酸泰坦 / 孢子泰坦 / 蟑龙**（外加"玩家点名的任意目标"），其余全部交还游戏原生。
-唯一例外是"不让 G-60 追踪**运输船 / 光能族增援飞船**"（可一键关闭）。
+> 《绝地潜兵2》**G-60 反坦克追踪者手雷**的「目标专用」接管 mod。
+> 引擎自己挑目标：附近有敌人就锁敌人，没敌人就原地盘旋、30 秒后自爆——**你标记的虫洞它看都不看**。
+> 这个 mod 把那套决策接管过来：**你点什么，它就打什么。**
 
-> **当前版本 v0.1.6**。版本号的**唯一来源**是 `scripts/build.py` 的 `RELEASE_VERSION` ——
+### 它接管什么
+
+| 你做的事 | G-60 的反应 |
+|---|---|
+| 标记**虫洞 / 构筑物** | 飞过去炸（含**体内爆点**：巨型构筑者 / 工厂通风口等，穿模进去炸） |
+| 标记**吐酸泰坦 / 孢子泰坦 / 蟑龙** | 飞过去炸（含腹部爆点、弱点几何） |
+| **ping 空地**（空白标记） | 当成指定落点飞过去 |
+| 其他一切 | **完全交还引擎原生**（不接管、不写内存） |
+
+优先级：**虫洞 / 构筑 > 标记单位 > ping 空地**。唯一例外：不让 G-60 追踪
+**运输船 / 光能族增援飞船**（可一键关闭）。
+
+### ★ v0.1.7：**没有敌人时也能炸毁标记虫洞**
+
+以前这条做不到，原因很硬：引擎只在「候选分数 > 0」时才给 G-60 引导授权（state 4），
+而**建筑·虫洞与地面点从来不在引擎的候选列表里** ⇒ 没敌人时永远拿不到授权
+⇒ 你写进去的点会被引擎每 0.25 秒一次的搜索（会**重置飞行计时器**）冲掉 ⇒ 手雷原地飘走。
+
+v0.1.7 用本工程**唯一的受控写通道**（`force_lock_enabled`：只写 3 个 dword、
+偏移与值**照抄引擎自己的提升块**）把这扇门打开 —— 之后**引擎自己**接管引导并引爆。
+实机：**5 颗雷 / 5 个不同虫洞，全部炸毁**；ping 空地同样生效。
+⚠ 这是本工程第一次绕过引擎 API 直接写游戏状态，`force_lock_enabled=false` **一键回退**到只读行为；
+风险与细节见下文「受控写通道」一节。
+
+> **当前版本 v0.1.7**。版本号的**唯一来源**是 `scripts/build.py` 的 `RELEASE_VERSION` ——
 > `TITLE`（manifest 显示名）、成品包文件名、`BUILD-INFO.json`、日志里的 `version=` 全部由它派生。
 > 发新版**只改那一个常量**。
 > （`compat/build.json` 的 `public_version` 是**上游**的版本，与本裁剪版无关。）
+>
+> **v0.1.7 起改名**：旧名 `G-60 Bug Hole Lock` 是 v0.1.6 之前的能力写照（那时只打虫洞）。
+> 资源名与包名同步更换（`mods/hd2test/g60_directed_strike` /
+> `G60-Directed-Strike-0.1.7.zip`），**归档槽位与 GUID 未变** ⇒ 加载器那边是原地升级。
 >
 > 派生自 [`etxp/HD2-G60-Smart-Targeting`](https://github.com/etxp/HD2-G60-Smart-Targeting) 0.1-beta.1
 > （源码 MIT）。裁剪只动**决策层**；**签名守卫、持锁窗口、状态机白名单、身份复验等安全机制原样保留**。
@@ -235,14 +263,28 @@ runtime 只把它给**标记目标**那条队列，并定死**五档**：
 |---|---|---|
 | `titan_enabled` / `titan_variants_enabled` / `dragonroach_enabled` | true / true / true | 分别关泰坦 / 变体 / 蟑龙 |
 | `generic_takeover_enabled` | true | 关掉 ⇒ 通用接管失效（退回"只打虫洞/泰坦/变体"） |
-| `blast_sites_enabled` | true | 关掉 ⇒ 巨型构筑者退回引擎 aim |
+| `blast_sites_enabled` | true | 关掉 ⇒ 巨型构筑者退回引擎 aim（其余目标本来就走引擎 aim） |
 | `point_target_enabled` | true | ping 空地 ⇒ 点目标接管 |
 | `enemy_veto_enabled` | true | 不让 G-60 追运输船 / 光能族增援飞船 |
 | `unit_mark_live_only` / `structure_mark_live_only` | true / true | 标记从画面消失后不再被新接管 |
 | `marked_unit_rank_first` | true | 标记队列按"虫洞 < 蟑龙 < 泰坦 < 名册敌人 < 其它"排序 |
-| `titan_standoff` / `titan_standoff_min` | 2.5 / 2.0 | 泰坦爆距与自适应下限（见"已知限制"） |
-| `titan_belly_above` | 0 | 泰坦"腹部上方引爆"余量，**已关闭**（回上游标定窗口） |
-| `titan_arrival_region` | `{radius=1.5, depth=1.2, above=1.2}` | 泰坦到达判定（圆柱） |
+| `titan_standoff` | 2.5 | 泰坦爆距（**与上游 1.1 相同**） |
+| ~~`titan_standoff_min`~~ | — | **2026-10-05 已移除**：那是我们自研的爆距自适应（0.85→2.5→1.75→2.0）；改用上游后不再需要 |
+| ~~`titan_belly_above`~~ | — | **2026-10-05 已移除**：只在"竖直爆点"几何下才有意义；现在爆点由上游 `Adaptive` 决定 |
+| `titan_animated_belly` | true | 泰坦爆点跟**腹部骨骼的真实姿态**（`animated_belly`，整合自上游 1.1.0）。置 `false` ⇒ 逐字回整合前行为 |
+| `adaptive_approach` / `blast_regions` | true / true | **2026-10-05 新增**：上游泰坦链的后两段。`Adaptive` = 引爆点的**最终决定者**（爆点 = 腹点 + **腹法线**×2.5、到达区域 = `surface`、航路走 `Navigation` 可见性图）；`BlastRoute` = 上一段（圆柱爆区）。**置 `false` 可一键回退**到上游的"只用 TitanRoute"版本 |
+| `titan_arrival_region` | `{radius=1.75, depth=0.8}` | 泰坦到达判定（**回上游原值**；泰坦 baseline 的区域现在由 `BlastRoute`/`Adaptive` 经 `options.region` 下发，本项仅作兜底） |
+
+> ★★ **2026-10-05 泰坦全线改用上游 1.1**（用户拍板）★★
+> 上游泰坦链是**三段**：`TitanRoute`（绕行五阶段）→ `BlastRoute.refine`（圆柱爆区）→
+> **`Adaptive.refine`**（腹法线点 + `surface` 区域 + `Navigation` 航路）。我们以前只有第一段
+> 加一个手工区域，本次把后两段与 `Navigation`（180 行，泰坦专用可见性图）**逐字移植**。
+> 同时**撤回**我们自己的两处 `titan_route` 偏离（高度门槛加 2.5、`forward` 放宽到 `RADIUS`）
+> 与两项自研机制（`titan_standoff_min`、`titan_belly_above`）。
+> ⚠ **代价（必须知情）**：上游在"姿态不可靠 / 爆点低于地板"时是 **`terminal=false`（不授权引爆）**，
+> 并明确写着 *No unsafe direct fallback* —— 也就是说**没有**我们那套"竖直爆点兜底"。
+> 实机若出现"泰坦不炸/绕行变久"，回退方式 = 上面那两个开关置 `false`，或 `git revert` 本次提交。
+> 新诊断：`titan_refine_failed;`（`Adaptive`/`BlastRoute` 断言抛错时的唯一判据）。
 | `scan_every_busy` / `scan_every_idle` | 2 / 6 | 观测节流档位（见"性能"） |
 | `allow_state3` | false | 是否对 state 2/3 的 G-60 写早期驱动 |
 | `early_nav_probe` / `early_nav_orbit` | false / false | "无敌人时能否接管"的探查（后者是**写**操作，谨慎） |
@@ -303,12 +345,12 @@ ef04cb84d097a497 → content/fac_bugs/cha_strider/cha_strider_gloom
 ## 安装
 
 > ### 📦 成品包下载
-> **[GitHub Releases › 最新版](https://github.com/LovedeHua/HD2-G60-BugHole-Lock/releases/latest)**
-> —— 下载 `G60-BugHole-Lock-0.1.6.zip` 直接导入 mod 管理器。（本仓库只有**源码**，成品包在 Releases 附件里。）
+> **[GitHub Releases › 最新版](https://github.com/LovedeHua/HD2-G-60-Directed-Strike/releases/latest)**
+> —— 下载 `G60-Directed-Strike-0.1.7.zip` 直接导入 mod 管理器。（本仓库只有**源码**，成品包在 Releases 附件里。）
 
 1. 关闭游戏，安装 [Bingus Shared Loader](https://github.com/CowboyBingus/BingusSharedLoader)
    （**API 1，v15+**，需 addon discovery）。
-2. 把 `G60-BugHole-Lock-0.1.6.zip` 导入 mod 管理器。
+2. 把 `G60-Directed-Strike-0.1.7.zip` 导入 mod 管理器。
 3. **与上游官方包二选一** —— 两个包都会改 G-60 的决策，同时启用会打架。
    本包 GUID `9c1d4e77-…`，官方包 GUID `58a16a67-…`。
 4. Purge / Deploy 后重启游戏。
@@ -480,13 +522,38 @@ mod 挂 `update`，每帧走一次 `tick`。口径：`tests/test_perf_probe.py` 
 > 那是旁观者 mod 写的，把 ≥50 ms 的帧**按 mod 拆开**，比自插桩更客观、且零风险。
 > ⚠ `layout_reads` **只统计 `Layout.capture` 内部**（不含 `TargetData` 的 `d.read`）—— 用现有日志量不出那部分，
 > 别拿它当"总内存读"。
-> ⚠ 本工程**没有写内存原语**（只有 `ReadProcessMemory` + 6 个原生调用），任何"改数值"的方案在此工程都做不到。
+> ⚠ 本工程**能力面**：`ReadProcessMemory` + 6 个原生调用，
+> 以及 **2026-10-09 起唯一一处受控写通道**（见下条）——任何"改数值"的方案仅限那一处。
+
+> ★★ **2026-10-09 受控写通道（用户明确拍板，`force_lock_enabled`）—— 实机已验证成功** ——
+> 背景：引擎只在"候选分数 > 0"时才置 state 4（阈值 0.0、取最大分、无候选直接返回不置 4），
+> 而**建筑/虫洞从来不在引擎的自动候选列表里** ⇒ 无敌人时永远进不去 state 4 ⇒ 引导不跑
+> ⇒ 我们写的点被每 0.25 s 一次的 orbit（state-3 转换，重置飞行计时器）冲掉。
+> 做法：**照抄引擎自己的提升块**（偏移与值来自反汇编 `0xbbc91`/`0xbbc9c`/`0xbbcb0`），
+> 把状态记录写成 `[+8]=4`、`[+4]=0xffffffff`、`[+0]=4` —— **只写这 3 个 dword**，
+> 且**仅在**「我们持有这颗雷 + 已标记虫洞 + 引擎把它留在 state 2/3」时；
+> 写前复核 + 写后回读，结果进 `force_lock;` 日志（白名单内，含提升时的水平距离 `dist=`）。
+> **★ 实机结果（2026-10-09 16:24 局）：5 颗雷 / 5 个不同虫洞，全部炸毁。**
+> `force_lock;…;ok=true;detail=state=3->4;w=111` × 5；每颗雷随后**停在 state 4 且选择
+> 保持为虫洞**（以前无敌人时会退回 state 3 飘走），`link;…;saw4=1;entered=1;locked=1;held=0`
+> ⇒ **是引擎自己接管了引导并自己引爆**（我们只是把状态门打开）。
+> ⇒ 结论：**引导并不复查候选/分数**，那道门只需跨过一次即可。
+> **边界**：`build.py` 对本符号开的是**计数式例外**（必须恰好 1 处调用、全文 ≤2 次提及），
+> 其余高危 API 仍一律禁止（连注释都不许写其字面量）；不需要改页保护（该记录是堆内存，本来可写）。
+> **一键回退**：`force_lock_enabled=false` ⇒ 逐字回到只读行为。
+> ⚠ **风险自担**：这是绕过引擎 API 的裸写，反作弊（GameGuard）对它的态度本工程无证据。
+> **附：候选分数那件事的结论**（供以后参考，别再走一遍）——分数**确实是内存字段**
+> `候选记录+0x44`（float，引擎在 `0xbbac9` 写 `max(分,0)`），接受判据是
+> 「分数>0 且 `+0x48`≠0 且 `+0x4c`≠0」（见 `native_candidates.lua:29`）；
+> 但**提升判据读的是 seek 函数栈帧里的临时副本**（`0xbbb81`），且虫洞从不在候选列表里
+> ⇒ 无敌人时**没有候选可评分**（评分循环根本不跑）⇒ 那条路对本需求无解，已放弃。
 
 ### ☠️ 禁区：**不要再往共享 C 命名空间塞新符号**（2026-10-02 实机事故）
 
 > ⚠ **范围边界**（免得被误读成"addon 一律禁用 cdef"）：`entry.lua.in` 自身有一段 `ffi.cdef` 声明
-> `ReadProcessMemory` / `GetCurrentProcess` / `GetCurrentThreadId` / `GetModuleHandleA` ——
-> 那是**读内存的根基，既有且必需**。本禁区指的是：**不要再用 `ffi.cdef` 去声明"可能已被别人声明过"的新符号**
+> `ReadProcessMemory` / `GetCurrentProcess` / `GetCurrentThreadId` / `GetModuleHandleA`，
+> 以及 2026-10-09 起那**唯一一个**受控写符号（见上文受控写通道）——
+> 那是**读内存的根基与那一处经拍板的写**，既有且必需。本禁区指的是：**不要再用 `ffi.cdef` 去声明"可能已被别人声明过"的新符号**
 > （通用 Win32 API 尤其危险）。
 
 **事故**：为量墙钟微秒加了一段 `ffi.cdef[[QueryPerformanceFrequency/…Counter]]` ⇒ 游戏**启动即崩**。
@@ -517,7 +584,7 @@ QueryPerformanceFrequency(void *frequency);      ← 另一个 mod
 ## 构建
 
 ```sh
-python -B scripts/build.py       # 出包 -> dist/G60-BugHole-Lock-<RELEASE_VERSION>.zip
+python -B scripts/build.py       # 出包 -> dist/G60-Directed-Strike-<RELEASE_VERSION>.zip
 python -B scripts/run_tests.py   # 跑测试（本机无 luajit/lua，用 lupa 跑）
 python -B tests/test_bughole_scope.py             # 裁剪点 + 产物级验证
 python -B tests/lua_syntax.py                     # 40 个模块语法（lupa/Lua 5.5）

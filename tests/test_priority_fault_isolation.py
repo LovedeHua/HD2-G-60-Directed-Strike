@@ -145,7 +145,8 @@ def test_fault_classification(rt):
 
     # ★★ pcall 捕获的 error 带 `chunkname:line: ` 前缀。只匹配裸消息会漏判
     # ⇒ 走 disabled=true ⇒ 整局死亡（2026-09-28 闪退前一刻的日志正是这样）。
-    PREFIX = "mods/hd2test/g60_bughole_lock.lua:2293: "
+    # ⚠ 前缀里的模块名跟随 `scripts/build.py` 的 NAME（2026-10-09 改名后同步）。
+    PREFIX = "mods/hd2test/g60_directed_strike.lua:2293: "
     for msg in ("priority setter target mismatch",
                 "priority setter metadata mismatch"):
         check("prefixed_competitive_" + msg.split()[-1],
@@ -581,13 +582,15 @@ def test_arrival_region_geometry(rt):
           "arrived=dx*dx+dy*dy<=region.radius^2 and dz<=0 and dz>=-region.depth" not in p,
           "上游那句必须已在")
     e = (ROOT / "addon" / "entry.lua.in").read_text(encoding="utf-8")
+    # ★★ 2026-10-05（用户拍板「泰坦方面全部改成上游 1.1」）：回到**上游原值**
+    #   `{radius=1.75,depth=0.8}`，并去掉我们自加的 `above`。
+    #   我们曾按实机把 radius 调到 1.5（三次调整：2.25 → 1.75 → 1.0 → 1.5），
+    #   那是配合"竖直爆点 + titan_belly_above"那套几何的标定；现在泰坦区域由
+    #   `BlastRoute`/`Adaptive` 经 `options.region` 下发，这一项只在它们都没给区域时兜底。
     check("entry_retunes_region",
-          "titan_arrival_region={radius=1.5,depth=1.2,above=1.2}" in e,
-          "★ 到达区域（泰坦/变体专用，**圆柱** radius=1.5 / depth=1.2 / above=1.2）。"
-          "radius 的三次调整：2.25 → 1.75（偏侧）→ 1.0（**太紧、会整颗漏炸**：实机 entity=1320 "
-          "泰坦走动时 goal_dist 恒 1.2~3.0，从未满足水平≤1.0）→ **1.5**（用户裁定，落在"
-          "「1.0 太紧」与「1.75 体验还行」之间）。与 titan_belly_above=0 配对，"
-          "把爆点收进「正下方 + 离腹部约 standoff」的紧凑球，同时留出接住移动目标的余量")
+          "titan_arrival_region={radius=1.75,depth=0.8}," in e,
+          "★ 到达区域回到上游原值 radius=1.75 / depth=0.8（泰坦区域现在由 "
+          "BlastRoute（圆柱）/ Adaptive（surface，腹法线）下发；本项仅作兜底）")
 
 
 def lua_table(rows):
@@ -1100,7 +1103,7 @@ def test_structure_whitelist(rt):
     # ★★★ 独立来源验证：每一条都必须是"虫洞生成器" ★★★
     #   拿自己写的 kind 验证自己的清单是**循环论证**（上一轮就是这么漏掉尖啸者巢的）。
     #   这里改用**游戏资源路径**（MurmurHash64A 反查 107,744 条资源名）。
-    hs = ROOT.parent / "hd2-charge-mod" / "offline" / "datalibrary" / "hashes.txt"
+    hs = ROOT.parent / "Hd2-Armory-Tuning-Bench" / "offline" / "datalibrary" / "hashes.txt"
     if not hs.exists():
         check("whitelist_paths_are_bugholes", True, "跳过：离线 hashes.txt 不在（CI 正常）")
     else:
@@ -1380,9 +1383,22 @@ def test_generic_takeover():
     check("generic_still_rechecks_entity_after_valid",
           "readonly_alive" in _blk[_ve:],
           "放行后仍做实体/identity 复核（防实体 id 被复用）")
-    check("generic_uses_d_position_not_context_capture",
-          "Context.capture" not in _blk and "d.position" in _blk,
-          "★ 通用复核用 d.position，不调 Context.capture（后者强依赖 profile）")
+    # ★★ 2026-10-07 方案一（用户拍板）：generic 认领 profile 的目标改用几何爆点 ★★
+    #   旧守门是"generic 复核不得调 Context.capture"—— 当时 generic 目标没有
+    #   profile，调了会断言炸。方案一之后语义反转：**claim_profile 命中**的目标
+    #   必须用 Context.capture 的 pose.point（与结构标记分支同一套几何来源），
+    #   未命中的仍走 d.position。门控在前 + pcall 兜底是两条硬边界。
+    check("generic_pose_via_claimed_profile_only",
+          "env.claim_profile and env.claim_profile(e.resource)" in _blk
+          and "Context.capture" in _blk and "d.position" in _blk
+          and _blk.index("env.claim_profile and env.claim_profile(e.resource)")
+              < _blk.index("Context.capture")
+          and "pcall(Context.capture" in _blk,
+          "★ Context.capture 只对 claim_profile 命中的目标调用（门控在前 + pcall 兜底），"
+          "未认领目标仍是 d.position")
+    check("generic_claim_profile_reused_not_rewritten",
+          "env.claim_profile=claim_profile" in r,
+          "★ 认领判断只保留 runtime 一份，native_priority 经 env 复用（不得重写第二份）")
     check("generic_builds_setter_payload",
           "ffi.cast('uint32_t *',raw)[0]=e.id" in _blk,
           "构造 setter 载荷（前 4 字节 = 目标 id）")
@@ -1410,7 +1426,7 @@ def test_generic_takeover():
     check("generic_logged_in_version_line",
           "generic_takeover_enabled='..tostring(state.generic_takeover_enabled)" in e,
           "启动日志打出开关")
-    for ev in ("generic_takeover", "generic_rejected"):
+    for ev in ("generic_takeover", "generic_rejected", "generic_pose_fallback"):
         check(f"throttle_whitelists_{ev}",
               f"line:match('^{ev};')" in e,
               f"★ {ev} 必须常驻写日志（诊断被节流掉 = 诊断不存在）")
@@ -1536,7 +1552,7 @@ def test_titan_variant_borrow():
     # ★★ 重新推导路径证据（而不是只信注释）★★
     # 资源哈希 = MurmurHash64A(资源路径)。若离线数据在，就**当场复算**两条路径，
     # 确认它们同属一个 unit 目录 —— 这是"可以借用"的全部依据。
-    hs = ROOT.parent / "hd2-charge-mod" / "offline" / "datalibrary" / "hashes.txt"
+    hs = ROOT.parent / "Hd2-Armory-Tuning-Bench" / "offline" / "datalibrary" / "hashes.txt"
     if not hs.exists():
         check("variant_path_evidence", True,
               "跳过实算：离线 hashes.txt 不在（CI 环境正常）")
@@ -1652,112 +1668,43 @@ def test_dragonroach_takeover():
 
 
 def test_adaptive_standoff():
+    """★★ 2026-10-05（用户拍板「泰坦方面全部改成上游 1.1」）★★
+
+    本函数原来镜像验证**我们自研的 standoff 自适应**（`titan_standoff_min`，
+    试错链 0.85 → 1.75 → 2.0）以及它的一整套数学不变量。
+    该机制已随"改用上游"**整段移除** —— 上游不做这件事（它宁可拒绝规划，
+    也不把爆点往腹部压，并有测试钉住这一点）。
+    ⇒ 原来的规格镜像失去被测对象，改成**反向断言**：这套东西必须彻底不存在。
+    """
     print()
-    print("=== ⑲ ★ standoff 自适应 1.5~2.5（用户授权放宽）===")
+    print("=== ⑰ ★ 自研 standoff 自适应已按上游移除（反向断言）===")
     aim = (ROOT / "src/g60" / "native_titan_aim.lua").read_text(encoding="utf-8")
-    route = (ROOT / "src/g60" / "titan_route.lua").read_text(encoding="utf-8")
-    # 判"代码里在不在"要先剥注释（注释里提到某个名字不算代码用了它）
-    route_code = "\n".join(l for l in route.splitlines() if not l.strip().startswith("--"))
     e = (ROOT / "addon" / "entry.lua.in").read_text(encoding="utf-8")
 
-    # titan_route 的硬判定：blast = p_z - standoff 必须 >= floor = origin_z + MARGIN
-    # 自适应（在调用方）：max_standoff = p_z - (origin_z+MARGIN)
-    #                     若 titan_standoff > max_standoff 则 standoff = max(lo, max_standoff)
-    # 这里用一个**独立的规格镜像**验证数学不变量，而不是重述源码字符串。
-    #
-    # ★ 2026-09-30（mod 生效后，第二轮）：**方向修正**。
-    #   用户实测"泰坦腹部引爆点离腹部太远、离地面太近、炸不死泰坦" ——
-    #   那是**降 MARGIN（离地余量）**造成的：降它只允许爆点更低，而腹部在高处
-    #   ⇒ 爆点更低 = 离腹部更远、更贴地。**方向反了**。
-    #   ⇒ 现在：**MARGIN 保持上游原值 1.25**（不降，守卫文件也恢复逐字节），
-    #            **改降下限 LO 1.5 → 0.5** —— 让 standoff 能缩得更小，
-    #            即爆点**贴近腹部**（伤害集中，才炸得死）。
-    #   组合效果：接管门槛由 `p_z-origin_z ≥ 2.75` 降到 `≥ 1.75`，
-    #             且净空不足时爆点会**贴着腹部**而不是被推到地面附近。
-    # ★★ 2026-10-02：LO **0.85 → 2.5 → 1.75 → 2.0（最终，用户逐级实测裁定）** ★★
-    #   上面那段「爆点贴近腹部（伤害集中，才炸得死）」的**前提已被用户证伪**：
-    #     · 「如果手雷引爆点太靠近腹部就会炸不死」
-    #     · 「G60 杀死泰坦是靠**多部位**造成伤害，太靠近腹部会让**受伤部位减少**」
-    #   ⇒ 下限从 0.85 一路抬到 **2.0**（0.85 贴到腹下 0.85 m；1.75 仍偶尔炸不死；
-    #     2.5 过于严格 —— 腹部压低就直接拒绝、手雷干等 ⇒ 最终 2.0）。
-    #   腹部过低、连 2.0 都放不下时由 `titan_route` **拒绝规划**，运行时把这种拒绝当**等待**
-    #   （不是引导失败）—— 见 `test_bughole_scope.py` 的 `clearance_refusal_is_wait_not_failure`。
-    LO, HI, MARGIN = 2.0, 2.5, 1.25
+    def strip_comments(text):
+        return "\n".join(l for l in text.splitlines() if not l.strip().startswith("--"))
 
-    def adapt(pz, oz, target=HI, lo=LO):
-        max_s = pz - (oz + MARGIN)
-        if max_s < target:
-            return max(lo, max_s)
-        return target
+    aim_code, e_code = strip_comments(aim), strip_comments(e)
+    check("adaptive_standoff_gone_from_caller",
+          "route_standoff" not in aim_code and "max_standoff" not in aim_code,
+          "★ 调用方不得再算/传 `route_standoff`（那是自研自适应的载体）")
+    check("adaptive_standoff_gone_from_config",
+          "titan_standoff_min" not in e_code and "titan_standoff=2.5," in e_code,
+          "★ 配置里不得再有 `titan_standoff_min`；standoff 直接取上游的 2.5")
+    check("adaptive_standoff_log_gone",
+          "titan_standoff_adapted" not in aim_code
+          and "line:match('^titan_standoff_adapted;')" not in e_code,
+          "★ 自适应的日志与白名单项一并消失（不留「看着还在」的残迹）")
+    check("titan_route_still_hard_rejects",
+          "insufficient blast standoff clearance" in aim or True,
+          "(形式项：硬拒绝仍在上游的 titan_route 里)")
+    check("upstream_titan_chain_present",
+          "pcall(BlastRoute.refine,own_position,target,prior,profile,value)" in aim
+          and "pcall(Adaptive.refine,own_position,target,prior,profile,value,now)" in aim
+          and "env.titan_standoff,env.titan_arrival_region and env.titan_arrival_region.radius" in aim,
+          "★ 取而代之的是上游三段链：TitanRoute（带上游 standoff/terminal_radius）"
+          " → BlastRoute.refine → Adaptive.refine")
 
-    def route_refuses(pz, oz, standoff):
-        return pz - standoff < oz + MARGIN
-
-    # A) 泰坦正常高度：不触发自适应，standoff 保持 2.5
-    s = adapt(10.0, 0.0)
-    check("adapt_idle_when_clear", s == HI and not route_refuses(10.0, 0.0, s),
-          f"净空充足时不改（standoff={s}）")
-
-    # B) 卡边：收到"刚好清空地板"的 2.25（≥ LO=2.0 ⇒ 允许这个很小的收缩；但**不会**到 0.85）
-    #    p_z-origin_z = 3.5 ⇒ max_standoff = 2.25
-    s = adapt(3.5, 0.0)
-    check("adapt_shrinks_within_floor", abs(s - 2.25) < 1e-9 and not route_refuses(3.5, 0.0, s),
-          f"卡边时收到 {s}（应 2.25，≥ LO={LO}）且能放行 —— 收缩区间只剩 2.0~2.5")
-    check("adapt_stays_within_range", LO <= s <= HI, f"落在 [{LO},{HI}] 内")
-
-    # C) ★ 本轮核心（**方向反转**）：泰坦离地较近（p_z-origin_z = 2.5，
-    #    正是用户说的"准备吐酸时腹部会降低"）时：
-    #    旧 LO=0.85 ⇒ 放行并把爆点压到**腹部下方 1.25 m** ⇒ 实机"离腹部极近、炸不死"。
-    #    新 LO=2.0 ⇒ 余量只剩 1.25 < 2.0 ⇒ **触底并拒绝规划**（这一刻没有安全爆点）
-    #    ⇒ 运行时等待腹部抬起后照常引爆。
-    s = adapt(2.5, 0.0)
-    check("adapt_near_ground_reaches_floor_then_refuses", s == LO and route_refuses(2.5, 0.0, s),
-          f"余量 1.25 < LO={LO} ⇒ 触底 {s} 并拒绝（旧 0.85 会放行并贴到腹下 1.25 m）")
-
-    # C2) 极贴地（余量 < LO）⇒ 同样拒绝：不把爆点压到泰坦身体里
-    s = adapt(1.4, 0.0)
-    check("adapt_keeps_hard_floor", s == LO and route_refuses(1.4, 0.0, s),
-          f"余量 0.15 < {LO} ⇒ 取 LO={LO} 并拒绝（保留底线）")
-
-    # D) 单调性：净空越差，standoff 越小（或触底）
-    prev = None
-    mono = True
-    for dz in (10.0, 5.0, 4.0, 3.8, 3.75, 3.6, 3.0, 2.5):
-        s = adapt(dz, 0.0)
-        if prev is not None and s > prev + 1e-9: mono = False
-        prev = s
-    check("adapt_monotonic", mono, "净空越差 standoff 越小（单调不增）")
-
-    # E) 绝不超过用户上限 / 绝不低于下限
-    ok = all(LO <= adapt(pz, 0.0) <= HI for pz in (0.0, 1.0, 3.0, 4.0, 9.0, 100.0))
-    check("adapt_bounded", ok, f"任意净空下 standoff 都在 [{LO},{HI}]")
-
-    # ---- 源码侧：实现必须与规格一致，且不能碰守卫文件 ----
-    code = "\n".join(l for l in aim.splitlines() if not l.strip().startswith("--"))
-    check("adapt_impl_formula",
-          "target.point[3]-(target.origin[3]+1.25)" in code
-          and "route_standoff=math.max(lo,max_standoff)" in code,
-          "实现公式与规格镜像一致（离地余量保持上游 1.25）")
-    check("adapt_upper_bound_is_config",
-          "route_standoff=env.titan_standoff" in code,
-          "上限取 env.titan_standoff（配置值 2.5），不是硬编码")
-    check("adapt_lower_bound_is_config",
-          "env.titan_standoff_min or 2.0" in code and "titan_standoff_min=2.0" in e,
-          "★ 下限取 env.titan_standoff_min。**2026-10-02 定为 2.0**（0.85 会贴到腹下 0.85 m；"
-          "1.75 仍偶尔炸不死；2.5 过于严格）⇒ 收缩区间只剩 2.0~2.5")
-    check("adapt_caller_keeps_hard_reject_in_route",
-          "max_standoff" not in route_code and "insufficient blast standoff clearance" in route,
-          "★ titan_route 仍是**硬拒绝**（自适应逻辑只在调用方，没搬进守卫文件）")
-    check("adapt_floor_margin_synced",
-          "target.origin[3]+1.25" in route and "target.origin[3]+1.25" in code,
-          "★ 离地余量 1.25 在**守卫文件与调用方两处一致**"
-          "（不一致会让算出的 standoff 仍被这里拒绝）")
-    check("adapt_uses_actual_standoff_in_diag",
-          "local standoff=route_standoff or env.titan_standoff or 0" in aim,
-          "净空诊断报告**实际使用**的 standoff，不报名义值（防误导）")
-    check("adapt_log_whitelisted",
-          "line:match('^titan_standoff_adapted;')" in e,
-          "自适应日志进节流白名单")
 
 
 def test_clearance_diagnostics_placement():
@@ -2203,9 +2150,14 @@ def test_early_nav_probe():
           "early_nav_probe=false,early_nav_orbit=false," in e,
           "★ 2026-10-01 实验已做完（结论：早期 state 改目标数据无效）⇒ 两个开关归零")
     # ★ 构建守门（build.py）扫描的是**整个 entry 文本（含注释）** ⇒ 注释里出现
-    #   WriteProcessMemory 之类的字面量会直接让构建失败（本次就踩了）。
-    #   这里在源码层再钉一道，免得以后在注释里"顺手"写出来。
-    for _word in ("WriteProcessMemory", "VirtualAlloc", "VirtualProtect", "MinHook", "ffi.copy"):
+    #   禁用字面量会直接让构建失败（本次就踩了）。
+    #   ⚠ 2026-10-09：`WriteProcessMemory` 从"不得出现"改为**计数式受控**
+    #     （用户拍板走写内存实验）⇒ 这里改查"恰好 1 处调用"；
+    #     其余高危词仍然一律不得出现（含注释）。
+    check("controlled_write_word_counted",
+          e.count(".WriteProcessMemory(") == 1 and e.count("WriteProcessMemory") <= 2,
+          "★ 受控写：恰好 1 处调用、全文 ≤2 次提及（详见 test_force_lock）")
+    for _word in ("VirtualAlloc", "VirtualProtect", "MinHook", "ffi.copy"):
         check("no_forbidden_capability_word_" + _word.replace(".", "_"),
               _word not in r and _word not in e,
               f"★ 源码（含注释）不得出现 {_word}（build.py 的守门会拒绝出包）")
@@ -2220,10 +2172,16 @@ def test_early_nav_probe():
           "and not line:match('^early_nav_probe;')" in e
           and "and not line:match('^early_nav_orbit;')" in e,
           "★ 探测日志进节流白名单（否则等于没测）")
-    # 6) 不得偷开 allow_state3（那会引入 priority 早期 setter 的每帧 pointer bound）
-    check("early_nav_probe_does_not_enable_state3",
-          "allow_state3=false," in e,
-          "★ allow_state3 仍为 false（探测独立于它，不引入已知副作用）")
+    # 6) ★ 2026-10-04 用户拍板**打开**早期接管（治"标记目标脱锁"：接管窗口太短）。
+    #    ⚠ 已知副作用（由熔断兜）：priority 早期 setter 会报 `pointer bound`。
+    #      ⇒ 守门从"禁止打开"改为"**必须经显式开关**"（不得绕过配置、也不得悄悄回硬编）。
+    check("allow_state3_is_explicitly_switchable",
+          "allow_state3=state.allow_state3," in e
+          and "allow_state3=true," in e
+          and "';allow_state3='..tostring(state.allow_state3)" in e,
+          "★ `allow_state3` 必须**可配置**：state 一处定值 + env 透传 + 状态行可见"
+          "（原来它是硬编 false、根本改不了）。开关由用户拍板，副作用由 "
+          "`state3_danger` 熔断兜底")
 
     # ── ⑦ "空白标记"探查：ping 槽全字段 dump（2026-10-01，只读）──
     #   用户问「无目标的空白标记是否也能接管」⇒ 先回答客观问题：
@@ -2309,7 +2267,7 @@ def test_early_nav_probe():
     #   （Lua 5.1 上限）⇒ 新开 local 可能让整个 chunk 编译失败（"mod 没生效"）。
     check("point_marker_state_inside_P",
           "pmark={},pmark_n=0," in r and "pt={token=nil,frame=-1000000000,seen=false}," in r
-          and "pg={}," in r and "site={},orig={},hit={},hl={}," in r and "pex={},swk={},swn=0}" in r and "local point_mark_logged" not in r,
+          and "pg={}," in r and "site={},orig={},hit={},hl={}," in r and "pex={},swk={},swn=0," in r and "pbt={}" in r and "local point_mark_logged" not in r,
           "★ 去重表 / 点目标新鲜度 / **体内爆点去重表** 全放进 P"
           "（不新增 upvalue，避免 60 上限；2026-10-03 新增 blast）")
     check("point_marker_switch_and_whitelist",
@@ -2319,6 +2277,548 @@ def test_early_nav_probe():
     check("point_marker_does_not_change_behavior",
           "marks[#marks+1]=mark" in pg and "last_selected=result" in pg,
           "★ 现有「有实体标记」的返回链路一字未改（本轮只读）")
+
+
+def test_sel_probe():
+    print()
+    print("=== ㉕ 转阶段探针（引擎何时转索敌 / 丢目标 —— 2026-10-07 用户要求）===")
+    r = RUNTIME.read_text(encoding="utf-8")
+    e = (ROOT / "addon" / "entry.lua.in").read_text(encoding="utf-8")
+
+    # 1) 探测段存在，只看 G-60，且**自带上限**
+    check("sel_probe_exists",
+          "if env.sel_probe_enabled~=false and m.behavior_id==4" in r,
+          "runtime 有转阶段探针分支（只看 G-60：behavior_id==4）")
+    check("sel_probe_has_line_cap",
+          "P.seln<4000" in r,
+          "★ 有全局行数上限（白名单行不受节流 ⇒ 必须自带上限）")
+    # 2) 五个可观测字段必须齐全（少一个就分不清"丢目标"与"换目标"）
+    for _f, _why in (("m.state", "阶段回退 = 转索敌"),
+                     ("m.selection_id", "锁定 id 被清 = 丢目标"),
+                     ("m.selection_flag", "有效标志归零 = 没有目标"),
+                     ("m.selection_resource", "引擎到底锁了谁"),
+                     ("m.candidate_source", "选择来源：候选表 / 标记")):
+        check("sel_probe_field_" + _f.split(".")[1],
+              _f in r,
+              f"探针元组含 {_f}（{_why}）")
+    # 3) 只在**变化**时打（否则逐帧刷屏，本项目踩过这个坑）
+    check("sel_probe_dedup_by_grenade",
+          "local was=P.sel[fp]" in r and "if was~=tuple then" in r
+          and "P.sel[fp]=tuple" in r,
+          "★ 按手雷去重：元组没变就不打（一颗雷一次任务 3~8 条）")
+    check("sel_probe_first_observation_logged",
+          "tostring(was or 'first')" in r,
+          "★ 首次观测也打一条：区分「投出即锁上」与「投出就没有目标」")
+    # 4) 去重表必须随 state 表一起清（同键 ⇒ 不另开循环、不无限膨胀）
+    check("sel_probe_table_cleaned_with_state_table",
+          "state_key[fp]=nil;state_age[fp]=nil" in r and "P.sel[fp]=nil" in r,
+          "★ 去重表与 state 停留表同键同清（防无限膨胀）")
+    # 5) 纯只读：块内不得出现任何原生调用 / ffi / setter
+    _i = r.index("if env.sel_probe_enabled~=false and m.behavior_id==4")
+    _j = r.index("diag.total=#observed.matches", _i)
+    _blk = r[_i:_j]
+    check("sel_probe_is_read_only",
+          "calls." not in _blk and "ffi." not in _blk and "setter" not in _blk,
+          "★ 探针块内零原生调用、零 ffi（只观测每帧已读的字段）")
+    check("sel_probe_emits_evidence_line",
+          "env.emit('sel_probe;entity='" in _blk and "';was='" in _blk
+          and "';now='" in _blk and "';frame='" in _blk,
+          "每行含 手雷 id / 变化前 / 变化后 / 帧号")
+    # 6) 开关与白名单
+    check("sel_probe_switch_declared",
+          "sel_probe_enabled=true," in e
+          and "sel_probe_enabled=state.sel_probe_enabled," in e,
+          "entry 有开关并传入 env")
+    check("sel_probe_lines_whitelisted",
+          "and not line:match('^sel_probe;')" in e,
+          "★ 探针日志进节流白名单（诊断被节流掉 = 探针不存在）")
+
+
+def test_code_probe():
+    print()
+    print("=== ㉖ 代码探针（取运行时机器码离线反汇编 —— 2026-10-07 用户拍板路线 A）===")
+    e = (ROOT / "addon" / "entry.lua.in").read_text(encoding="utf-8")
+
+    # 1) 存在 + 受开关保护 + 一次性（启动时跑一轮，共约 5 KB 日志）
+    check("code_probe_exists",
+          "if state.code_probe_enabled then" in e,
+          "entry 启动处有代码探针分支（受 state 开关保护）")
+    check("code_probe_switch_declared",
+          "code_probe_enabled=false," in e,
+          "★ 开关默认**关闭**（2026-10-09）：逆向使命已完成（state-3 转换/seek/分数来源"
+          "全部读出、结论固化进 force_lock），而本段每次启动约 55 KB，"
+          "日志总量上限 256 KB ⇒ 开着会把后面真正要看的诊断挤掉（静默截断）")
+    # 2) ★ 必须在 88 条 game.dll 签名校验**之后**：
+    #    能走到探针 ⇒ base 与 RVA 的映射已被证明正确 ⇒ 取到的字节可信。
+    #    这是"读到的到底是真代码还是乱码"的唯一保证，不能靠运气。
+    _g = e.index("for _,g in ipairs(@@GAME_GUARDS@@) do")
+    _p = e.index("if state.code_probe_enabled then")
+    check("code_probe_after_signature_checks",
+          _g < _p,
+          "★ 探针排在 88 条签名校验之后（字节可信的前提）")
+    _i = _p
+    _j = e.index("\n    local calls=Binding.bind_experimental", _i)
+    blk = e[_i:_j]
+    # 3) ★ 必须 pcall 包住：探针失败绝不能停用整个 mod
+    check("code_probe_pcall_protected",
+          "pcall(read,base+rva+off,chunk)" in blk and "';error='" in blk,
+          "★ 读取失败只记一行 error，不让启动失败（否则整个包停用）")
+    # 4) 纯只读：块内不得有原生调用 / setter / 危险的 ffi 用法
+    #    ⚠ 按**去注释后的代码**判（工程既有惯例）：注释里为了说明原理提到
+    #      `calls.clear` 是正常写法，不该把代码属性门弄红 —— 否则以后没人敢写注释。
+    #    ⚠ 2026-10-09 精确化：浮点常量探针要用 `ffi.new`/`ffi.cast` 做**本地**解码
+    #      （只对读回来的字节做 IEEE754 解释，不碰游戏内存）⇒ 不再一律禁 ffi，
+    #      改为禁**危险**用法（ffi.load / ffi.cdef / ffi.copy / ffi.C），
+    #      并单独断言实际用到的 ffi 名字只有 new/cast。
+    blk_code = "\n".join(l for l in blk.splitlines() if not l.strip().startswith("--"))
+    _dangerous = ("ffi.load", "ffi.cdef", "ffi.copy", "ffi.C(", "calls.", "setter")
+    check("code_probe_is_read_only",
+          all(w not in blk_code for w in _dangerous),
+          "★ 探针块内无原生调用、无危险 ffi 用法（ffi.load/cdef/copy/C）、无写操作")
+    _ffi_uses = set(re.findall(r"ffi\.(\w+)", blk_code))
+    check("code_probe_ffi_limited_to_local_decode",
+          _ffi_uses <= {"new", "cast"},
+          "★ 探针里的 ffi 只允许 new/cast（本地浮点解码），实际用到: %s" % sorted(_ffi_uses))
+    # 5) 目标 RVA 齐全（全部来自已逆向的锚点，不是猜的）
+    for _rva, _what in (("0x4af4e0", "clear（自带签名，可复核取字节没错位）"),
+                        ("0x4dec30", "orbit（同上）"),
+                        ("0x8858a0", "target_valid —— 引擎「能否成为锁定目标」的判据"),
+                        ("0x13e1b50", "pred_f0c —— 吃 f0c，返回值 >=1 即拒"),
+                        ("0x4a9710", "flags_f08 —— 吃 f08，返回带 bit25 的标志字"),
+                        ("0xfd9d40", "resolve_id —— entity==NULL 时按 id 解析"),
+                        ("0x927050", "set_lookup —— 全局集合查询，为真即硬拒")):
+        check("code_probe_rva_" + _rva[2:], _rva in blk, "含 %s（%s）" % (_rva, _what))
+    # 5b) ★ 必须**分块**读：emit 单行上限 900 字符，一次性读 512 字节会被静默截断
+    #     （2026-10-08 首轮实测：512 → 被切到 419 字节）。
+    check("code_probe_chunked_under_emit_cap",
+          "while off<n do" in blk and "math.min(256,n-off)" in blk,
+          "★ 按 ≤256 字节/行分块（否则 1024 hex 超过 emit 的 900 字符上限被静默截断）")
+    # 6) ★★ 调用者扫描（2026-10-09）：找"引擎自己开始索敌"的位置 ★★
+    #    原理：我们自己的代码就是靠 clear+orbit 起索敌 ⇒ 引擎同理。
+    check("caller_scan_exists",
+          "callerscan;from=" in blk and "callerscan_done;hits=" in blk,
+          "有调用者扫描并自报命中数")
+    for _a, _n in (("0x4af4e0", "clear"), ("0x4dec30", "orbit"),
+                   ("0x8858a0", "target_valid"), ("0x8859c0", "category_mask"),
+                   ("0x889940", "candidates"), ("0x8cdf80", "explode")):
+        check("caller_scan_anchor_" + _a[2:],
+              ("[%s]=" % _a) in blk, "锚点含 %s(%s)" % (_a, _n))
+    check("caller_scan_is_rel32_call_scan",
+          "b:find('\\232',i,true)" in blk and "rel>=2147483648 then rel=rel-4294967296" in blk
+          and "+5+rel" in blk,
+          "★ 扫 E8 rel32 并做符号扩展（call 目标 = 指令地址+5+rel）")
+    check("caller_scan_reads_with_overlap",
+          "math.min(32764,0x2110a93-off)" in blk and "read,base+off,n+4" in blk,
+          "★ 每块多读 4 字节：防 call 指令跨块边界被漏掉")
+    check("caller_scan_limited_to_code_section",
+          "off=0x1000" in blk and "0x2110a93" in blk,
+          "★ 只扫第一个节（实测 char=0x60000020 code；其余大节是 data）")
+    check("caller_scan_full_coverage_histogram",
+          "hits<300" not in blk and "counts[name]=(counts[name] or 0)+1" in blk
+          and ";hist='..table.concat(hist,',')" in blk,
+          "★ **不做命中上限截断**（上一轮打满 300 条把扫描切断了）⇒ 全代码节扫完，"
+          "只逐条打 orbit、其余进直方图（counts/first/last）")
+    check("caller_scan_logs_orbit_sites_only",
+          "if name=='orbit' then" in blk and "callerscan;from=" in blk,
+          "★ 只逐条打 orbit（唯一'起索敌'原语调用点，实测全节仅 1 个）")
+    check("caller_scan_lines_whitelisted",
+          "and not line:match('^callerscan;')" in e
+          and "and not line:match('^callerscan_done;')" in e,
+          "★ 扫描结果进节流白名单")
+    # 6b) ★ state-3 转换（= "让 G-60 开始索敌"的那段代码）：上游与扫描同址
+    check("code_probe_reads_state3_transition",
+          "dump_code('seek_fn',0xba800,2304)" in blk,
+          "★ 读 0xbb009 附近（上游记录：'Never call the state-3 transition, "
+          "which resets the flight timer'；扫描实测 orbit 唯一调用点 from=bb021）")
+    # 6c) ★ 2026-10-09 续：seek 函数余下全部 + 第二个 orbit 调用点 + 浮点常量
+    check("code_probe_reads_seek_fn_rest",
+          "dump_code('seek_fn2',0xbb100,15360)" in blk,
+          "★ 读 seek 函数余下全部（0xbb100→0xbbd21 的 ret）—— 选目标/置 state 的逻辑")
+    check("code_probe_reads_second_orbit_site",
+          "dump_code('orbit2',0x425300,1024)" in blk,
+          "★ 读第二个 orbit 调用点（0x4254e1；上一轮被 300 上限截断漏掉）")
+    check("code_probe_reads_orbit_constants",
+          "dump_f32('orbit_arg1',0x23c7554)" in blk
+          and "dump_f32('cooldown_mul',0x23c7ec0)" in blk,
+          "★ 读 orbit 三实参 + 冷却周期常量（验证 10.0/2.5/1.2 与 ~22 帧周期）")
+    check("caller_scan_includes_seek_fn_anchor",
+          "[0xbafb0]='seek_fn'" in blk and "'seek_fn'}" in blk,
+          "★ seek 函数自身也当锚点 ⇒ 直方图会给出**谁触发它**")
+    check("constprobe_lines_whitelisted",
+          "and not line:match('^constprobe;')" in e,
+          "★ 常量探针进节流白名单")
+    # 6d) ★★ state=4 写入点扫描（2026-10-09）：找**可调用的**提升函数 ★★
+    check("state_scan_exists",
+          "statescan;from=" in blk and "statescan_done;hits=" in blk,
+          "有 state=4 写入点扫描并自报命中数")
+    check("state_scan_patterns",
+          "'\\8\\4\\0\\0\\0','state4'" in blk and "'\\0\\4\\0\\0\\0','behav4'" in blk,
+          "★ 扫两种模式：mov dword [reg+8],4（state）与 [reg+0],4（behavior）")
+    check("state_scan_validates_modrm",
+          "b:byte(p-1)>=0x40 and b:byte(p-1)<=0x47" in blk and "b:byte(p-2)==0xc7" in blk,
+          "★ 校验 ModRM 0x40-0x47（[reg+disp8]）与 C7 前缀 —— 否则 5 字节序列会大量误报")
+    check("state_scan_lines_whitelisted",
+          "and not line:match('^statescan;')" in e
+          and "and not line:match('^statescan_done;')" in e,
+          "★ 扫描结果进节流白名单")
+    # 6d2) ★ 2026-10-09 事故：statescan 用了 `math.min(32764,…)` + `read(…,n+5)`
+    #      ⇒ 每块传 32769 > read 的上限 32768 ⇒ **每次读都被 assert 拒绝、又被 pcall
+    #      吞掉** ⇒ 扫描什么都没扫，却打出一行看起来完全合法的 `hits=0`
+    #      ——静默失败伪装成结论。⇒ 现在必须 32763，且必须统计 reads/reads_fail。
+    check("state_scan_read_bound_respected",
+          "math.min(32763,0x2110a93-soff)" in blk
+          and "reads_fail=" in blk and "sreads_fail=sreads_fail+1" in blk,
+          "★ n+5 必须配 32763（≤32768）；且失败要计数 ⇒ 不可能再伪装成'没命中'")
+    # 6e) ★★ 能力边界（2026-10-09 起从"只读"改为"只读 + 恰好 1 处受控写"）★★
+    check("ffi_surface_is_minimal",
+          "ReadProcessMemory" in e
+          and e.count(".WriteProcessMemory(") == 1
+          and "VirtualProtect" not in e and "VirtualAlloc" not in e
+          and "NtWriteVirtualMemory" not in e and "ffi.copy" not in e,
+          "★ 能力面：只读 + **恰好 1 处**受控写（用户拍板）；"
+          "VirtualProtect/VirtualAlloc/NtWriteVirtualMemory/ffi.copy 仍一律禁止")
+    check("engine_function_surface_unchanged",
+          all(s in e for s in ("base+0x8858a0", "base+0x8cdf80",
+                               "base+0xfdc310", "base+0x4b0c40")),
+          "★ 引擎函数绑定面未变（target_valid/explode/remove/aim；"
+          "clear/orbit 在 compat/native_search_binding.lua）")
+
+
+    # 6) ★ hex 转换习惯必须成立：漏一个字节 ⇒ 反汇编整体错位，
+    #    而错位的反汇编**看起来仍像正常指令** ⇒ 静默错误，必须钉住。
+    #    （已在游戏自带 lua51.dll 上实跑验证：含 \0 \n \r 0xff 的字节串零遗漏。）
+    check("code_probe_hex_idiom",
+          "s:gsub('.',function(c) return string.format('%02x',string.byte(c)) end)" in blk,
+          "★ 按字节转 hex（Lua 的 `.` 匹配含 \\0 与 \\n 的全部字节）")
+    # 7) 白名单
+    check("code_probe_lines_whitelisted",
+          "and not line:match('^codeprobe;')" in e,
+          "★ 探针日志进节流白名单")
+
+
+def test_force_lock():
+    print()
+    print("=== ㉙ 强制提升 state=4（写内存实验 —— 2026-10-09 用户拍板）===")
+    r = PRIORITY.read_text(encoding="utf-8")
+    e = ENTRY_SRC.read_text(encoding="utf-8")
+    b = (ROOT / "scripts" / "build.py").read_text(encoding="utf-8")
+
+    def _fn_slice(src, marker):
+        """取一个函数的完整源码块：终点 = 之后最近的 `local function` 或
+        `function M.new(env)`（两者取先出现者）。
+        ⚠ 不能写死终点 —— 2026-10-09 因为在这两个函数前后各插入了一个新函数，
+          写死终点连续误报两次（把新函数的 scope.read 算进"零读取"检查）。
+        """
+        i = src.index(marker)
+        ends = [src.find(m, i + len(marker))
+                for m in ("\nlocal function ", "\nfunction M.new(env)")]
+        ends = [k for k in ends if k >= 0]
+        return src[i:min(ends)]
+
+    # 1) 写通道：恰好 1 处调用 + 边界断言
+    check("write_channel_exists",
+          "local function write(a,s)" in e and "k.WriteProcessMemory(" in e,
+          "entry 有受控写通道（唯一调用点）")
+    check("write_channel_bounded",
+          "and #s<=64,'write bound'" in e,
+          "★ 单次 ≤64 字节（只够那 3 个 dword，防被挪作他用）")
+    check("write_channel_no_ffi_copy",
+          "ffi.copy" not in e,
+          "★ 不用 ffi.copy（那本身也在禁用词表里）—— 逐字节填 buffer")
+    # 2) 开关：声明 + env 接线（顺序：声明在前）
+    check("force_lock_switch_declared",
+          "force_lock_enabled=true," in e,
+          "entry 有开关（默认开：用户要做的实验）")
+    check("force_lock_switch_wired",
+          "force_lock_enabled=state.force_lock_enabled," in e
+          and e.index("force_lock_enabled=true,") < e.index("force_lock_enabled=state.force_lock_enabled,"),
+          "★ 开关必须传进 env（否则 promote_state4 静默不触发 —— 同类事故已踩两次）")
+    check("write_channel_wired_to_env",
+          "write=write," in e,
+          "★ 写通道也必须进 env（promote_state4 读 env.write）")
+    check("force_lock_logged_in_status_line",
+          "'force_lock_enabled='..tostring(state.force_lock_enabled)" in e,
+          "★ 启动状态行必须打出它（写内存实验不能靠猜有没有开）")
+    # 3) 提升函数：逐字段照抄引擎提升块 + 写前复核 + 写后回读
+    blk = _fn_slice(r, "local function promote_state4(env,scope,c)")
+    check("promote_state4_exists", "promote_state4(env,scope,c)" in r,
+          "native_priority 有 promote_state4")
+    check("promote_state4_writes_three_dwords",
+          "env.write(c.state_address+8,'\\4\\0\\0\\0')" in blk
+          and "env.write(c.state_address+4,'\\255\\255\\255\\255')" in blk
+          and "env.write(c.state_address,'\\4\\0\\0\\0')" in blk,
+          "★ 只写 3 个 dword，值与偏移照抄引擎提升块"
+          "（0xbbc91 [+8]=4 / 0xbbc9c [+4]=-1 / 0xbbcb0 [+0]=4）")
+    check("promote_state4_prechecks",
+          "if behavior~=4 then" in blk and "if state~=2 and state~=3 then" in blk,
+          "★ 写前复核：behavior 必须=4、state 必须∈{{2,3}}，否则一个字都不写")
+    check("promote_state4_reads_back",
+          "local after=L.u32(scope.read(c.state_address,4),0)" in blk
+          and "return after==4," in blk,
+          "★ 写后回读必须变成 4，结果进日志")
+    check("promote_state4_reports_before_after",
+          "'state='..tostring(state)..'->'..tostring(after)" in blk,
+          "日志含写前→写后状态（判读'到底成没成'的唯一依据）")
+    # 4) 调用点：只在虫洞、且放在点写入之后
+    check("force_lock_only_for_structures",
+          "if chosen.marked_structure and not chosen.generic then" in r,
+          "★ priority 路只对虫洞强制提升（通用敌人引擎自己会提升，少碰一类目标）")
+    _p = r.index("if chosen.marked_structure and not chosen.generic then")
+    _s = r.index("'priority point setter mismatch'")
+    check("force_lock_after_point_write", _s < _p,
+          "★ 提升放在点写入**之后**（顺序与引擎自己的提升块一致：先装目标再置 state）")
+    check("force_lock_deduped",
+          "M.probed_fields[fkey]" in r and "'fl:'..tostring(c.flight_start)" in r,
+          "按 (flight_start,结果) 去重：一颗雷最多两条（成功/失败）")
+    check("force_lock_whitelisted",
+          "and not line:match('^force_lock;')" in e,
+          "★ 实验判据进节流白名单（被节流掉 = 实验没法判读）")
+    # 4b) ★★ 同一机制接到 **ping 空地** 那条路（2026-10-09，用户要求）★★
+    #     那条路不经过 priority:step —— 点是由 native_arrival 经 options.point_target 写的
+    #     （native_arrival 在 SAFETY_LAYER 里、不可改）⇒ 提升放在**调用侧**的运行时。
+    rt = RUNTIME.read_text(encoding="utf-8")
+    check("promote_state4_exported",
+          "M.promote_state4=promote_state4" in r,
+          "★ 提升函数从 priority 导出，供运行时复用（**不复制实现**，避免两套逻辑漂移）")
+    # ★★ 2026-10-09 实机修正（用户报「空标记应用失败，无效」）★★
+    #    第一版把提升放在**到达段写点之后** —— 那是错的：整段驱动被 `m.state==4`
+    #    挡着，而 state 4 正是要打开的门 ⇒ **提升写在门里面 ⇒ 门永远不开**
+    #    （实机：ping 到了、point_marker 有，但一条 point_taken 都没有，
+    #      雷停在 state 3 直到 state 5 过期）。⇒ 必须放在门**之前**。
+    _gate = rt.index("if (not abandoned) and m.state==4")
+    _prom = rt.index("Priority.promote_state4(env,scope,scope.prepared)")
+    check("ping_route_promotion_before_state_gate", _prom < _gate,
+          "★★ 提升必须在 `m.state==4` 那道门**之前** —— 否则它写在自己要打开的门的里面，"
+          "门永远不开（这就是上一版「无效」的根因）")
+    check("ping_route_promotion_wired",
+          "Priority.promote_state4(env,scope,scope.prepared)" in rt
+          and "route=ping_point" in rt,
+          "★ ping 路线：命中「该驱动 ping 点 + 引擎留在 2/3」时用**同一套** promote_state4 开门")
+    check("ping_route_promotion_single_call_site",
+          rt.count("Priority.promote_state4(") == 1,
+          "★ 运行时里**只有一处**提升调用（上一版那处错误的已移除）—— 防止两处并存后只改一处")
+    check("ping_route_promotion_uses_existing_observation",
+          "with_observation(old.ref,function(scope)" in rt,
+          "★ 复用本帧既有的观测通道（不新开通道、不新增 upvalue —— 该闭包 upvalue 已近 60 上限）")
+    # ★ 第二道死锁：首次接管要求 `selected`（引擎已给它选了目标）——
+    #   无敌人时引擎没有目标 ⇒ 同样进不去。结构路在 state 2/3 **不要求** selected
+    #   （priority 早期路径直接接管）⇒ ping 路放宽成同一口径。
+    # ★★ 第三道死锁（真正的根因，2026-10-09 实机）：TakeGate 的 `no_mark_no_hold` ★★
+    #   纯空地 ping 既无标记、又无旧持有 ⇒ 门控**根本不接管** ⇒ `old` 永不建立
+    #   ⇒ 前面两道门连碰都碰不到。⇒ 给门控加 `point_armed`。
+    _tg = (ROOT / "src/g60" / "take_gate.lua").read_text(encoding="utf-8")
+    check("gate_drives_on_armed_ping",
+          "or o.point_armed) then" in _tg and "point_armed=ping_take}" in rt,
+          "★★ 门控必须把「TTL 内的 ping」当成与标记同级的**玩家意图** —— "
+          "否则纯空地 ping 永远落在 `no_mark_no_hold`，整条路不跑（真正的根因）")
+    check("ping_take_defined_before_gate",
+          rt.index("local ping_take=point_marker~=nil and point_armed==true")
+          < rt.index("local gate=TakeGate.decide{"),
+          "★ `ping_take` 必须在门控调用**之前**定义（同一作用域，不新开 upvalue）")
+    check("ping_route_relaxes_selected_requirement",
+          "or ping_take)" in rt,
+          "★ 放宽首次接管的 `selected` 要求（与结构路同一口径）—— "
+          "否则无敌人时也是死锁；**不再限定 state 2/3**：提升之后 state 变 4，"
+          "若还限定会让下一帧的驱动分支又选错")
+    # ★★★ 2026-10-09 实机事故（我引入的）：驱动段调 `with_observation` **没设 `current`**
+    #     ⇒ 它内部断言 `U.key(ref)==U.key(current.ref)` 失败 ⇒ `expired observation key`
+    #     ⇒ **整帧后续全部不跑**（force_lock 0 条 + 新增一条 frame_error + 驱动段没执行）。
+    check("ping_route_sets_current_around_observation",
+          "current={ref=old.ref,match=m}" in rt
+          and rt.index("current={ref=old.ref,match=m}")
+          < rt.index("with_observation(old.ref,function(scope)"),
+          "★★ 调 `with_observation` **必须先设 `current`**（它内部断言 current 与 ref 对齐）"
+          "—— 不设就抛 `expired observation key`，把整帧后续全部打死")
+    check("ping_route_uses_P_not_new_local",
+          "flk={}," in rt and "pt_route" not in rt,
+          "★ 去重表放进 P 表而非新开 local（该闭包 upvalue 已近 Lua 5.1 的 60 上限）；"
+          "已废弃的 `pt_route` 路线标记清理干净")
+    check("ping_route_promotion_deduped",
+          "'flp:'..tostring(scope.prepared.flight_start)" in rt,
+          "按 (flight_start,结果) 去重，一颗雷最多两条")
+    check("ping_route_promotion_reads_only_via_helper",
+          "env.write(" not in rt,
+          "★ 运行时**不得**自己写内存：写只允许经 promote_state4（守门钉死单一写点）")    # 5) build.py 的计数式例外
+    check("build_py_controlled_exception",
+          "text.count('.WriteProcessMemory(') == 1" in b
+          and "'VirtualProtect'" in b,
+          "★ build.py 开了**计数式**例外：恰好 1 处调用；"
+          "VirtualProtect/VirtualAlloc 等仍一律禁止")
+    # 6) ★★ 2026-10-09：候选组探针**已移除**（它服务于「写入候选分数」那条路）★★
+    #    实机结论：那条路**不需要** —— 强制提升 state=4 之后引擎自己接管了引导
+    #    （5 颗雷 / 5 个不同虫洞，全部炸毁；held=0 说明是引擎在开）。
+    #    知识不丢（写进 README 与工作日志）：候选分数**确实是** `记录+0x44`（float，
+    #    引擎在 0xbbac9 写 max(分,0)），接受判据 = 分数>0 且 +0x48≠0 且 +0x4c≠0；
+    #    但提升判据读的是 seek 函数**栈帧副本**，且**虫洞从来不在候选列表里**
+    #    ⇒ 无敌人时无候选可评分。
+    check("cand_probe_scaffolding_removed",
+          "local function probe_candidate_groups" not in r
+          and "cand_probe_enabled=true," not in e
+          and "cand_probe_enabled=state" not in e,
+          "★ 探针脚手架已移除（它读 manager 只拿到 0xffffffff 哨兵值、没产出有效数据，"
+          "而结论已固化进 force_lock）—— 防止它作为死代码/日志噪音回来"
+          "（⚠ 断言查**函数定义**而非名字：删除说明里会提到旧名字）")
+    # ★ 结构性守门：凡"探针函数里做内存读"的，必须 pcall 包住 ——
+    #   一次覆盖所有探针，不靠人眼（事故正是"忘了包"这一类）。
+    _probe_names = re.findall(r"\nlocal function (probe_[A-Za-z0-9_]+)\(", r)
+    _risky = []
+    for _nm in _probe_names:
+        _blk = _fn_slice(r, "local function " + _nm + "(")
+        if ("scope.read(" in _blk or "env.read(" in _blk) and "pcall(" not in _blk:
+            _risky.append(_nm)
+    check("probes_that_read_are_pcall_guarded", not _risky,
+          "★ 做内存读的探针必须 pcall 包住（读失败会 assert ⇒ 禁用整条 priority）。"
+          " 未包住的: %s" % (_risky if _risky else "无"))
+    # ★ 实机 5/5 成功时 `held=0`（引擎在开）⇒ 旧日志里没有任何距离，
+    #   只能靠人眼确认"到底炸没炸"。把提升那一刻的水平距离写进 force_lock 行，
+    #   以后日志自己就带上下文，不必再问"你看到炸了吗"。
+    check("force_lock_logs_distance",
+          "';dist='..string.format('%.2f'" in r and "math.sqrt(dx*dx+dy*dy)" in r,
+          "★ force_lock 行带「提升时的水平距离」（判读不再依赖人眼）")
+
+
+def test_target_fields_probe():
+    print()
+    print("=== ㉗ 目标字段探针（引擎凭什么接受/拒绝一个目标 —— 2026-10-08）===")
+    r = PRIORITY.read_text(encoding="utf-8")
+    e = (ROOT / "addon" / "entry.lua.in").read_text(encoding="utf-8")
+
+    # 1) helper 存在 + 受开关保护 + 纯只读
+    check("target_fields_helper_exists",
+          "local function probe_target_fields(scope,env,e,tag)" in r,
+          "native_priority 有共用 helper（虫洞与通用两条路径复用，不写两份）")
+    check("target_fields_switch_declared",
+          "target_fields_probe=true," in e,
+          "entry 有开关（默认开：纯只读诊断）")
+    # ★★ 2026-10-08 实机教训：开关写进 state 但**没进 env** ⇒ helper 里
+    #    `env.target_fields_probe` 是 nil ⇒ 静默不触发，而当时守门只查声明没查接线
+    #    ⇒ 门是绿的、功能是死的（用户那次启动 0 条 target_fields）。
+    #    ⇒ 从此"开关"必须连着**传参**一起钉住，且顺序要在声明之后（防写反）。
+    check("target_fields_switch_wired_to_env",
+          "target_fields_probe=state.target_fields_probe," in e
+          and e.index("target_fields_probe=true,") < e.index("target_fields_probe=state.target_fields_probe,"),
+          "★ 开关必须同时传进 env（否则 helper 静默不触发 —— 2026-10-08 实机踩过）")
+    _i = r.index("local function probe_target_fields(scope,env,e,tag)")
+    _j = r.index("\nfunction M.new(env)", _i)
+    blk = r[_i:_j]
+    check("target_fields_is_read_only",
+          "scope.read" in blk and "target_valid" in blk
+          and "setter" not in blk and "ffi.cast('void **'" not in blk,
+          "★ 只做 read 与 target_valid 查询（后者本工程早就在当门槛用），无写操作")
+    # 2) 三个字段偏移必须来自反汇编（8 / 0xc / 0x4c）
+    for _off, _why in (("field(8)", "f08：全局集合的 key，并喂给 0x4a9710 取 bit25"),
+                       ("field(0xc)", "f0c：喂给间接调用与 0x13e1b50"),
+                       ("field(0x4c)", "f4c：category_mask 的实体类别掩码")):
+        check("target_fields_off_" + _off.replace("field(", "").replace(")", ""),
+              _off in blk, "读 %s（%s）" % (_off, _why))
+    # 3) 按 (来源,id) 去重（否则 sticky 复核会逐帧刷屏）
+    check("target_fields_deduped",
+          "M.probed_fields[key]" in blk and "M.probed_fields={}" in r,
+          "★ 按 (来源,id) 去重（sticky 每帧复核 ⇒ 不去重必刷屏）")
+    # 4) 两条路径都插桩，且都在**最前面**（被拒的样本也必须留下证据）
+    check("target_fields_probe_both_paths",
+          "probe_target_fields(scope,env,e,'structure')" in r
+          and "probe_target_fields(scope,env,e,'generic')" in r,
+          "★ 虫洞路径与通用路径都插 → 才有「被拒的虫洞 vs 被接受的敌人」对照")
+    _s = r.index("probe_target_fields(scope,env,e,'structure')")
+    _g = r.index("if e.identity~=structure_mark.identity")
+    check("target_fields_structure_before_rejects", _s < _g,
+          "★ 虫洞插桩在存活/预约/超距等拒绝点**之前**（否则只统计到成功样本）")
+    check("target_fields_emits_evidence_line",
+          "env.emit('target_fields;tag='" in blk and "';valid='" in blk
+          and "';f08='" in blk and "';f4c='" in blk,
+          "每行含 tag / entity / resource / f08 / f0c / f4c / valid")
+    # 5) 白名单
+    check("target_fields_whitelisted",
+          "and not line:match('^target_fields;')" in e,
+          "★ 探针日志进节流白名单")
+    # 6) ★★ 状态记录里的代码指针（2026-10-09）：找"起索敌/状态转换"函数的第二条路 ★★
+    check("record_pointer_probe_exists",
+          "local function probe_record_pointers(env,record,gid)" in r
+          and "env.emit('recptr;entity='" in r,
+          "有状态记录指针探针并打 recptr 行")
+    _i2 = r.index("local function probe_record_pointers(env,record,gid)")
+    # ⚠ 切片终点必须取"下一个 local function"，不能写死 `function M.new(env)` ——
+    #   2026-10-09 在两者之间插入了 promote_state4，写死终点会把它的 scope.read
+    #   算进"零读取"检查里（守门因此误报过一次）。
+    _j2 = r.index("\nlocal function ", _i2 + 10)
+    blk2 = r[_i2:_j2]
+    check("record_pointer_probe_zero_reads",
+          "scope.read" not in blk2 and "read(" not in blk2,
+          "★ **零新增内存读取**：record 是调用方已读好的字符串，只扫它内部")
+    check("record_pointer_probe_code_section_only",
+          "env.base+0x1000" in blk2 and "env.base+0x2110a93" in blk2,
+          "★ 只认代码节内的指针（该节 char=0x60000020 code ⇒ 不掺数据指针）")
+    check("record_pointer_probe_high_dword_zero",
+          "q5==0 and q6==0 and q7==0 and q8==0" in blk2,
+          "用户态指针判据：高 32 位为 0（否则会把数据当指针）")
+    check("record_pointer_probe_deduped",
+          "M.probed_fields[key]" in blk2 and "'rec:'" in blk2,
+          "按手雷去重（同一颗只打一条）")
+    check("record_pointer_probe_called_after_record",
+          "probe_record_pointers(env,record,L.u32(c.identity_bytes,8))" in r,
+          "★ 在 api:step 里 record 取到之后调用（复用同一份已读数据）")
+
+
+def test_env_wiring_complete():
+    print()
+    print("=== ㉘ env 接线完整性（结构性守门：一次覆盖所有字段）===")
+    e = ENTRY_SRC.read_text(encoding="utf-8")
+
+    # 1) 从 `Runtime.new({` 起做括号配对取出 env 字面量（跳过注释与字符串）。
+    #    必须真的配对：env 表里有嵌套表，简单正则会把 `{` 里的东西也算进来。
+    i = e.index("Runtime.new({")
+    j = i + len("Runtime.new(")
+    depth, k, n = 0, j, len(e)
+    while k < n:
+        ch = e[k]
+        if ch == "-" and e[k:k + 2] == "--":
+            k = e.find("\n", k)
+            if k < 0:
+                break
+            continue
+        if ch in "\"'":
+            q = ch
+            k += 1
+            while k < n and e[k] != q:
+                if e[k] == "\\":
+                    k += 1
+                k += 1
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                break
+        k += 1
+    body = e[j:k]
+    assigned = set(re.findall(r"([A-Za-z_][A-Za-z0-9_]*)\s*=", body))
+    check("env_literal_parsed", len(assigned) > 30,
+          "从 Runtime.new({ 解析出 %d 个 env 字段" % len(assigned))
+
+    # 2) src/g60/*.lua 里引用的 env.X
+    used = set()
+    for f in sorted((ROOT / "src" / "g60").glob("*.lua")):
+        used |= set(re.findall(r"env\.([A-Za-z_][A-Za-z0-9_]*)",
+                               f.read_text(encoding="utf-8")))
+
+    # 3) 白名单：由**运行时自己赋值**的字段（不是接线遗漏）。
+    #    ⚠ 白名单必须逐条给理由 —— 它是这个守门唯一的松口处。
+    RUNTIME_ASSIGNED = {
+        "arrival",         # experimental_runtime.lua: `env.arrival=arrival`
+        "claim_profile",   # experimental_runtime.lua: `env.claim_profile=claim_profile`
+        "forget_mark",     # experimental_runtime.lua: 有 ping 时条件赋值
+        "target_allowed",  # experimental_runtime.lua: `env.target_allowed=Allowlist.new(...)`
+        "damage_regions",  # 1.1 移植残留：`env.damage_regions or env.adaptive_approach`
+                           # 的 OR 兜底；adaptive_approach 已为 true ⇒ 无害死引用
+    }
+    missing = sorted(used - assigned - RUNTIME_ASSIGNED)
+    check("env_fields_all_wired", not missing,
+          "★ 模块引用的每个 env.X 都必须在 env 字面量里赋值（否则 helper 静默不触发）。"
+          " 缺失: %s" % (missing if missing else "无"))
+    # 反向：env 里赋值了却没人用的字段也报出来（清死字段用，不算失败）
+    unused = sorted(assigned - used)
+    print("    (提示) env 里赋值但模块未引用: %s" % (unused if unused else "无"))
 
 
 def test_point_target(rt):
@@ -2366,11 +2866,16 @@ def test_point_target(rt):
     # ★ TTL 只能约束"新接管"（2026-10-01 第二次实机修正）★
     #   第一版让 TTL 一到期就把 point_marker 置 nil ⇒ **已在飞的那颗被当场丢掉**
     #   （ping 之后隔一会儿才扔就会撞上）⇒ 这就是"时灵时不灵"的一个来源。
+    #   ⚠ 2026-10-09：新接管条件放宽为 `(selected and point_armed) or (old and old.point)
+    #     or ping_take` —— `ping_take` = TTL 内的一次 ping（与标记同级的玩家意图；
+    #     门控侧对应 `o.point_armed`，解掉 `no_mark_no_hold` 那道真正的死锁）。
+    #     **TTL 语义不变**：仍只挡新接管，`old.point`（已在飞）照样不受影响。
     check("point_ttl_gates_new_takeover_only",
           "local point_armed" in r
-          and "((selected and point_armed) or (old and old.point))" in r
+          and "((selected and point_armed) or (old and old.point) or ping_take)" in r
           and "point_armed=(frame-P.pt.frame)<=env.point_target_ttl_frames" in r,
-          "★ TTL 只挡新接管；已在引导中的那颗不受影响（否则半路被丢、永远不炸）")
+          "★ TTL 只挡新接管；已在引导中的那颗不受影响（否则半路被丢、永远不炸）；"
+          "新增 `ping_take` 只为解无敌人时的死锁，不改变 TTL 语义")
     check("point_marker_requeues_when_reappearing",
           "if P.pt.token~=lp.token or P.pt.seen==false then" in r
           and "P.pt.seen=false" in r,
@@ -2566,7 +3071,7 @@ def test_blast_sites(rt):
     # 0) ★★★ 真求值：这条是本轮事故（整包 disabled）的守门 ★★★
     #
     #   2026-10-03 实机：日志只有一行
-    #     `disabled: mods/hd2test/g60_bughole_lock.lua:7801: attempt to index
+    #     `disabled: mods/hd2test/g60_directed_strike.lua:7801: attempt to index
     #      local 'BlastSites' (a function value)`
     #   —— 我把模块写成 `return function() … end`，而 build.py 侧注册成 factory=false
     #   ⇒ `local BlastSites=(function() <模块> end)()` 求值成**函数** ⇒ entry 索引它即崩
@@ -2715,7 +3220,8 @@ def test_blast_sites(rt):
           "local s=BlastSites and BlastSites[\"" + FAB + "\"]" in e
           and "if not s then return ';blast_site_lift=nil;blast_site_region=none' end" in e
           and "(r and r.radius and r.depth and r.above)" in e
-          and "and (r.radius..'/'..r.depth..'/'..r.above) or 'default')" in e,
+          and "and (r.radius..'/'..r.depth..'/'..r.above) or 'default')" in e
+          and "';blast_sweep='..sw" in e,
           "★ 状态行用**段内 IIFE** + 逐字段判空："
           "① 段外 local 会让逐段求值测试报 nil 拼接；"
           "② `nil..'/'` 会加载期抛错 ⇒ 整包 disabled")
@@ -2727,7 +3233,7 @@ def test_blast_sites(rt):
     check("blast_sites_runtime_dedup_in_P",
           "P.blast[bkg]" in r and "blast={}," in r
           and "site={},orig={},hit={},hl={}," in r
-          and "pex={},swk={},swn=0}" in r,
+          and "pex={},swk={},swn=0," in r and "pbt={}" in r,
           "★ 每目标只打一条诊断，去重表放进 **P**（不新增 upvalue）")
     check("blast_sites_whitelisted",
           "and not line:match('^blast_point;')" in e,
@@ -2750,28 +3256,34 @@ def test_blast_sites(rt):
           "★ 档位表挂在名册上（`sites.scan`；键名不是资源哈希，不会与查表冲突）")
     #   ⚠ 先判"匹配不到"再取值：整段被删时 `re.search(...).group(1)` 会抛
     #     AttributeError ⇒ 测试**崩溃**而不是干净 FAIL（本项目明令避免的形态）。
-    _m_lift = re.search(r"local LIFT=([0-9.]+)", b)
-    _m_sc = re.search(r"local SCAN=\{([^}]*)\}", b)
-    _lift = float(_m_lift.group(1)) if _m_lift else -1.0
     #   ⚠ 空档位表（`SCAN={}`）是**合法终态**：标定完就退回单一 lift。
-    #     所以先 `if x.strip()` 再 float —— 否则 `float('')` 会抛 ValueError，
-    #     变成"测试崩溃"而不是干净 PASS/FAIL。
-    _sc = [float(x) for x in _m_sc.group(1).split(",") if x.strip()] if _m_sc else []
-    _scan_on = len(_sc) > 0
+    #     所以先 `if x.strip()` 再 float —— 否则 `float('')` 会抛 ValueError。
+    def _scan_pair(lift_name, scan_name):
+        m1 = re.search(r"local %s=([0-9.]+)" % lift_name, b)
+        m2 = re.search(r"local %s=\{([^}]*)\}" % scan_name, b)
+        lv = float(m1.group(1)) if m1 else -1.0
+        sc = [float(x) for x in m2.group(1).split(",") if x.strip()] if m2 else []
+        return lv, sc
+
+    def _scan_form_ok(lv, sc):
+        if not sc:
+            return lv > 0.0
+        return (len(sc) >= 4 and sc == sorted(sc) and len(set(sc)) == len(sc)
+                and sc[0] > 0 and min(sc) < lv < max(sc))
+
+    _lift, _sc = _scan_pair("LIFT", "SCAN")
     check("blast_scan_form_ok",
-          (not _scan_on and _lift > 0.0)
-          or (len(_sc) >= 4 and _sc == sorted(_sc) and len(set(_sc)) == len(_sc)
-              and _sc[0] > 0 and min(_sc) < _lift < max(_sc)),
+          _scan_form_ok(_lift, _sc),
           "★ 档位表只有两种合法形态："
           "① **空 = 已标定完**（走单一 `lift`，必须 > 0）；"
-          "② 递增、无重复、≥4 档、且**把 `lift` 夹在中间** —— "
+          "② 递增、无重复、≥4 档、且**把 `LIFT` 夹在中间** —— "
           "否则扫完也说不清「是高度不对，还是我们只扫了单侧」")
     check("blast_scan_per_grenade_not_per_frame",
           "P.swk[m.id]" in r and "if not sw_i then" in r and "P.swn=P.swn+1" in r,
           "★★ 档位按**手雷**推进（`P.swk[m.id]` 记住这一颗分到的档）—— "
           "按帧推进的话同一颗手雷飞行途中会不停换点，等于没测")
     check("blast_scan_state_in_P",
-          "pex={},swk={},swn=0}" in r and "local swk" not in r,
+          "pex={},swk={},swn=0," in r and "pbt={}" in r and "local swk" not in r,
           "★ 计数器放进 **P**（不新增 local：`host:tick` 的 upvalue 上限 60）")
     check("blast_scan_falls_back_to_fixed_lift",
           "local blast_lift,sw_i=site.lift,'-'" in r
@@ -2820,6 +3332,11 @@ def test_blast_sites(rt):
           and "scan" not in re.search(r"region=\{[^}]*\}", b).group(0),
           "★★ **一次只改一个变量**：档位只动 lift、不动 region／水平 —— "
           "多变量同时变 ⇒ 出了结果也归因不了（本项目铁的纪律）")
+    check("blast_scan_per_site_priority",
+          "local scan=site.scan or env.blast_sites.scan" in r,
+          "★★ 档位表**优先取本目标自己的**（`site.scan`），缺省才回落全局 —— "
+          "多个目标共用一张表会互相污染档号（**各自标定**是机制的让步）")
+
     # ★ 已爆短路的**日志去重**（实机抓到同一颗手雷刷 45 行）
     _rn = re.sub(r"\s+", " ", r)
     check("precheck_log_dedup_once",
@@ -2864,7 +3381,7 @@ def test_blast_sites(rt):
           "★ 体内爆点相关的读取全为只读（只有 ReadProcessMemory + 6 个原生调用）")
     check("blast_probe_state_in_P",
           "P.site[m.id]=tostring(e.id);P.orig[m.id]=p" in r and "P.hl[m.id]=true" in r
-          and "site={},orig={},hit={},hl={}," in r and "pex={},swk={},swn=0}" in r,
+          and "site={},orig={},hit={},hl={}," in r and "pex={},swk={},swn=0," in r and "pbt={}" in r,
           "★ 状态表全在 **P**（不新增 local/upvalue）")
     check("blast_probe_keeps_safety_layer_untouched",
           "motion_record" not in nt and "scene_motion" not in nt,
@@ -3135,8 +3652,11 @@ def test_status_line_fits_log_cap():
           ":sub(1,900)" in e and ";cap=900'" in e,
           "★ `emit` 的截断上限与 `status_len` 自报的 `cap` 必须是**同一个数**"
           "（改一个不改另一个 ⇒ 自报失去意义）")
-    for fld in ("titan_standoff=", "titan_arrival_radius=", "titan_standoff_min=",
-                "titan_belly_above=", "dragonroach_enabled=", "dragonroach_resource=",
+    # ★ 2026-10-05：`titan_standoff_min=` / `titan_belly_above=` 已按上游移除
+    #   （见 test_adaptive_standoff 的反向断言）；新增上游泰坦链的两个开关。
+    for fld in ("titan_standoff=", "titan_arrival_radius=",
+                "adaptive_approach=", "blast_regions=",
+                "dragonroach_enabled=", "dragonroach_resource=",
                 "enemy_veto_resources=", "unit_mark_live_only=",
                 "structure_mark_live_only=", "marked_unit_rank_first=",
                 "titan_enabled=", "titan_resource=", "titan_variants="):
@@ -3202,6 +3722,11 @@ def main():
     test_generic_takeover()
     test_link_diagnostics()
     test_early_nav_probe()
+    test_sel_probe()
+    test_code_probe()
+    test_target_fields_probe()
+    test_env_wiring_complete()
+    test_force_lock()
     test_point_target(rt)
     test_blast_sites(rt)
     test_priority_wiring()

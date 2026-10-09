@@ -66,7 +66,7 @@ def build_name_map():
     """资源哈希 -> 实体名。用 datalibrary 的字符串表 + MurmurHash64A 反查。"""
     name_map = {}
     for cand in (
-        ROOT.parent / "hd2-charge-mod/offline/datalibrary/hashes.txt",
+        ROOT.parent / "Hd2-Armory-Tuning-Bench/offline/datalibrary/hashes.txt",
         ROOT / "snapshot" / "hashes.txt",
     ):
         if not cand.exists():

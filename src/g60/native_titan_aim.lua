@@ -5,6 +5,12 @@ local Context=require('g60.titan_context')
 local Route=require('g60.titan_route')
 local WeakRoute=require('g60.weakpoint_route')
 local StructureRoute=require('g60.structure_route')
+-- ★ 2026-10-05（用户拍板「泰坦方面全部改成上游 1.1」）：泰坦链的后两段。
+--   别名故意不叫 `Navigation`：build.py 的 require 替换会让
+--   `local Navigation=require('g60.navigation')` 变成自引用的
+--   `local Navigation=Navigation`（右值取外层 nil）。
+local BlastRoute=require('g60.blast_route')
+local Adaptive=require('g60.adaptive')
 local ArrivalPolicy=require('g60.arrival_policy')
 local M={}
 local setter=ffi.typeof('void (*)(void **, const void *)')
@@ -61,7 +67,13 @@ function M.new(env)
             if not (previous and previous.cancelled and not fresh) then
                 local id=fresh and c.selection.id or previous.target.id
                 local same=previous and previous.target and previous.target.id==id and previous.target or nil
-                local captured,value=pcall(Context.capture,scope.read,env.base,env.exe,id,profile,same)
+                -- ★ follow_animation（2026-10-04 整合上游 1.1.0 的 animated_belly）：
+                --   为真时 capture 会读 `belly` 骨骼的**真实姿态**并据此修正爆点。
+                --   ⚠ **只在泰坦主路径传** —— `structure_mark` 分支与「通用位置查询」那两处
+                --   处理的是结构（profile 里没有 `animated_belly`），传了是空转；
+                --   而「ALIVE_BY_READ」那条复核路径保持轻量更重要（多读一块会更容易失败）。
+                local captured,value=pcall(Context.capture,scope.read,env.base,env.exe,id,profile,same,
+                    env.titan_animated_belly)
                 if captured then target=value else reason=tostring(value) end
             end
             local function check()
@@ -121,66 +133,56 @@ function M.new(env)
             if target then
                 local prior=previous and not previous.cancelled and previous.target.id==target.id
                     and previous.route or nil
-                local planned,value,detail
-                local route_standoff=env.titan_standoff
+                -- ★★★ 2026-10-05：本段按用户拍板**改为上游 1.1 的泰坦链**（上游 3398-3433）★★★
+                --
+                -- 上游泰坦链是**三段**，我们以前只有第一段 + 一个手工区域：
+                --   ① `TitanRoute.step`（绕行五阶段）
+                --   ② **`BlastRoute.refine`** —— 圆柱爆区 `center = 腹点-(0,0,2.5)`、`radius=2`、
+                --      `depth=min(0.8, …)`；置 `terminal/arrival_point/arrival_region`
+                --   ③ **`Adaptive.refine`**（`adaptive_approach=true`）—— 泰坦引爆点的**最终决定者**：
+                --      `c = 腹点 + 腹法线×2.5`、`surface` 到达区域、并用 `Navigation`
+                --      规划一条不穿身的航路；姿态不可靠 / 爆点低于地板 ⇒ `terminal=false`
+                --   ⇒ 我们自研的 `titan_standoff` 自适应（1.5~2.5 / `titan_standoff_min`）
+                --     **整段移除**：上游不做这件事（它宁可拒绝也不把爆点往腹部压，有测试钉住），
+                --     现在直接用上游的 `env.titan_standoff`（2.5）。
+                --   ⚠ 上游在 `Adaptive` 里对"姿态不可靠"的处理是 **`terminal=false`（不授权引爆）**，
+                --     并明确写着 `No unsafe direct fallback` —— 本工程照上游，不再回落到竖直爆点。
+                local now=(env.damage_regions or env.adaptive_approach or profile.kind=='charger_front'
+                    or profile.factory)
+                    and ArrivalPolicy.elapsed(c.time_hex,c.flight_start)/1000000 or nil
                 if profile.structure then
                     planned,value,detail=pcall(StructureRoute.step,own_position,target,prior,profile)
                 elseif profile.kind then
-                    local now=profile.kind=='charger_front' and ArrivalPolicy.elapsed(c.time_hex,c.flight_start)/1000000 or nil
-                    planned,value,detail=pcall(WeakRoute.step,own_position,target,prior,profile,now)
+                    planned,value,detail=pcall(WeakRoute.step,own_position,target,prior,profile,
+                        profile.kind=='charger_front' and now or nil)
                 else
-                    -- ★★ standoff 自适应 1.5~2.5（2026-09-29，用户明确授权）★★
-                    --
-                    -- titan_route 的净空判定是**硬拒绝**：
-                    --     blast_z(=p_z-standoff) >= floor_z(=origin_z+1.25)
-                    -- ⇒ 要求 p_z >= origin_z + 1.25 + standoff
-                    --   ★ 2026-09-30：离地余量**保持上游原值 1.25**（不动）——
-                    --     降它只会让爆点更低、更远离腹部（实机：离腹部远、贴地、炸不死泰坦）。
-                    --     真正该放宽的是**下限 `lo`**：让 standoff 能缩到更小，
-                    --     即爆点贴近腹部（伤害集中）。现已收到 0.5。
-                    -- 泰坦站姿/坡度稍变就踩线（实测 4 次接管有 1 次因此放弃 = 25%）。
-                    --
-                    -- 用户授权把 standoff 从 2.5 收到 1.5 ⇒ 在**调用方**算出
-                    -- "刚好能清空地板"的值再传进去。`titan_route.lua` 因此保持
-                    -- 逐字节不变（它是 tests/test_bughole_scope.py 的 `untouched:` 安全层）。
-                    --
-                    -- ★ 2026-09-30：曾把 floor 余量（1.25）与 standoff 下限（→0/0.5）
-                    --   先后调小试验，**实机效果都不好，已全部回滚到本行这一版**：
-                    --   floor 余量回到上游的 1.25（titan_route 逐字节恢复），
-                    --   standoff 自适应范围回到用户授权的 1.5~2.5。
-                    --   ⇒ 教训：这条净空链上的数值是上游按泰坦体型标定的，别再逐项试小。
-                    --
-                    -- ⚠️ 与上游意图的取舍（必须记录）：上游有一条测试写明
-                    --   "refuses instead of moving the blast back against the belly"，
-                    --   即宁可放弃也不把爆点往腹部压。这里**由用户明确决定**放宽：
-                    --   1.5 仍是有效 standoff（不会贴到腹部），用它换"不再因几厘米净空差放弃"。
-                    --   max_standoff 连 1.5 都不到时 Route.step 依然拒绝 —— 硬底线保留。
-                    local max_standoff=target.point[3]-(target.origin[3]+1.25)
-                    if route_standoff and route_standoff>0 and max_standoff<route_standoff then
-                        -- ★★ 2026-10-02：默认下限 **0.85 → 2.0**（用户裁定，逐级实测所得）。
-                        --   理由见 `addon/entry.lua.in` 里那段完整记录：
-                        --   · 0.85 太松：允许爆点贴到腹下 0.85 m ⇒ "偶尔在离腹部极近处引爆"
-                        --   · 1.75 实测**仍会偶尔炸不死**（贴腹区间还是太宽）
-                        --   · 2.5（= 不许缩短）过于严格：腹部压低时直接拒绝、手雷干等
-                        --   · 2.0 最终取值 ⇒ `max(lo, max_standoff)` 恒 ≥ 2.0
-                        --     （收缩区间只剩 2.0~2.5）
-                        --   腹部低到连 2.0 都放不下时 `titan_route` 拒绝规划，
-                        --   运行时把它当**等待**（不是引导失败）。
-                        --   回退：0.85（松）/ 1.75 / 2.5（严）。
-                        local lo=env.titan_standoff_min or 2.0
-                        route_standoff=math.max(lo,max_standoff)
-                        local tag=tostring(target.id)..'|'..string.format('%.2f',route_standoff)
-                        if env.emit and not standoff_logged[tag] then
-                            standoff_logged[tag]=true
-                            env.emit(string.format(
-                                'titan_standoff_adapted;target=%s;from=%.2f;to=%.2f;min=%.2f;max=%.2f',
-                                tostring(target.id),env.titan_standoff,route_standoff,lo,max_standoff))
-                        end
-                    end
-                    planned,value,detail=pcall(Route.step,own_position,target,prior,route_standoff,
-                        env.titan_arrival_region and env.titan_arrival_region.radius)
+                    planned,value,detail=pcall(Route.step,own_position,target,
+                        prior and prior.side and prior.cruise_offset and prior or nil,
+                        env.titan_standoff,env.titan_arrival_region and env.titan_arrival_region.radius)
+                end
+                if planned and value and env.blast_regions and not profile.structure then
+                    planned,value=pcall(BlastRoute.refine,own_position,target,prior,profile,value)
+                end
+                if planned and value and env.adaptive_approach and not profile.structure then
+                    planned,value=pcall(Adaptive.refine,own_position,target,prior,profile,value,now)
                 end
                 if planned then route,reason=value,detail else reason=tostring(value) end
+                -- ★ refine 失败必须可见（2026-10-05）：`Adaptive` / `BlastRoute` 里带不少断言
+                --   （`navigation orthogonality` / `adaptive heading` / `adaptive clock`…）。
+                --   它们一旦在实机上抛错，表现是"泰坦**一整局**都不接管"——reason 只有文本，
+                --   日志里一个字都没有。⇒ 按目标去重打一条，让第一局就能定位。
+                if not planned and env.emit then
+                    local rt=tostring(value)
+                    if rt:find('navigation',1,true) or rt:find('adaptive',1,true)
+                        or rt:find('blast',1,true) then
+                        local rk='refine:'..tostring(target and target.id or '?')..'|'..rt
+                        if not standoff_logged[rk] then
+                            standoff_logged[rk]=true
+                            env.emit('titan_refine_failed;target='..tostring(target and target.id or '?')
+                                ..';detail='..rt)
+                        end
+                    end
+                end
                 if not route then
                     -- ★★ 净空不足的几何画像（2026-09-29）★★
                     --
@@ -203,7 +205,7 @@ function M.new(env)
                             clearance_logged[tag]=true
                             -- 用**实际传入**的 standoff（可能是自适应后的值），
                             -- 否则日志会显示 2.5 而实际用的是别的 ⇒ 误导。
-                            local standoff=route_standoff or env.titan_standoff or 0
+                            local standoff=env.titan_standoff or 0
                             local p=target.point
                             local o=target.origin
                             env.emit(string.format(
@@ -221,21 +223,14 @@ function M.new(env)
             if target and env.arrival then
                 local stage=(profile.kind and 'weakpoint/'..profile.kind or 'titan')..'/'..route.route.stage
                 local options=profile.kind and {point=true,below=not profile.structure and profile.kind~='head' and profile.kind~='rear',region=route.arrival_region or profile.region}
-                -- ★★ 泰坦「腹部提前引爆」余量（2026-10-02，用户要求"飞到腹部底下就引爆"）★★
-                --   与 native_arrival 的 `below` 配合：允许在爆点
-                --   （`blast_z = 腹点 - standoff`）**上方** belly 以内引爆，
-                --   让 G-60 不必先够到那个更深的爆点（那正是"在腹部盘旋很久"的来源）。
-                --   ★ 上限由 standoff 约束：引爆点最高 = blast_z + belly ≤ 腹点 - 0.25 m
-                --     ⇒ **仍在腹部下方**，不会退化成"在头顶炸"。
-                --   ★ 只对泰坦 baseline 生效：弱点路径（`profile.kind`）不传该字段
-                --     ⇒ native_arrival 侧缺省 0 ⇒ 弱点行为逐字节不变。
-                --   ⚠ `env.titan_belly_above` 置 0（或不配）⇒ 完全回到旧行为。
-                if not profile.kind and env.titan_belly_above and route_standoff then
-                    local limit=route_standoff-0.25
-                    if limit>0 then
-                        local belly=math.min(env.titan_belly_above,limit)
-                        if belly>0 then options={titan_belly_above=belly} end
-                    end
+                -- ★ 上游 3443-3445：泰坦 baseline（无 `kind` / 非 robot）**使用 route 自带的区域**
+                --   —— 那是 `BlastRoute`（圆柱）或 `Adaptive`（`surface`，法线=腹法线）留下的。
+                --   `below=true`：`surface` 自带"从外侧靠近 + 地板"判定、圆柱也由 Policy 自行处理
+                --   ⇒ 这里不再叠加"必须在目标点下方"（native_arrival 侧有同义放行）。
+                -- ⚠ 本工程原有一条 `titan_belly_above`（"腹部提前引爆"余量）—— **已按上游移除**：
+                --   上游没有这个量，且它只在"竖直爆点"几何下才有意义（现在爆点由 Adaptive 决定）。
+                if not profile.kind and route.arrival_region then
+                    options={point=true,below=true,region=route.arrival_region}
                 end
                 -- ★ 泰坦接近诊断（2026-10-02）：每 30 次调用一条，给出**实际几何**。
                 --   为什么必须：用户报"在腹部盘旋很久才引爆"时，日志里**只有 stage 变化**，
@@ -269,7 +264,7 @@ function M.new(env)
                             route.distance or -1,math.sqrt(dx*dx+dy*dy),
                             own_position[3]-route.point[3],
                             route.forward or -1,udz,
-                            tostring(own_position[3]<=route.point[3]+(options and options.titan_belly_above or 0)),
+                            tostring(own_position[3]<=route.point[3]),
                             tostring(route.terminal==true),
                             target.point[3],own_position[3]-target.point[3],
                             table.concat(route.point,','),
@@ -300,7 +295,7 @@ function M.new(env)
                         'titan_blast;target=%s;stage=%s;p_z=%.2f;own_z=%.2f;belly_dz=%.2f;standoff=%.2f',
                         tostring(target.id),tostring(route.route.stage),
                         target.point[3],own_position[3],own_position[3]-target.point[3],
-                        route_standoff or env.titan_standoff or 0))
+                        env.titan_standoff or 0))
                 end
                 if profile.structure and value.kind=='search' and env.emit then
                     env.emit('structure_stalled;entity='..L.u32(c.identity_bytes,8)..';target='..target.id

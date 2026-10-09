@@ -74,6 +74,11 @@ function M.new(env)
         --   `host:tick` 的匿名函数 upvalue 已吃满 60（Lua 5.1 上限），
         --   新开一个 local 就可能让整个 chunk 编译失败（"mod 没生效"）。
         pmark={},pmark_n=0,
+        -- ★ 2026-10-09：本帧走的**点目标路线**（'ping' / 'blast' / nil）+
+        --   ping 路强制提升的去重表。**放进 P 而不是新开 local** ——
+        --   同上面 pmark 的理由：闭包 upvalue 已接近 Lua 5.1 的 60 上限，
+        --   新开 local 可能让整个 chunk 编译失败（"mod 没生效"）。
+        flk={},
         -- ★ 点目标（ping 地面）的"新鲜度"状态：`token` = 当前标记，`frame` = 它出现的帧。
         --   同一个 token 只在 TTL 内作数（见 point_target_ttl_frames）。
         --   `seen` = 上一帧是否看到该标记（用于"消失后又出现 ⇒ 重新计时"）
@@ -98,7 +103,15 @@ function M.new(env)
         --       必须**按手雷**推进、不能按帧推进，否则同一颗手雷飞行途中会一直换目标点。
         --       同样因为 upvalue 上限 60 而放进 P（不新增 local）。
         site={},orig={},hit={},hl={},
-        pex={},swk={},swn=0}
+        pex={},swk={},swn=0,
+        -- ★ 2026-10-05：`pbt` = "ping 点压过引擎自选泰坦"这条日志的按手雷去重表。
+        --   不加去重会**逐帧**刷屏（条件一旦成立就一直成立，直到点打掉或 TTL 过期）。
+        pbt={},
+        -- ★★ 2026-10-07 转阶段探针（用户要求）★★
+        --   `sel` = 按手雷记上一次的「选择元组」五个字段拼串，用于**只在变化时**打一条；
+        --   `seln` = 已打行数（上限 4000，防一次长任务把日志灌爆）。
+        --   为什么放 P：upvalue 上限 60，本文件的计数器一律进 P（见上面的说明）。
+        sel={},seln=0}
     local frame_errors={}
     local structure_issue_counts={}
     local last_structure_issue
@@ -205,6 +218,12 @@ function M.new(env)
         return nil
     end
     local function has_weakpoint(resource) return claim_profile(resource)~=nil end
+    -- ★ 方案一（2026-10-07，用户拍板）：把认领查询暴露给 native_priority ★
+    --   generic（玩家标记任意目标）认领时，命中认领 profile 的目标必须用
+    --   **几何爆点**而不是 motion 位置（实机取证：2026-10-07 War Strider 测试局）。
+    --   ⚠ 判断只保留这一份（"同一个判断出现两处"的教训）——native_priority 通过
+    --     `env.claim_profile(e.resource)` 复用，不得在模块里重写第二份认领逻辑。
+    env.claim_profile=claim_profile
     -- ★★ 通用标记目标认领（2026-09-30，用户要求）★★
     --
     -- 除 虫洞 / 泰坦 / 泰坦变体（走 claim_profile 的专门路径）外，
@@ -466,6 +485,33 @@ function M.new(env)
                     ..';selected='..tostring(c.selection.id)
                     ..';detail=treated_as_untrusted_target')
             end
+        end
+        -- ★★★ 认出"这个自定义航点是我们自己写的"（2026-10-05，移植上游 runtime 6407-6416）★★★
+        --
+        -- 上游原文注释一句话说清用途：
+        --   `Permit priority to recognize the custom waypoint it already owns.
+        --    It must still revalidate the target and current native observation.`
+        --
+        -- 为什么非要在这里（而不是在 priority 里自己比）：
+        --   `old.titan` / `old.lock` 里存的 `point_bytes` 是**上一次**写下去时的字节，
+        --   而引擎可能已经动了那块选择槽。只有**本帧的** `c.record_bytes` 才能证明
+        --   "此刻记录里那个点，正是我们自己那个点"。⇒ 必须由观测者下这个结论。
+        --
+        -- 判据（全只读；与 native_priority 那侧同源，改一处必须两处一起改）：
+        --   · `flag==1` 选择槽活着、`not has_target` 不是实体目标 ⇒ 是个"点"
+        --   · `0x1d..0x28` == 持有者自己的 `point_bytes`
+        --   · `+0x64 == 0` 类别掩码已清（原生 proximity 关着）
+        -- 两个持有者都要看：
+        --   ① `track.titan`（泰坦/航点路径；上游只有这一种）
+        --   ② `track.lock`（早期接管 state 2/3 的点目标路径 —— 本工程特有，见 native_priority 504-563）
+        -- ⚠ 两者都要求 `point_bytes` 非 nil：没有点的锁（普通实体锁）不参与，
+        --   否则会误判成"已拥有自定义航点"，把正常的实体选择写入也一起跳过。
+        local holder=track and (track.titan and not track.titan.cancelled and track.titan
+            or track.lock)
+        if holder and holder.point_bytes and c.selection.flag==1 and not c.selection.has_target
+            and c.record_bytes:sub(0x1d,0x28)==holder.point_bytes
+            and Layout.u32(c.record_bytes,0x64)==0 then
+            scope.guidance_observation=holder
         end
         scope.validate=function()
             -- This only checks observed state. It never reports lifetime_verified=true.
@@ -746,6 +792,43 @@ function M.new(env)
                 state_age[fp]=(state_age[fp] or 0)+1
                 if m.state==4 then saw_state4=true end
                 sigs[#sigs+1]=st..'@'..tostring(state_age[fp])
+                -- ★★ 转阶段 / 换目标探针（2026-10-07，用户要求）★★
+                --
+                --   问的是："引擎在什么条件下把 G-60 转向索敌 / 丢掉目标？"
+                --   （本文件上方 entry 的注释里记着同一个未解问题：
+                --     「无敌人时 G-60 不被驱动（受 state 约束）」，
+                --     而定位"分配目标 / 状态转换"那个函数需要 dump 运行时镜像。）
+                --
+                --   ⚠ 函数本体 hook 不到：引擎是**自己**去调 clear/orbit 的
+                --     （`compat/native_search_binding.lua` 那两个函数指针只是
+                --      我们主动调用用的入口），本工程也不引入代码注入。
+                --   ⇒ 但**转阶段的后果是可见的**，而且全在每帧已经读到的 match 行上：
+                --     state            阶段（2/3/4）—— 回退 = 转索敌
+                --     selection_id     +0x18 当前锁定实体 id（被清成哨兵 = 丢目标）
+                --     selection_flag   有效选择标志（归零 = 没有目标）
+                --     selection_resource 该 id 的资源哈希 ⇒ **引擎到底锁了谁**
+                --     candidate_source +0x68 选择来源（候选表选的 / 标记给的）
+                --   ⇒ 零新增内存读、零新依赖、零写操作（纯观测）。
+                --
+                --   去重：只在元组**变化**时打一条（首次也打，用来区分
+                --   "投出即锁上"与"投出就没有目标"）。一颗雷一次任务通常 3~8 条。
+                --   ⚠ 上限 4000 行写死为字面量：新增模块级 local 会占 upvalue
+                --     （本文件反复踩过 60 上限），这里不值得为常量付一个名额。
+                if env.sel_probe_enabled~=false and m.behavior_id==4
+                    and P.seln<4000 then
+                    local tuple=tostring(m.state)..'|'..tostring(m.selection_id)
+                        ..'|'..tostring(m.selection_flag)..'|'
+                        ..tostring(m.selection_resource)..'|'..tostring(m.candidate_source)
+                    local was=P.sel[fp]
+                    if was~=tuple then
+                        P.seln=P.seln+1
+                        env.emit('sel_probe;entity='..m.id
+                            ..';was='..tostring(was or 'first')..';now='..tuple
+                            ..';age='..tostring(state_age[fp] or 0)
+                            ..';frame='..tostring(frame))
+                        P.sel[fp]=tuple
+                    end
+                end
             end
             diag.total=#observed.matches
             diag.manager=observed.behavior_count
@@ -1044,6 +1127,11 @@ function M.new(env)
                         env.emit('enemy_selection;entity='..m.id..';resource='..veto_resource
                             ..';vetoed='..tostring(veto_selected))
                     end
+                    -- ★★ 2026-10-09：TTL 内的一次 ping = **玩家明确意图** ★★
+                    --   与"标记"同级，必须能让门控放行。不加这一项时"纯空地 ping"
+                    --   永远落到 `no_mark_no_hold` ⇒ 不建 `old` ⇒ ping 路整条不跑
+                    --   （用户报「空标记应用失败，无效」的根因）。
+                    local ping_take=point_marker~=nil and point_armed==true
                     local gate=TakeGate.decide{
                         behavior_id=m.behavior_id,state=m.state,
                         native_update_eligible=m.native_update_eligible,
@@ -1051,7 +1139,8 @@ function M.new(env)
                         structure_mark=structure_mark,allow_early=drive3,
                         selection_vetoed=veto_selected,
                         state_age=state_age[early_fp] or 0,
-                        early_min_age=EARLY_MIN_AGE}
+                        early_min_age=EARLY_MIN_AGE,
+                        point_armed=ping_take}
                     if not gate.drive and structure_mark and old then
                         if gate.why=='holding_nothing' or gate.why=='no_mark_no_hold'
                             then diag.held=diag.held+1
@@ -1325,22 +1414,97 @@ function M.new(env)
                     --   `old.lock` 被释放的条件不变（目标不可用 / 被 quarantine），
                     --   所以这不会让泰坦"永远打不了"。
                     local marked_lock_held=old~=nil and old.lock~=nil
+                    -- ★★★ 明确的"ping 地面点"压过**引擎自选**的泰坦（2026-10-05 用户报）★★★
+                    --
+                    -- 现象（用户原话）：「如果我没标记泰坦，标记了泰坦附近的空地，
+                    --   G60 会飞向泰坦而不是飞向空地爆炸」。
+                    --
+                    -- 根因：`titan_selected`（**引擎自动**给这颗 G-60 选了泰坦）在优先级里
+                    --   压住了 ping 点（下面 `point_drive` 有 `and not titan_selected`）
+                    --   ⇒ 玩家**明确指定了一个落点**，却被引擎的自动选择否掉。
+                    --
+                    -- ★ 与 2026-10-01 那条用户裁定**不冲突**：那条是
+                    --   「虫洞/构筑 > **标记单位** > 空白标记」，说的是**玩家点名标记的单位**；
+                    --   这里的泰坦是**引擎自己挑的**，玩家没点它。两者是不同的事。
+                    --
+                    -- ⇒ 让位条件（缺一不可）：
+                    --   · `point_marker` 非空 **且** `point_armed`（在 TTL 内 = 是新的一次 ping）
+                    --   · **不是**玩家点名的那个单位（`m.selection_id==structure_mark.id`）
+                    --     —— 玩家点了泰坦本体就该打泰坦；这一条同时避开了
+                    --     "长期存活的结构标记把能力挡死"那个老坑（不按"有无标记"判，按"是不是它"判）
+                    --   · 不是虫洞标记（虫洞优先级更高，早已由 `mark_is_wormhole` 处理）
+                    --   · 这颗 G-60 **还没在跑泰坦航路**（`not (old and old.titan)`）——
+                    --     上游原则「已在执行任务的手雷保留其分配」，半路改向等于浪费一颗
+                    local mark_is_this_unit=structure_mark~=nil and m.selection_id==structure_mark.id
+                    local ping_beats_titan=point_marker~=nil and point_armed==true
+                        and not mark_is_wormhole and not mark_is_this_unit
+                        and not (old and old.titan)
+                    if ping_beats_titan and env.emit and not P.pbt[m.id] then
+                        P.pbt[m.id]=true
+                        env.emit('point_beats_titan;entity='..m.id
+                            ..';titan='..tostring(m.selection_id)
+                            ..';slot='..tostring(point_marker.slot)
+                            ..';reason=PLAYER_PING_OVER_ENGINE_SELECTION')
+                    end
                     local titan_selected=not abandoned and titan and selected
                         and not retry_search and not mark_is_wormhole and not marked_lock_held
+                        and not ping_beats_titan
                         and has_weakpoint(m.selection_resource)
                     -- ★★ 点目标驱动（2026-10-01）★★
                     --   优先级按**每颗 G-60** 判（第一版写成"有结构标记就全局禁用点目标"，
                     --   实机被一个长期存活的结构标记把整个能力挡死 —— 见登记处的说明）：
                     --     ① 这颗 G-60 已被 priority 锁上结构（`old.lock`）⇒ 结构优先，让给结构
-                    --     ② 引擎选中了泰坦/弱点类目标（`titan_selected`）⇒ 泰坦优先
-                    --     ③ 其余才轮到 ping 的地面点
+                    --     ② **玩家点名标记**的单位（虫洞/标记单位）⇒ 让给它
+                    --     ③ 引擎自选的泰坦 —— **只有"没有 armed 的 ping 点"时才优先**
+                    --        （2026-10-05：玩家 ping 了落点就听玩家的，见上面 `ping_beats_titan`）
+                    --     ④ 其余才轮到 ping 的地面点
                     --   `selected` = 引擎确实给它选了目标（它正在被驱动）；
                     --   `old.point` = 本 mod 已持有 ⇒ 必须继续驱动（否则只写一帧就漂走）。
                     --   · 新接管：需要 `point_armed`（TTL 内）—— 防"顺手 ping 一下"长期劫持
                     --   · 已在引导中的那颗（`old.point`）：**不受 TTL 影响**，继续飞到引爆
+                    --
+                    -- ★★ 2026-10-09 修正：无敌人时 ping 路有**三道**死锁 ★★
+                    --   ⚠ 死锁 1：下面那道 `m.state==4` 门。无敌人时引擎不会置 4（只在
+                    --     "候选分数 > 0"时置），而 ping 的是**地面点**、根本不在候选列表里
+                    --     ⇒ 整段驱动永远进不去。**第一版把提升写在门里面**（到达段写点之后）
+                    --     ⇒ 门永远不开。实机症状完全吻合：ping 到了、`point_marker` 有，
+                    --       但一条 `point_taken` 都没有，雷停在 state 3 直到 state 5 过期。
+                    --   ⚠ 死锁 2：首次接管要求 `selected`（引擎已给它选了目标）——
+                    --     无敌人时引擎没有目标 ⇒ 同样进不去。
+                    --   ⚠ 死锁 3（**真正的根因**）：TakeGate 的 `no_mark_no_hold` ——
+                    --     纯空地 ping 既无标记、又无旧持有 ⇒ 门控**根本不接管** ⇒
+                    --     `old` 永不建立 ⇒ 上面两道门连碰都碰不到。
+                    --     ⇒ 已给门控加 `point_armed`（见 take_gate.lua 的说明）。
+                    --   ⇒ 对 ping 路放宽成**与结构路同一口径**：TTL 内的 `ping_take`
+                    --     就够（不再要求 selected、也不再限定 state 2/3 —— 提升之后
+                    --     state 变 4，若还限定 2/3 会让下一帧的驱动分支又选错）。
                     local point_drive=not abandoned and point_marker~=nil
                         and not titan_selected and not (old and old.lock)
-                        and ((selected and point_armed) or (old and old.point))
+                        and ((selected and point_armed) or (old and old.point) or ping_take)
+                    -- ★★ 先开门、再驱动（必须在下面 `m.state==4` 判断**之前**）★★
+                    --   命中「已有观测句柄 + 该驱动 ping 点 + 引擎留在 2/3」⇒ 用 priority 的
+                    --   **同一套** promote_state4 打开状态，下一帧 `m.state==4` 才成立。
+                    --   ⚠ **必须设 `current`**：`with_observation` 内部断言
+                    --     `U.key(ref)==U.key(current.ref)`，不设就抛 `expired observation key`
+                    --     ⇒ **整帧后续全部不跑**（2026-10-09 实机栽过：force_lock 0 条 +
+                    --       新增一条 frame_error + 驱动段根本没执行）。
+                    --     与 priority 段 / run_veto 的用法保持一致（设 current → 调用 → 清）。
+                    --   ⚠ promote_state4 自带开关/写前复核/写后回读，失败只记一行、绝不抛异常。
+                    if old and point_drive and m.state~=4 and env.force_lock_enabled~=false then
+                        current={ref=old.ref,match=m}
+                        with_observation(old.ref,function(scope)
+                            local o,d=Priority.promote_state4(env,scope,scope.prepared)
+                            local fkey='flp:'..tostring(scope.prepared.flight_start)
+                                ..':'..tostring(o)
+                            if env.emit and not P.flk[fkey] then
+                                P.flk[fkey]=true
+                                env.emit('force_lock;entity='..m.id..';route=ping_point'
+                                    ..';ok='..tostring(o)..';detail='..tostring(d))
+                            end
+                            return o
+                        end)
+                        current=nil
+                    end
                     -- titan 航点要写 movement 结构；state 3 时它可能还没初始化，
                     -- 所以 state-3 驱动的这一帧不进 titan 段（只让 priority 设目标）。
                     if (not abandoned) and m.state==4
@@ -1572,7 +1736,10 @@ function M.new(env)
                                             --     按帧推进的话，同一颗手雷飞行途中会不停换点 ⇒ 等于没测。
                                             --   ⚠ `scan` 缺席 ⇒ 完全退回单一 `site.lift` 的确定性行为。
                                             local blast_lift,sw_i=site.lift,'-'
-                                            local scan=env.blast_sites.scan
+                                            -- ★ 档位表**优先取本目标自己的**（`site.scan`），缺省才回落全局
+                                            --   `BlastSites.scan`（2026-10-04：**多个目标各自标定**是机制的让步，
+                                            --   共用一个表会互相污染档号）。向后兼容：老条目没有 `site.scan`。
+                                            local scan=site.scan or env.blast_sites.scan
                                             if scan and #scan>0 then
                                                 sw_i=P.swk[m.id]
                                                 if not sw_i then
@@ -1654,6 +1821,11 @@ function M.new(env)
                                 mask_only,arr_opts)
                         end)
                         current=nil
+                        -- ⚠ 2026-10-09：这里**曾经**放过 ping 路的提升（在"到达段写点成功之后"）
+                        --   —— 那是错的，已移除：整段驱动被上面的 `m.state==4` 挡着，而
+                        --   state 4 正是要打开的门 ⇒ 提升写在门里面 ⇒ 门永远不开
+                        --   （实机证据：`point_taken` 一条都没有）。提升现在放在**门之前**，
+                        --   见 `ping_early` 之后那段。**这里不要再放回去。**
                         if not ok_arr and early_drive then
                             state3_danger=state3_danger+1
                             env.emit('state3_danger;entity='..m.id..';count='..state3_danger
@@ -1688,6 +1860,17 @@ function M.new(env)
                             else
                                 old.arrival_progress=result.progress;old.force_search=nil
                                 if result.blocked then old.blocked=result.blocked end
+                                -- ★★ 把"我们刚写进记录的那个点"记到锁上（2026-10-05）★★
+                                --   为什么要记：`with_observation` 要判"记录里这个点是不是我们自己写的"，
+                                --   而**体内爆点**（`blast_point`）是 runtime 每帧现算的，
+                                --   锁表里本来没有它的字节 ⇒ 不记的话上游那套
+                                --   `guidance_observation` / `continued` 在我们这里永不触发。
+                                --   上游靠 `track.titan.point_bytes` 承载，我们靠这里补上。
+                                --   ⚠ `result.point_bytes` 只在该帧真的写了点目标时非 nil
+                                --     ⇒ 走实体 `aim` 路径时这里会把它**清成 nil**（语义正确：
+                                --      "当前记录里没有我们的点"）⇒ priority 下一帧照常写实体选择，
+                                --      不会把锁卡在"永远不写"的状态。
+                                if old.lock then old.lock.point_bytes=result.point_bytes end
                                 -- ★ 点目标的两条诊断（2026-10-01）★
                                 --   为什么必须打：点目标的 'guide'/'search' 原本**完全静默**
                                 --   （只有 detonate/quarantine 才打日志）⇒ 第一版实机
@@ -1764,7 +1947,11 @@ function M.new(env)
             local live={}
             for _,m in ipairs(observed.matches) do live[m.identity_bytes..m.flight_start]=true end
             for fp in pairs(state_key) do
-                if not live[fp] then state_key[fp]=nil;state_age[fp]=nil end
+                if not live[fp] then
+                    state_key[fp]=nil;state_age[fp]=nil
+                    -- 转阶段探针的去重表与 state 表同键（同一个 fp）⇒ 顺手清，不另开循环
+                    P.sel[fp]=nil
+                end
             end
             -- ★ 链路诊断：只在**状态变化**时打一行。
             --   一眼能看出"标记读到了却没接管"卡在哪一环：

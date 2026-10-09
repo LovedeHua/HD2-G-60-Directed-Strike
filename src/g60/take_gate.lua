@@ -73,7 +73,16 @@ function M.decide(opts)
     -- ★ 2026-10-01 加 `old.point`：**玩家 ping 的地面点**（"空白标记"）。
     --   它和 lock/titan 同属"本 mod 已持有"，只是目标不是实体而是坐标；
     --   持有期间同样必须继续驱动，否则第一帧之后就不写了（G-60 会漂走）。
-    if not (o.structure_mark or (old and (old.lock or old.titan or old.point))) then
+    --
+    -- ★★ 2026-10-09 加 `o.point_armed`（用户报「空标记应用失败，无效」的**根因**）★★
+    --   之前"纯空地 ping"**永远进不来**：既没有 `structure_mark`、也没有旧持有
+    --   ⇒ 直接落到 `no_mark_no_hold` ⇒ 不建 tracked ⇒ `old` 永不建立 ⇒ 后面全不跑。
+    --   以前 ping 看着能用，是因为那些局玩家**标记了东西**或引擎已选中
+    --   （`structure_mark` 非空）⇒ 把这个缺口掩盖了。
+    --   ⇒ **TTL 内的一次 ping 与"标记"同属玩家明确意图**，必须放行；
+    --     早期 state 仍受上面的 `allow_early` 与下面的飞行时长门槛约束，安全性不变。
+    if not (o.structure_mark or (old and (old.lock or old.titan or old.point))
+            or o.point_armed) then
         -- ★★ 唯一的例外：引擎选择否决（2026-09-29，用户要求）★★
         --
         --   引擎给这颗**非自有**的 G-60 选了我们明确排除的目标（目前只有运输船），

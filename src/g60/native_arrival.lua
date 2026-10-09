@@ -105,6 +105,13 @@ function M.new(env)
             --   ⚠ 与 titan 同款：本段**必须**在 Policy.step 之前写，否则这一帧
             --     引擎还按旧选择飞，arrival 的到达判定就会与真实飞行方向脱节。
             local want_point=options and options.point_target
+            -- ★ 本帧"我们自己写进去的那个点"的原始字节（12 B）。
+            --   2026-10-05：为了让 runtime 能把它记到锁上，从而让 priority 下一帧认出
+            --   "记录里这个点是我们写的"（上游 `continued` / `guidance_observation`）。
+            --   上游靠 `track.titan.point_bytes` 承载，我们的**体内爆点**是 runtime 现算的
+            --   ⇒ 必须由写入者（本段）把字节交出去，否则上游那套机制在我们这里永不触发。
+            --   ⚠ 只在该分支内赋值 ⇒ 走实体 `aim` 路径时它保持 nil（= "没有点"，语义正确）。
+            local written_point
             if mask_only=='search' then action='search' end
             if (target or want_point) and not mask_only then
                 if target then assert(target.validate(),'arrival target changed') end
@@ -125,6 +132,7 @@ function M.new(env)
                     -- ★ 写后快照成为本帧的参照（见 flight_reference 定义处的实机事故）
                     flight_reference=after
                     goal={want_point[1],want_point[2],want_point[3]}
+                    written_point=point_bytes
                 elseif not goal then
                     assert(c.selection.has_target and c.selection.id==target.id,'arrival selected target mismatch')
                     assert(ffi.istype(aim_type,scope.calls.aim),'arrival aim ABI')
@@ -155,6 +163,13 @@ function M.new(env)
                 local region=options and options.region or titan_stage and env.titan_arrival_region or nil
                 local below=not (titan_stage or options and options.below)
                     or own[3]<=goal[3]+titan_above
+                -- ★ 上游 4012：`surface` 区域**自带**"从外侧靠近 + 地板"的判定
+                --   ⇒ `below` 交给 Policy，不再叠加"必须在目标点下方"。
+                --   没有这一句时，`surface` 区域会同时被两条互相矛盾的判据约束
+                --   （法线要求从外侧来、`below` 要求低于点）⇒ 永远判不到 arrival。
+                --   ⚠ 只放行 `surface`（我们支持的唯一"自带几何"区域）—— 不照抄
+                --     `damage_grid` / `impaler_body`，那两个区域种类本工程没有。
+                if region and region.kind=='surface' then below=true end
                 action,progress,dist=Policy.step(now,own,goal,terminal and below,
                     tostring(target and target.id or 'point')..':'..stage,previous,region)
             end
@@ -195,7 +210,7 @@ function M.new(env)
                     'arrival proximity suppression failed')
                 assert(after:sub(0x189,0x190)==record:sub(0x189,0x190),'arrival changed flight timer')
             end
-            return {kind='guide',progress=progress,distance=dist}
+            return {kind='guide',progress=progress,distance=dist,point_bytes=written_point}
         end)
         busy=false
         if not ok then

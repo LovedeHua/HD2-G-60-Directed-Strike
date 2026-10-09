@@ -30,6 +30,28 @@ function M.step(now,own,goal,terminal,key,previous,region)
         local across=dx*axis[2]-dy*axis[1]
         arrived=along>=-region.back and along<=region.front
             and (across/region.width)^2+(dz/region.height)^2<=1
+    elseif region and region.kind=='surface' then
+        -- ★★ `surface` 区域（2026-10-05，逐字移植上游 1698-1712）★★
+        --   语义：沿**法线**定义"到达" —— `outward = (own-goal)·n` 必须落在
+        --   `[0, depth]`（在表面的**外侧**、且不超过 depth），横向偏移不超过 `radius`，
+        --   并且不低于地板 `min_z`。
+        --   为什么需要它：泰坦蜷曲时腹法线会**倾斜**，爆点因此侧向跟着走；
+        --   圆柱区域（下面那支）表达不了"从腹面外侧靠近"，只能表达"在点下方"。
+        --   ⚠ `axis[3]<=-0.25` = 法线必须**朝下**（否则说明姿态已有问题，不该授权引爆）。
+        local axis=region.normal
+        assert(type(axis)=='table' and type(axis[1])=='number' and type(axis[2])=='number'
+            and type(axis[3])=='number' and axis[3]<=-0.25
+            and math.abs(axis[1]^2+axis[2]^2+axis[3]^2-1)<0.001,'surface region normal')
+        assert(type(region.radius)=='number' and region.radius>0 and region.radius<=3
+            and type(region.depth)=='number' and region.depth>0 and region.depth<=2,'surface region bounds')
+        local dx,dy,dz=own[1]-goal[1],own[2]-goal[2],own[3]-goal[3]
+        local outward=dx*axis[1]+dy*axis[2]+dz*axis[3]
+        local tangent=dx*dx+dy*dy+dz*dz-outward*outward
+        arrived=outward>=0 and outward<=region.depth and tangent<=region.radius^2
+        if region.min_z then
+            assert(type(region.min_z)=='number' and math.abs(region.min_z)<1000000,'surface floor')
+            arrived=arrived and own[3]>=region.min_z
+        end
     elseif region then
         assert(type(region.radius)=='number' and region.radius>0 and region.radius<=3
             and type(region.depth)=='number' and region.depth>0 and region.depth<=2,'arrival region')

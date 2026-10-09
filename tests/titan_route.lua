@@ -36,18 +36,17 @@ test('front approach follows outside chords before descending',function()
     --   ⚠ **脚区安全属性原样保留**（上面 `>11` 那条）：只要处于 `around`，指令线段不得进脚区。
     assert(previous.stage=='attack')
 end)
--- ★ 2026-10-02（用户授权 + 实机驱动）：捷径② 改为**每帧**评估。
---   这是"从侧面到后面再到腹部"的直接修复 —— 原来它只在接管第一帧评估一次，
---   第一帧没命中就**永远不再评估**（stage 从 previous 继承）。
-test('a low grenade inside the ring cuts straight to the belly even after the route started',function()
+-- ★★ 2026-10-05：捷径② **恢复上游语义**（用户拍板「泰坦方面全部改成上游 1.1」）★★
+--   上游把它写在 `else` 分支里 ⇒ **只在接管首帧评估**；第一帧没命中就靠 `previous` 继承
+--   stage，后续帧**不再重估**。
+--   （我们曾改成"每帧评估"以治「从侧面绕到后面再到腹部」；该改法现已按用户要求撤回。）
+test('side corridor shortcut is evaluated on the first takeover frame only (upstream)',function()
     local t=target()
-    -- 第一帧就够近够低 ⇒ 直接 under（旧行为，仍然成立）
-    assert(Route.step({6,1,3},t).route.stage=='under')
-    -- ★ 修复点：**已经进入 out 之后**，只要后来变得够近够低 ⇒ **当帧**中断绕行
-    local p=Route.step({6,1,14},t)              -- 位置太高 ⇒ 不命中 ⇒ 停在 out
+    assert(Route.step({6,1,3},t).route.stage=='under')   -- 首帧够近够低 ⇒ 直接 under
+    local p=Route.step({6,1,14},t)                       -- 位置太高 ⇒ 不命中
     assert(p.route.stage=='out')
-    p=Route.step({6,1,3},t,p.route)             -- 带 previous（旧代码在这里永远停在 out）
-    assert(p.route.stage=='under')              -- ★ 每帧评估 ⇒ 当帧内收
+    p=Route.step({6,1,3},t,p.route)                      -- 带 previous ⇒ **不再重估**
+    assert(p.route.stage=='out')
 end)
 test('side selection is stable and mirrored for left approach',function()
     local t=target();local p=Route.step({-2,0,12},t)
@@ -80,16 +79,15 @@ test('invalid pose and insufficient belly clearance do not produce a waypoint',f
     t=target();t.right={0,0,1};assert(not pcall(Route.step,{0,0,14},t))
     t=target();assert(not pcall(Route.step,{0/0,0,14},t))
 end)
--- ★ 2026-10-02（用户明确授权）：捷径②的 `forward<=2.5` → `forward<=RADIUS`。
---   原断言里的"**正前方 ⇒ out**（必须绕到侧面）"**已按用户要求作废** ——
---   用户实机：「站在泰坦前方丢 G60，G60 也会从侧面绕到腹部」⇒ 那正是本条件造成的。
---   现在正前方只要**位置够低**就直接内收；仍然保留的是**高度**门槛。
-test('low approaches skip the exterior detour regardless of heading; high ones do not',function()
+-- ★★ 2026-10-05：捷径② 的 `forward<=RADIUS` **恢复为上游的 `forward<=2.5`**（用户拍板）★★
+--   ⇒ 只有"**腿间侧带**"（前后轴偏移 ≤2.5 m）才允许直接内收；
+--     正前方（forward≈6）**仍然必须绕外圈** —— 这正是我们当初授权改掉、现在按用户要求改回的行为。
+test('side corridor entry requires forward<=2.5 (upstream); a frontal approach still detours',function()
     local t=target()
     assert(Route.step({6,1,3},t).route.stage=='under')     -- 侧方、够低 ⇒ 直接内收
-    assert(Route.step({0,6,3},t).route.stage=='under')     -- ★ 正前方、够低 ⇒ 现在也直接内收（新行为）
-    assert(Route.step({6,1,12},t).route.stage=='out')      -- 够低但**位置太高** ⇒ 仍绕外圈
-    assert(Route.step({0,6,12},t).route.stage=='out')      -- ★ 正前方 + 太高 ⇒ 仍绕（高度门槛未撤）
+    assert(Route.step({0,6,3},t).route.stage~='under')     -- ★ 正前方（forward=6>2.5）⇒ 上游行为：绕
+    assert(Route.step({6,1,12},t).route.stage=='out')      -- 够低但**位置太高** ⇒ 绕外圈
+    assert(Route.step({0,6,12},t).route.stage=='out')
 end)
 test('simultaneous exterior descent shortens the front approach without crossing the body',function()
     local function length(separate)
@@ -127,15 +125,15 @@ test('insufficient standoff clearance refuses instead of moving the blast back a
     assert(Route.step({0,0,5},t,nil,2.5)==nil)
     assert(not pcall(Route.step,{0,0,5},target(),nil,0/0))
 end)
-test('side corridor entry tolerates up to under+2.5 (2026-09-30 捷径②放宽,安全上限)',function()
+-- ★★ 2026-10-05：高度门槛 `under+2.5` **恢复为上游的 `under+0.5`**（用户拍板）★★
+--   ⚠ 我们当初把 `+0.5` 抬到 `+2.5` 是为了让捷径命中（否则每次都绕 12 m 外圈）。
+--     现按用户要求回到上游 ⇒ 命中窗口显著收窄，绕行会变多 —— 这是**上游的原始行为**。
+test('side corridor entry height gate is upstream under+0.5',function()
     -- 默认 target：point={0,0,6} origin={0,0,0} standoff=2.5
-    --   blast_z=3.5；under = max(6−3.5, 1.25) = 2.5
-    --   ★ 门槛 own[3] ≤ 5.0（= under+2.5，安全上限：再高会被 own[3]>p[3]+0.5 退回线打回）
-    --   4.2 ∈ (3.0, 5.0] ⇒ 只有放宽后的代码才命中 ⇒ 兼作"放宽确实生效"的守门。
-    local p=Route.step({8,0,4.2},target(),nil,2.5)
-    assert(p.route.stage=='under')
-    -- 5.1 > 5.0 ⇒ 超出新上限，仍走默认绕行（钉住 +2.5 这个数值本身）
-    local q=Route.step({8,0,5.1},target(),nil,2.5)
+    --   blast_z=3.5；under = max(6−3.5, 1.25) = 2.5 ⇒ 门槛 own[3] ≤ 3.0
+    local p=Route.step({8,0,2.9},target(),nil,2.5)
+    assert(p.route.stage=='under')                     -- 2.9 ≤ 3.0 ⇒ 命中
+    local q=Route.step({8,0,4.2},target(),nil,2.5)     -- 4.2 > 3.0 ⇒ 上游行为：绕
     assert(q.route.stage~='under')
 end)
 test('wider final region enters attack before perfect horizontal alignment but never above the body',function()

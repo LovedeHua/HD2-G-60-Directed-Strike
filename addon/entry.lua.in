@@ -15,8 +15,10 @@ if existing then return existing end
 --   而且**虫洞同样不在名单里**，某些时序下虫洞目标也会被清掉（用户实机反馈的两个 bug）。
 --   置 false ⇒ target_allowed=nil ⇒ `not allowed` 恒真 ⇒ 永不 veto ⇒ 敌人侧完全原生，
 --   虫洞则只由 structure_profiles（9 个虫洞）单独决定接管。
--- ★ titan_standoff = 目标爆点距离（泰坦腹部下方几米引爆），titan_standoff_min = 自适应下限。
---   ★★ 2026-10-02：**0.85 → 2.5（= 关闭自适应）** ★★
+-- ★ titan_standoff = 目标爆点距离（泰坦腹部下方几米引爆）。
+--   ★★ 2026-10-05（用户拍板「泰坦方面全部改成上游 1.1」）：**0.85→2.5→1.75→2.0 那套
+--      自研自适应（`titan_standoff_min`）已整段移除**；现在直接用上游的 2.5，泰坦引爆点
+--      由上游 `Adaptive`（爆点 = 腹点 + 腹法线×2.5 + `surface` 区域）决定。
 --
 --   【为什么反转】原先把它一路压到 0.85 的**前提已被证伪**。
 --   当时的理由是「爆点贴近腹部 ⇒ 伤害集中 ⇒ 才炸得死」（见下历史记录），
@@ -44,7 +46,18 @@ if existing then return existing end
 --   【历史】1.5 → 0.5 → 0.75 → 1.0 → 0.85（2026-09-30 试错）→ 2.5 → 1.75 → **2.0（2026-10-02 最终）**
 --   · `titan_route` 的离地余量保持上游的 1.25 不变（该文件是逐字节守卫）
 --   · 自适应在**调用方** native_titan_aim 完成，titan_route.lua 保持逐字节不变。
-local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets_only=false,titan_standoff=2.5,titan_standoff_min=2.0,
+local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets_only=false,titan_standoff=2.5,
+    -- ★★ 2026-10-05（用户拍板「泰坦方面全部改成上游 1.1」）：恢复上游的泰坦开关。
+    --   `adaptive_approach` = 上游泰坦引爆点的**最终决定者**（`Adaptive`：爆点 = 腹点 + 腹法线×2.5、
+    --     到达区域 = `surface`、航路走 `Navigation` 可见性图）；`blast_regions` = 链上第二段
+    --     （`BlastRoute` 的圆柱爆区）。两者上游都是 `true`。
+    --   ⚠ 上游还有 `damage_regions=true` —— 那是弱点/机器人路径用的（要 `DamageField` 里有该模型
+    --     才生效）。本工程 `weakpoint_profiles` 为空表、`DamageField` 无泰坦条目 ⇒ 恒为 no-op，
+    --     故**不引入**（引入只会多一条永远不会走的分支）。
+    --   ⚠ 同时**移除我们自研的两项**：`titan_standoff_min`（standoff 自适应 1.5~2.5）与
+    --     `titan_belly_above`（腹部提前引爆余量）—— 上游都没有这两件事，且它们只在
+    --     "竖直爆点"几何下才有意义（现在爆点由 `Adaptive` 决定）。
+    adaptive_approach=true,blast_regions=true,
     mark_priority_enabled=false,exclusive_targets=true,marked_structures=true,
     -- ★ 吐酸泰坦接管开关（2026-09-29）
     --   本 mod 接管的���标只有两类：玩家标记的虫洞 + 吐酸泰坦。其余全部交还引擎原生
@@ -157,6 +170,48 @@ local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets
     --
     --   要重启实验：把下面两个值改回 true 即可（early_nav_orbit 是**写操作**，谨慎）。
     early_nav_probe=false,early_nav_orbit=false,
+    -- ★★ 转阶段 / 换目标探针（2026-10-07，用户要求，**纯只读**）★★
+    --   问："引擎在什么条件下把 G-60 转向索敌 / 丢掉目标？"
+    --   这正对着上面那条未解问题（"无敌人时 G-60 不被驱动，受 state 约束"）。
+    --   为什么先用探针而不是直接逆向：定位"分配目标 / 状态转换 / path_agent"
+    --   那几个函数要 dump 运行时镜像（磁盘那份有加密壳），成本高；
+    --   而**转阶段的后果是可观测的**（state 回退 / selection_id 被清成哨兵 /
+    --   selection_flag 归零 / selection_resource 变化 / candidate_source 变化），
+    --   这五项都在每帧已读的 match 行上 ⇒ 探针零新增内存读、零写操作。
+    --   行为：每颗 G-60 只在**元组变化**时打一行 `sel_probe;`（首次也打），
+    --        全局上限 4000 行。设 false 即完全静默。
+    --   ⇒ 拿到"转阶段发生的帧 + 前后字段值"之后，才谈得上判断触发条件
+    --     是「候选表空」「标记失效」「距敌人过远」还是「超时」中的哪一类。
+    sel_probe_enabled=true,
+    -- ★★ 代码探针（2026-10-07，用户拍板"路线 A"）★★
+    --   目的：把**运行时展开后的引擎机器码**取出来离线反汇编，回答
+    --   "引擎凭什么认为某个东西可以成为合法锁定目标"
+    --   （本工程早已记录：`target_valid` = game.dll+0x8858a0 就是那条判据；
+    --     "让虫巢成为合法目标"那条路的结论就是判据写在 game.dll 里）。
+    --   为什么不用 dump 整个镜像：磁盘那份确实被保护（实测 —— 全文件搜不到已知
+    --   入口签名、节熵 8.00、虚拟 71 MB vs 原始 14.8 MB、`.winlice` 节只有虚拟
+    --   尺寸），但**不需要它**：地址早已逆向出来，直接读运行时那几个 RVA 即可。
+    --   整镜像 dump + PE 修复是数量级更大的动作，而这里只要几 KB。
+    --   ⚠ 这不是新能力：**本段上面 88 条 game.dll 签名校验本来就是
+    --     `read(base+RVA,N)` 读代码字节做比对**；这里只把"断言相等"换成"打印"。
+    --   ⇒ 纯只读、不写内存、不扩大能力面；一次性（每次启动一轮，共约 5 KB 日志）。
+    --   ⚠ 必须 pcall 包住：探针失败**绝不能**让 mod 启动失败（那会停用整个包）。
+    --   ★ 2026-10-09 **改为 false（默认关闭）**：这一段的使命已经完成——
+    --     · state-3 转换 / seek 函数 / 候选分数来源**全部读出来了**（见 README 与工作日志）；
+    --     · 结论已固化进 force_lock（无敌人时强制提升 state=4，实机 5/5 炸毁虫洞）。
+    --   为什么必须关掉：本段含 7 个代码 dump + 调用者扫描 + 模式扫描，**每次启动约 55 KB**，
+    --     而日志**总量上限 256 KB** ⇒ 长时间一局会把后面真正要看的诊断挤掉（静默截断）。
+    --   需要继续逆向时把它置 true 即可（一键恢复全部 dump）。
+    code_probe_enabled=false,
+    -- ★★ 目标字段探针（2026-10-08）：被标记目标的 f08/f0c/f4c + target_valid 结论 ★★
+    --   与 code_probe 配对：反汇编说明"判据长什么样"，字段探针给出"实际值是什么" ——
+    --   两者合起来才能定位到底是哪一条判据把虫洞挡掉的。
+    --   三个偏移来自 target_valid / category_mask 的反汇编（不是猜的）：
+    --     +0x08 f08 参与全局集合查询、喂给 0x4a9710 取 bit25 标志
+    --     +0x0c f0c 喂给间接调用与 0x13e1b50（返回值 >=1 即拒）
+    --     +0x4c f4c category_mask 用它做位测试（实体类别掩码）
+    --   ⚠ 纯只读、按 (来源,id) 去重；设 false 即静默。
+    target_fields_probe=true,
     -- ★★ "空白标记"探查（2026-10-01，**只读**）★★
     --   用户问：「无目标的空白标记（ping 到空地）是否也能接管？」
     --   第一步先回答客观问题：**ping 空地时那个 88 字节的槽里有没有世界坐标**
@@ -290,23 +345,55 @@ local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets
     --     **紧凑球**内；**偏侧**（radius 大）或**贴脸**（`belly_above` 大）都会减少受伤部位。
     --     两个维度一起收：`radius=1.5` + `titan_belly_above=0`。
     --     ⚠ 但"紧凑"有下限：球太小 ⇒ 接不住移动目标 ⇒ 整颗漏炸（见上）。
-    titan_arrival_region={radius=1.5,depth=1.2,above=1.2},bughole_only=true,bughole_profiles=16,
-    -- ★★ 泰坦「腹部提前引爆」余量（2026-10-02 实测后**关闭**：置 0）★★
-    --   来历：加它是为了治"G-60 到不了爆点就在腹部盘旋"（当时判定要求
-    --   `own_z <= blast_z`，即必须在爆点或更低）。含义 = 允许在爆点**上方**这么多米引爆。
-    --
-    --   ★★ 2026-10-02 实机反馈（用户原话）：「**如果手雷引爆点太靠近腹部就会炸不死**」★★
-    --   几何核算：`blast_z = 腹点 - standoff(2.5)`，本值 2.0 时引爆窗口是
-    --     `own_z ∈ [腹点-3.7, 腹点-0.5]` ⇒ **最高可在腹点下方 0.5 m 处引爆** = 贴脸。
-    --   上游的 `standoff=2.5` + `depth=1.2` 标定出的是 `[腹点-3.7, 腹点-2.5]`
-    --   —— 那是**按泰坦体型测出来的最佳爆炸距离**；把它朝腹部方向放开，
-    --   反而落进"炸不死"的区间。
-    --   ⇒ **置 0**：回到上游标定的窗口（必须在爆点或更低）。
-    --   ⚠ 原来"盘旋"的顾虑**已不存在**：绕行由捷径②「每帧评估」解决，
-    --     G-60 能直接到达正下方 ⇒ 够得到爆点。
-    --   ⚠ 只影响泰坦 baseline 路径；弱点/虫洞路径不受影响（缺省 0）。
-    --   ⚠ 要重新打开就设一个小值（如 0.5）；上限自动被 `min(·, standoff-0.25)` 夹住。
-    titan_belly_above=0,
+    -- ★ 2026-10-05：回到**上游原值** `{radius=1.75,depth=0.8}`（我们曾按实机收到 1.5/1.2，并加了 above）。
+    --   泰坦 baseline 的区域现在由 `BlastRoute`/`Adaptive` 经 `options.region` 下发，
+    --   本项只在它们**都没给区域**时兜底（`native_arrival` 的 env.titan_arrival_region 回落）。
+    titan_arrival_region={radius=1.75,depth=0.8},
+    -- ⚠ 2026-10-05：原有「腹部提前引爆余量」`titan_belly_above` **已按上游移除**。
+    --   上游没有这个量；它只在"竖直爆点"（`blast_z = 腹点 - standoff`）几何下才有意义，
+    --   而现在泰坦爆点由 `Adaptive` 决定（腹法线×2.5 + `surface` 区域）。
+    -- ★★ 泰坦模板：animated_belly（2026-10-04 自上游 1.1.0 整合）★★
+    --   true ⇒ `titan_context.capture` 会读 `belly` 骨骼的**真实姿态**当爆点：
+    --     ① 泰坦蜷曲/扑击时腹部大幅位移 ⇒ 静态几何会算错（这正是我们当初要反复试错
+    --        标定 `titan_standoff` 的原因）；② 偏移 > `max_offset²`（3.0²）**或**法线
+    --        不再朝下 ⇒ 自动**退回静态几何**（不会把爆炸授权到远处）。
+    --   false ⇒ 逐字回到整合前行为（`belly_pose` 不读，`point` 仍为 `aim_pose + offset`）。
+    --   ⚠ 首次上机请对比 `titan_probe;` 的 `dz` 与击杀手感；无效就置 false 回退。
+    titan_animated_belly=true,
+    -- ★★★ 早期接管（2026-10-04 用户拍板**打开**）★★★
+    --   为什么开：玩家反馈「标记的目标会脱锁」。查下来根因是**接管窗口太短** ——
+    --     手雷以原版弹道飞着，要等**引擎先选中**它（state 4）我们才能改导航，
+    --     而这几帧里它往往已经撞上东西自爆（本局 10 次 `arrival_skipped`）。
+    --   true ⇒ 手雷在 state 2/3（引擎还没给目标）时**也能被驱动** ⇒ 不必等引擎。
+    --   ⚠ **历史警告（务必知情）**：两轮早期实验的既得结论是
+    --     「state 2/3 的导航**不读任何目标数据**」（写入回读一致，但 G-60 仍停在 state 3）、
+    --     「早期纯 ballistic 飘向别处」。所以本开关**未必有效** —— 实测说了算。
+    --   ⚠ 已有 `state3_danger` 熔断：连续 `STATE3_DANGER_LIMIT` 次早期接管失败会
+    --     **自动退回 state-4-only**，不牵连其余功能（见 experimental_runtime 的
+    --     `state3_takeover_disabled` 日志）。若上机后看到它 ⇒ 说明这条路确实不行。
+    --   ⚠ 回退：置 false ⇒ 逐字回到打开前的行为（状态行里 `allow_state3=false`）。
+    allow_state3=true,
+    -- ★★ 强制提升 state=4（2026-10-09，用户拍板"走写内存这条路"的实验）★★
+    --   为什么需要：引擎只在"候选分数 > 0"时置 state 4，而虫洞不在候选列表里
+    --   ⇒ 无敌人时永远进不去 state 4 ⇒ 引导不跑 ⇒ 我们写的点被 0.25 s 一次的
+    --   orbit（state-3 转换）冲掉、手雷原地飘走。
+    --   行为：**仅在**「我们持有这颗雷 + 已标记虫洞 + 引擎把它留在 state 2/3」时，
+    --   按引擎自己的提升块**逐字段**把状态记录写成 state=4：
+    --     [+8]=4（state）、[+4]=0xffffffff、[+0]=4（behavior）
+    --   —— 三处偏移与值都来自 game.dll 的反汇编（0xbbc91 / 0xbbc9c / 0xbbcb0），
+    --      不是猜的；写前复核 + 写后回读，失败只记一行、不改其它行为。
+    --   ⚠ 这是**本工程唯一的写内存路径**（见本文件 write() 的边界说明）。
+    --   ⚠ 置 false ⇒ 完全回到只读行为（**一键回退**）。
+    force_lock_enabled=true,
+    -- ★ 2026-10-09 候选组探针**已移除**（原 `cand_probe_enabled`）：
+    --   它是为"写入候选分数"那条路服务的。实机结论是**那条路不需要了**——
+    --   强制提升 state=4 之后引擎自己就接管了引导（5/5 炸毁虫洞），
+    --   而探针本身读 manager 拿到 `0xffffffff`（无候选时的哨兵值），没产出有效数据。
+    --   保留的知识（写进 README 与工作日志，别丢）：
+    --     · **候选分数确实是内存字段** `候选记录+0x44`（float，引擎在 0xbbac9 写 max(分,0)）；
+    --     · 接受判据 = 分数>0 且 `+0x48`≠0 且 `+0x4c`≠0（见 native_candidates.lua:29）；
+    --     · 但提升判据读的是 seek 函数**栈帧副本**，且**虫洞从来不在候选列表里**
+    --       ⇒ 无敌人时无候选可评分 ⇒ 只能靠 force_lock 直接提升状态。
     experimental=true,native_lifetime_verified=false,state='starting'}
 rawset(_G,'G60BugholeLock',state)
 local log,host
@@ -367,7 +454,9 @@ local ok,why=pcall(function()
             -- ★ 泰坦净空拒绝的几何画像：这是用来决定"能不能优化"的唯一数据源，
             --   被节流掉就等于没测（同日 arrival_already_exploded 已经栽过一次）。
             and not line:match('^titan_clearance;')
-            and not line:match('^titan_standoff_adapted;')
+            -- ★ 2026-10-05：`titan_refine_failed;` = `Adaptive`/`BlastRoute` 的断言在实机抛错时的
+            --   **唯一判据**（表现是「泰坦一整局都不接管」）⇒ 必须常驻。
+            and not line:match('^titan_refine_failed;')
             -- ★ 2026-10-02：引爆瞬间的**腹部距离**（`belly_dz = own_z - 腹点z`）。
             --   用户报"偶尔在距离腹部极近处引爆"—— `dz`/`horiz` 都是相对**目标点**的，
             --   而目标点会被地面净空抬高 ⇒ 两者不等价。这一行才能直接回答"离腹部多远"。
@@ -385,6 +474,23 @@ local ok,why=pcall(function()
             -- ★ 2026-10-01：早期导航探测（每颗 G-60 一条，是"无敌人能否驱动"的唯一判据）
             and not line:match('^early_nav_probe;')
             and not line:match('^early_nav_orbit;')
+            -- ★ 2026-10-07：转阶段探针（每颗 G-60 每次选择变化一条）——
+            --   它是"引擎何时转索敌、锁了谁"的唯一判据，被节流掉 = 探针不存在
+            and not line:match('^sel_probe;')
+            -- ★ 2026-10-07：代码探针（一次性，每次启动 6 条）——
+            --   它是"运行时机器码是否取到"的唯一判据
+            and not line:match('^codeprobe;')
+            -- ★ 2026-10-08：目标字段探针（每个被标记目标一条）——
+            --   它是"引擎凭什么接受/拒绝这个目标"的唯一判据
+            and not line:match('^target_fields;')
+            -- ★ 2026-10-09：调用者扫描（谁在起索敌）+ 状态记录里的代码指针
+            and not line:match('^callerscan;')
+            and not line:match('^callerscan_done;')
+            and not line:match('^constprobe;')
+            -- ★ 2026-10-09：state=4 写入点扫描（找可调用的提升函数）
+            and not line:match('^statescan;')
+            and not line:match('^statescan_done;')
+            and not line:match('^recptr;')
             -- ★ 2026-10-01：ping 槽全字段 dump（"空白标记"探查，每槽一次）
             and not line:match('^ping_slot;')
             -- ★ 2026-10-01：空白标记位置（每项一次；"指哪打哪"的前置验证）
@@ -402,6 +508,13 @@ local ok,why=pcall(function()
             and not line:match('^blast_stalled;')
             -- ★ 2026-10-01：点目标"已就绪"（与结构标记并存时打一行，解释优先级）
             and not line:match('^point_armed;')
+            -- ★ 2026-10-05：**玩家的 ping 落点压过"引擎自选泰坦"**的事件行。
+            --   它是这条修复是否生效的唯一判据（按手雷去重）。
+            and not line:match('^point_beats_titan;')
+            -- ★ 2026-10-05：priority 认出"这个点是我们自己写的"⇒ 跳过冗余 setter
+            --   （移植上游的 `continued`）。它是"新机制真的生效了吗"的**唯一**判据；
+            --   按 (G-60, 目标) 去重 ⇒ 不会刷屏（条件每帧都成立）。
+            and not line:match('^priority_continued;')
             -- ★ 2026-10-01：优先级让位事件（结构 > 标记单位 > 空白标记）。
             --   这是"我标记了虫洞，G-60 却继续追那个单位"是否已修好的**唯一判据** ——
             --   诊断被节流掉 = 诊断不存在（同日 arrival_already_exploded 已栽过一次）。
@@ -412,6 +525,9 @@ local ok,why=pcall(function()
             --   用于确认短路真的生效（不再出现误导性的 priority_locked）。
             --   诊断被节流掉 = 诊断不存在（同日 arrival_already_exploded 已栽过一次）。
             and not line:match('^priority_precheck_exploded;')
+            -- ★ 2026-10-09：强制提升 state=4 的结果（写前/写后值）——
+            --   它是"写内存这条路到底成不成"的**唯一判据**，被节流掉 = 实验没法判读
+            and not line:match('^force_lock;')
             -- ★ 2026-10-03：体内爆点（巨型构筑者）—— 每目标一条，
             --   是"lift 到底生效了没有 / 爆点落在哪"的**唯一判据**。
             --   诊断被节流掉 = 诊断不存在（同日 arrival_already_exploded 已栽过一次）。
@@ -419,6 +535,9 @@ local ok,why=pcall(function()
             -- ★ 2026-10-03：体内爆点的**证据行**（"这颗实际在哪炸的"，每颗一条）——
             --   它是"打没打准 / 抬高生效没有"的唯一量化依据。
             and not line:match('^blast_hit;')
+            -- ★ 2026-10-07：generic 认领 profile 的 pose capture 失败回落 motion 位置。
+            --   它是"爆点退化为实体位置"的唯一判据 —— 被节流掉 = 诊断不存在。
+            and not line:match('^generic_pose_fallback;')
             -- ★ perf 窗口行必须常驻：它是"优化有没有效"的唯一判据，
             --   被节流掉就等于没测（同日 arrival_already_exploded 已栽过一次）。
             and not line:match('^perf;') then return end
@@ -428,7 +547,8 @@ local ok,why=pcall(function()
     end
     ffi.cdef[[void *GetModuleHandleA(const char *);void *GetCurrentProcess(void);
         uint32_t GetCurrentThreadId(void);
-        int ReadProcessMemory(void *,const void *,void *,size_t,size_t *);]]
+        int ReadProcessMemory(void *,const void *,void *,size_t,size_t *);
+        int WriteProcessMemory(void *,void *,const void *,size_t,size_t *);]]
     local k=ffi.load('kernel32');local process=k.GetCurrentProcess()
     local function read(a,n)
         assert(type(a)=='number' and a>=65536 and a+n<2^47 and n>0 and n<=32768,'read bound')
@@ -436,6 +556,37 @@ local ok,why=pcall(function()
         assert(k.ReadProcessMemory(process,ffi.cast('const void *',a),b,n,count)~=0
             and tonumber(count[0])==n,'native memory unreadable')
         return ffi.string(b,n)
+    end
+    -- ★★ 受控写内存（2026-10-09，用户明确拍板"走写内存这条路"）★★
+    --
+    --   唯一用途：把 G-60 的状态记录提升到 state 4。
+    --   为什么非要开这个通道：引擎**只在"候选分数 > 0"时**才置 state 4
+    --   （seek 函数 0xbafb0：阈值 `xorps xmm9,xmm9`=0.0、取最大分、
+    --     `0xbbc2e test ebx,ebx; js 0xbbc49` 无候选就**直接返回、不置 4**），
+    --   而**建筑/虫洞从来不在引擎的自动候选列表里**
+    --   （上游原话 `Never discover structures from the automatic candidate list`）
+    --   ⇒ 无敌人时永远进不去 state 4 ⇒ 引导不跑 ⇒ 我们写的点被每 0.25 s 一次的
+    --   orbit（state-3 转换，重置飞行计时器）冲掉 ⇒ 手雷原地飘走、超时自爆。
+    --   本工程此前**只有只读通道**（ReadProcessMemory + 6 个引擎函数），
+    --   而 `clear` 的反汇编证明它只拷记录 + 置 +0x70 + 写 +0x68/0x6c、**不碰 state**
+    --   ⇒ 想绕过那道门，只能开这一个写通道。
+    --
+    --   ⚠ 三条硬边界（调用方必须遵守，守门钉着）：
+    --     1) 单次最多 64 字节；
+    --     2) 调用方**写前复核 + 写后回读**（见 native_priority 的 promote_state4）；
+    --     3) 只允许用于状态记录那 3 个 dword，不得挪作他用。
+    --   ⚠ **不需要改页保护**（那个 API 仍在 `scripts/build.py` 的禁用词表里，
+    --     本文件**连注释都不许写它的名字**——工程为此栽过一次）：该记录是堆内存，
+    --     引擎自己一直在写它（`clear` 就写 obj+0x10..0x5f、+0x70、+0x68）
+    --     ⇒ 页权限本来就是可写。
+    --   ⚠ `scripts/build.py` 的禁用词表对本符号开了**计数式例外**：必须恰好 1 处调用；
+    --     其余高危 API 见该表的词条，**仍然一律禁止**（本文件不得提及其字面量）。
+    local function write(a,s)
+        assert(type(a)=='number' and a>=65536 and a+#s<2^47 and #s>0 and #s<=64,'write bound')
+        local b,count=ffi.new('uint8_t[?]',#s),ffi.new('size_t[1]')
+        for i=1,#s do b[i-1]=s:byte(i) end
+        return k.WriteProcessMemory(process,ffi.cast('void *',a),b,#s,count)~=0
+            and tonumber(count[0])==#s
     end
     local module=k.GetModuleHandleA('game.dll');assert(module~=nil,'game module unavailable')
     local base=tonumber(ffi.cast('uintptr_t',module))
@@ -446,6 +597,235 @@ local ok,why=pcall(function()
     end
     local main_code=('@@ENGINE_CODE@@'):gsub('..',function(b) return string.char(tonumber(b,16)) end)
     assert(read(exe+0xa3e50,#main_code)==main_code,'engine layout mismatch')
+    -- ★★ 代码探针（2026-10-07，用户拍板"路线 A"）★★
+    --
+    --   把运行时机器码按 hex 打进日志，离线用反汇编器读逻辑。
+    --   目标 RVA（全部来自已逆向的锚点，不是猜的）：
+    --     clear            0x4af4e0  上游记了完整入口签名 ⇒ 可用来复核取字节没错位
+    --     orbit            0x4dec30  同上
+    --     target_valid     0x8858a0  ★ 引擎"能不能当锁定目标"的判据（本工程记录在案）
+    --     category_mask    0x8859c0  候选类别掩码测试（+0x4c）
+    --     empty_queue_gate 0x843090  无候选时走哪条分支（上游注释记录过）
+    --     candidates       0x889940  候选表 sparse-special 序数
+    --   ⚠ 放在 88 条签名校验**之后**：能执行到这里就证明 base 与 RVA 映射正确、
+    --     读到的确实是真代码（签名逐一比对通过），下面的字节可信。
+    --   ⚠ 长度取 512/256：`read` 的上限是 32768，足够；再长只是浪费日志配额
+    --     （日志总量上限 256 KB，这 6 条约 5 KB）。
+    --   ⚠ 十六进制转换用 `gsub('.',…)` —— Lua 的 `.` 匹配**含 \0 与 \n 的所有字节**，
+    --     不会漏字节导致错位（这点必须成立，否则反汇编全错）。
+    if state.code_probe_enabled then
+        local function dump_code(tag,rva,n)
+            local function hex(s)
+                return (s:gsub('.',function(c) return string.format('%02x',string.byte(c)) end))
+            end
+            -- ★ 必须分块：`emit` 单行上限 **900 字符**（本文件 `:sub(1,900)`）——
+            --   2026-10-08 首轮实测：512 字节 → 1024 hex **被静默截断到 419 字节**
+            --   （幸好函数体短、`ret` 后是 int3，才没影响结论）。256 字节/行最长
+            --   约 600 字符，安全。
+            local off=0
+            while off<n do
+                local chunk=math.min(256,n-off)
+                local ok,bytes=pcall(read,base+rva+off,chunk)
+                if ok then
+                    emit('codeprobe;tag='..tag..';rva='..string.format('%x',rva)
+                        ..';off='..tostring(off)..';base='..string.format('%x',base)
+                        ..';len='..tostring(chunk)..';hex='..hex(bytes))
+                else
+                    emit('codeprobe;tag='..tag..';rva='..string.format('%x',rva)
+                        ..';off='..tostring(off)..';error='..tostring(bytes))
+                end
+                off=off+chunk
+            end
+        end
+        -- ★★ 浮点常量探针（2026-10-09）：读 .rdata 里被 RIP 相对寻址引用的常量 ★★
+        --   用途：确认 seek 函数里那几个魔数的真实数值 ——
+        --     · 0xbb009/0xbb011/0xbb019 装的三个 xmm = orbit 的三个实参
+        --       （上游记为 10.0 / 2.5 / 1.2000000476837158）
+        --     · 0xbb070/0xbb07b/0xbb089 那三个乘出来的值 = "下次允许时间"的间隔
+        --       ⇒ 直接验证 sel_probe 观察到的 ~22 帧周期（0.367 s = 367000 µs）
+        --   地址 = 指令地址 + 指令长度 + rip 偏移（离线算好，不是猜的）。
+        local function dump_f32(tag,rva)
+            local ok,b=pcall(read,base+rva,4)
+            if ok and #b==4 then
+                local q1,q2,q3,q4=b:byte(1,4)
+                local u=q1+q2*256+q3*65536+q4*16777216
+                local box=ffi.new('uint32_t[1]',u)
+                emit('constprobe;tag='..tag..';rva='..string.format('%x',rva)
+                    ..';f32='..tostring(tonumber(ffi.cast('float *',box)[0])))
+            else
+                emit('constprobe;tag='..tag..';rva='..string.format('%x',rva)
+                    ..';error='..tostring(b))
+            end
+        end
+        dump_f32('orbit_arg3',0x23c6e28)
+        dump_f32('orbit_arg2',0x23c71e0)
+        dump_f32('orbit_arg1',0x23c7554)
+        dump_f32('cooldown_a',0x23c6d70)
+        dump_f32('cooldown_b',0x23c68c0)
+        dump_f32('cooldown_mul',0x23c7ec0)
+        -- 通道金丝雀：这两个自带上游记录的入口签名 ⇒ 每轮都复核"有没有读错位"
+        dump_code('clear',0x4af4e0,256)
+        dump_code('orbit',0x4dec30,256)
+        -- target_valid 本体 0x8858a0–0x8859b5（277 B）⇒ 384 覆盖完整（2 行）
+        dump_code('target_valid',0x8858a0,384)
+        -- ★ 第二轮新增：target_valid 内部**真正做判断**的两个子函数 + 两个基础设施
+        --   pred_f0c = 0x13e1b50（吃 f0c，返回值 >=1 即拒）
+        --   flags_f08 = 0x4a9710（吃 f08，返回带 bit25 的标志字）
+        --   resolve_id = 0xfd9d40（entity==NULL 时按 id 解析）
+        --   set_lookup = 0x927050（全局集合查询，命中且为真即硬拒）
+        dump_code('pred_f0c',0x13e1b50,256)
+        dump_code('flags_f08',0x4a9710,256)
+        dump_code('resolve_id',0xfd9d40,256)
+        dump_code('set_lookup',0x927050,256)
+        -- ★★ state-3 转换（2026-10-09）：这就是"让 G-60 开始索敌"的那段代码 ★★
+        --   上游原文（_refs/g60-smart-targeting-1.1.0-analysis.md:36）：
+        --     -- Exact argument types/order and float constants of game 0xbb009..0xbb021.
+        --     -- Never call the state-3 transition, which resets the flight timer.
+        --     calls.orbit(pair,10.0,2.5,1.2000000476837158)
+        --   ⇒ `0xbb009..0xbb021` 就是**把 G-60 打回索敌态（orbit）并重置飞行计时器**
+        --     的那段代码。而调用者扫描实测：整个代码节里 `orbit` **只有这一个**
+        --     调用点（from=bb021），与上游记录**同址** —— 两条独立证据互相印证。
+        --   函数起点在该段之前 ⇒ 往前多读 2 KB，便于离线按 int3 填充找函数边界。
+        dump_code('seek_fn',0xba800,2304)
+        -- ★★ 2026-10-09 续：seek 函数**余下全部**（0xbb100 → 0xbbd21 的 ret）★★
+        --   已解出的开头（0xbafb0 起）：
+        --     · `[obj+0x180] + 0x1c9c380(=30,000,000) vs 全局时钟` ⇒ 过期则 state=5
+        --       （⇒ 时钟单位是**微秒**，30,000,000 µs = G-60 的 30 秒寿命）
+        --     · 未过期 ⇒ 0xbb009 装 3 个浮点常量 → **0xbb021 call orbit**（state-3 转换）
+        --     · 之后 `[obj+0x90]` 是"下次允许时间"：未到点直接 return；
+        --       到点则重排 `[0x90] = now + int(常量×常量)`（这就是那 ~22 帧的周期）
+        --     · 再往下 `call 0x889830` → `imul 0x13f8` → `[global+0x50]+key*0x13f8`
+        --       → 读三个候选组计数 `+0xd20/+0x818/+0x310` ⇒ **开始枚举候选**
+        --   ⇒ 余下这段就是"选目标 / 置 state"的逻辑，必须读完才能判断
+        --     无敌人时它为什么不选虫洞。
+        dump_code('seek_fn2',0xbb100,15360)
+        -- ★ 第二个 orbit 调用点（全量扫描才捞到，上一轮被 300 上限截断漏掉）
+        dump_code('orbit2',0x425300,1024)
+        -- ★★ 调用者扫描（2026-10-09）：找"引擎自己开始索敌"的代码位置 ★★
+        --
+        --   原理（不是猜的）：**我们自己的代码就是靠 clear(0x4af4e0)+orbit(0x4dec30)
+        --   起索敌的**（见 native_arrival 的 search 分支：calls.clear + calls.orbit）。
+        --   ⇒ 引擎自己的"起索敌"必然也走这两个原语（或走索敌系统的
+        --     target_valid / category_mask / candidates）。于是扫 `.text` 里的
+        --     `E8 rel32`，把"调用这些已知锚点"的位置全打出来 —— 那些调用点
+        --     就是引擎的索敌/选目标逻辑所在。
+        --
+        --   范围只取**第一个节**：本工程实测该节 char=0x60000020（code），
+        --   其余大节 char=0x40000040（data）⇒ 限定 [0x1000,0x2110a93) 天然只捞代码。
+        --   ⚠ 纯只读、启动时跑一次、只打命中地址（不打代码本体，几十条）。
+        --   ⚠ 逐块读（read 上限 32768）+ 每块多读 4 字节，防 `call` 指令跨块被漏掉。
+        local anchors={[0x4af4e0]='clear',[0x4dec30]='orbit',
+            [0x8858a0]='target_valid',[0x8859c0]='category_mask',
+            [0x889940]='candidates',[0x8cdf80]='explode',
+            [0xfd9d40]='resolve_id',[0x927050]='set_lookup',
+            -- ★ 2026-10-09：seek 函数本身（0xbafb0）也当锚点 ⇒ 找出**谁触发它**
+            --   （是调度队列派发？还是逐帧调用？这决定我们能不能绕开它）
+            [0xbafb0]='seek_fn'}
+        local order={'clear','orbit','target_valid','category_mask','candidates',
+            'explode','resolve_id','set_lookup','seek_fn'}
+        local clock=os and os.clock
+        local t0=clock and clock() or 0
+        local counts,first,last,total={},{},{},0
+        local off=0x1000
+        while off<0x2110a93 do
+            local n=math.min(32764,0x2110a93-off)
+            local ok,b=pcall(read,base+off,n+4)
+            if ok then
+                local i=1
+                while true do
+                    local p=b:find('\232',i,true)
+                    if not p then break end
+                    if p+4<=#b then
+                        local q1,q2,q3,q4=b:byte(p+1,p+4)
+                        local rel=q1+q2*256+q3*65536+q4*16777216
+                        if rel>=2147483648 then rel=rel-4294967296 end
+                        local at=off+(p-1)
+                        local name=anchors[at+5+rel]
+                        if name then
+                            total=total+1
+                            counts[name]=(counts[name] or 0)+1
+                            first[name]=first[name] or at
+                            last[name]=at
+                            -- 只逐条打 orbit：它是"起索敌"的唯一原语调用点，
+                            -- 数量极少（实测全代码节 1 个）；其余只进直方图，
+                            -- 避免上一轮那样打满 300 条把扫描截断。
+                            if name=='orbit' then
+                                emit('callerscan;from='..string.format('%x',at)..';to=orbit')
+                            end
+                        end
+                    end
+                    i=p+1
+                end
+            end
+            off=off+32764
+        end
+        local hist={}
+        for _,nm in ipairs(order) do
+            if counts[nm] then
+                hist[#hist+1]=nm..'='..counts[nm]..'@'..string.format('%x',first[nm])
+                    ..'-'..string.format('%x',last[nm])
+            end
+        end
+        emit('callerscan_done;hits='..tostring(total)
+            ..';ms='..tostring(clock and math.floor((clock()-t0)*1000) or -1)
+            ..';range=1000-2110a93;hist='..table.concat(hist,','))
+        -- ★★ state=4 写入点扫描（2026-10-09）：有没有**可调用的**提升函数？ ★★
+        --
+        --   背景（因果链已闭合，见 memory）：引擎只在"候选分数 > 0"时才置 state=4；
+        --   而建筑/虫洞不在候选列表里 ⇒ 无敌人时永远进不了 state 4 ⇒ 没有引导授权。
+        --
+        --   ⚠ 先说清为什么不能"自己写 state=4"：本工程**没有写内存原语** ——
+        --     FFI 面只有 `ReadProcessMemory`（只读）+ 5 个引擎函数
+        --     （clear / orbit / aim / explode / remove）。而 `clear` 的反汇编证明
+        --     它只把 80 字节记录拷进 obj+0x10、置 +0x70 标志、写 +0x68/+0x6c，
+        --     **完全不碰 `[obj+8]`（state）** ⇒ 借 clear 间接获得 state 4 也不成立。
+        --
+        --   ⇒ 唯一剩下的可能是：机器码里存在一个**专门做提升的可调用函数**
+        --     （而不是内联在 seek 函数里的那几行）。用模式扫出来：
+        --       `C7 4X 08 04 00 00 00` = mov dword [reg+8], 4   （state = 4）
+        --       `C7 4X 00 04 00 00 00` = mov dword [reg+0], 4   （behavior = 4）
+        --     ModRM 0x40-0x47 = [reg+disp8]；`C7 /0` 是 mov r/m32, imm32。
+        --   ⇒ 命中地址若**靠近某个函数开头**，就可能是我们能直接调用的提升函数；
+        --     若全部落在 seek 函数体内（0xbafb0-0xbbd21），则此路不通。
+        --   ⚠ 纯只读、启动一次、只打命中地址。
+        local spats={{'\8\4\0\0\0','state4'},{'\0\4\0\0\0','behav4'}}
+        local shits,sreads,sreads_fail=0,0,0
+        local soff=0x1000
+        while soff<0x2110a93 and shits<200 do
+            -- ⚠ 上限必须是 32763：`read` 的断言是 `n<=32768`，而这里要 `n+5`
+            --   （模式 7 字节、防跨块）。2026-10-09 我写成 `math.min(32764,…)`
+            --   ⇒ 每块传 32769 ⇒ **每次读都被断言拒绝、又被 pcall 吞掉**
+            --   ⇒ 整个扫描什么都没扫，却打出一行看起来完全合法的 `hits=0`
+            --   ——**静默失败伪装成了结论**（本工程栽过一次，这次是第二次）。
+            --   ⇒ 现在同时统计 reads / reads_fail，失败不再可能伪装成"没命中"。
+            local n=math.min(32763,0x2110a93-soff)
+            local ok,b=pcall(read,base+soff,n+5)
+            sreads=sreads+1
+            if ok then
+                for _,pt in ipairs(spats) do
+                    local i=1
+                    while true do
+                        local p=b:find(pt[1],i,true)
+                        if not p then break end
+                        if p>=3 and b:byte(p-1)>=0x40 and b:byte(p-1)<=0x47
+                            and b:byte(p-2)==0xc7 then
+                            if shits<200 then
+                                shits=shits+1
+                                emit('statescan;from='..string.format('%x',soff+(p-3))
+                                    ..';kind='..pt[2])
+                            end
+                        end
+                        i=p+1
+                    end
+                end
+            else
+                sreads_fail=sreads_fail+1
+            end
+            soff=soff+32763
+        end
+        emit('statescan_done;hits='..tostring(shits)..';reads='..tostring(sreads)
+            ..';reads_fail='..tostring(sreads_fail))
+    end
     local calls=Binding.bind_experimental(read,base)
     for _,g in ipairs(TitanProfile.engine_guards) do
         local expected=g[2]:gsub('..',function(b) return string.char(tonumber(b,16)) end)
@@ -456,6 +836,8 @@ local ok,why=pcall(function()
     calls.remove=ffi.cast('void (*)(void *, uint32_t)',base+0xfdc310)
     calls.aim=ffi.cast('void *(*)(void *, void **, const void *)',base+0x4b0c40)
     host=Runtime.new({read=read,base=base,exe=exe,calls=calls,
+        -- ★ 受控写通道（2026-10-09）：只给 promote_state4 用。见 write() 的边界说明。
+        write=write,
         titan_profile=TitanProfile,weakpoint_profiles=WeakpointProfiles,
         -- ★ 泰坦变体（借用基线几何）。见 compat/titan_variants.lua 的证据注释。
         titan_variant_profiles=(TitanVariants and TitanVariants.profiles) or nil,
@@ -504,8 +886,10 @@ local ok,why=pcall(function()
         --   · 实测 early_probe 距离 76.5m / 18.5m / 14.5m
         --     ⇒ 早期纯 ballistic 飘向别处
         --   · G-60 在**飞行寿命到期（30s）时自然转入 state 4**，与敌人无关
-        allow_state3=false,
-        titan_standoff=state.titan_standoff,titan_standoff_min=state.titan_standoff_min,
+        allow_state3=state.allow_state3,
+        force_lock_enabled=state.force_lock_enabled,
+        titan_standoff=state.titan_standoff,
+        adaptive_approach=state.adaptive_approach,blast_regions=state.blast_regions,
         dragonroach_enabled=state.dragonroach_enabled,dragonroach_resource=state.dragonroach_resource,
         enemy_veto_enabled=state.enemy_veto_enabled,
         generic_takeover_enabled=state.generic_takeover_enabled,
@@ -513,6 +897,17 @@ local ok,why=pcall(function()
         --   与虫洞的"距离<4m"机制**分开**；置 false ⇒ 退回"引擎 aim"。
         blast_sites=state.blast_sites_enabled and BlastSites or nil,
         early_nav_probe=state.early_nav_probe,early_nav_orbit=state.early_nav_orbit,
+        sel_probe_enabled=state.sel_probe_enabled,
+        -- ★ 目标字段探针（2026-10-08）。⚠ 这里曾经漏过：开关只写进了 state、
+        --   没进 env ⇒ helper 里 `env.target_fields_probe` 是 nil ⇒ 静默不触发，
+        --   而当时守门只查了"开关声明"没查"接线" ⇒ 门绿功能死（实机一次抓出）。
+        target_fields_probe=state.target_fields_probe,
+        -- ★ code_probe_enabled 也必须进 env（2026-10-09 修）：启动时的 dump 直接读
+        --   `state.code_probe_enabled` 所以一直能跑，但 `probe_record_pointers`
+        --   读的是 **env** 的字段 ⇒ 没接线时静默不触发（recptr 一条都没有）。
+        --   ⚠ 这是**第二次**同类事故（前一次 target_fields_probe）⇒ 本轮加了
+        --     结构性守门 test_env_wiring_complete，一次覆盖所有 env 字段。
+        code_probe_enabled=state.code_probe_enabled,
         ping_slot_dump=state.ping_slot_dump,
         point_marker_enabled=state.point_marker_enabled,
         point_target_enabled=state.point_target_enabled,
@@ -523,7 +918,8 @@ local ok,why=pcall(function()
         marked_unit_rank_first=state.marked_unit_rank_first,
         point_arrival_region=state.point_arrival_region,
         titan_arrival_region=state.titan_arrival_region,
-        titan_belly_above=state.titan_belly_above,
+        -- （`titan_belly_above` 已于 2026-10-05 按上游移除，见 state 表处的说明）
+        titan_animated_belly=state.titan_animated_belly,
         thread=function() return tonumber(k.GetCurrentThreadId()) end,
         engine=assert(rawget(_G,'stingray'),'engine API unavailable'),emit=emit})
     state.stop=Runtime.install(_G,host,function()
@@ -558,7 +954,10 @@ local ok,why=pcall(function()
         ..'bughole_profiles=16;enemy_priority=REMOVED;weakpoints=REMOVED;'
         ..'hole_variants=INCLUDED;spore_spewer_egg=REMOVED;target_valid=SOFT_SIGNAL;'
         ..'selection_veto=DISABLED;unmarked_behavior=VANILLA;filter_enabled=true;'
-        ..'enemy_tracking=VANILLA_UNTOUCHED;priority_gated=STRUCTURE_ONLY;arrival_gated=HELD_LOCK_ONLY;'
+        ..'enemy_tracking=VANILLA_UNTOUCHED;priority_gated=STRUCTURE_ONLY;arrival_gated='
+        ..(state.allow_state3 and 'STATE3_ALLOWED' or 'HELD_LOCK_ONLY')
+        ..';allow_state3='..tostring(state.allow_state3)..';'
+        ..'force_lock_enabled='..tostring(state.force_lock_enabled)..';'
         ..'disposal_gated=HELD_LOCK_ONLY;'
         ..'designed_targets_only='..tostring(state.designed_targets_only)..';'
         ..'mark_priority_enabled=false;exclusive_targets=true;marked_structures=true;'
@@ -568,10 +967,12 @@ local ok,why=pcall(function()
         ..';scan_every_idle='..tostring(state.scan_every_idle)
     local status_titan='titan_settings;titan_standoff='..state.titan_standoff
         ..';titan_arrival_radius='..state.titan_arrival_region.radius..';titan_arrival_depth='..state.titan_arrival_region.depth
-        ..';titan_standoff_min='..tostring(state.titan_standoff_min)
+        ..";adaptive_approach="..tostring(state.adaptive_approach)..";blast_regions="..tostring(state.blast_regions)
         -- ★ 腹部提前引爆余量（2026-10-02）：必须能在日志里一眼确认它是否生效 ——
         --   0 = 旧行为（必须到爆点或更低）
-        ..';titan_belly_above='..tostring(state.titan_belly_above)
+        -- （`titan_belly_above` 已移除；泰坦爆点改由 Adaptive 决定）
+        -- ★ 泰坦模板整合开关（2026-10-04）：必须一眼能看到它是否生效
+        ..';titan_animated_belly='..tostring(state.titan_animated_belly)
         ..';dragonroach_enabled='..tostring(state.dragonroach_enabled)
         ..';dragonroach_resource='..tostring(state.dragonroach_resource)
         ..';titan_variants_enabled='..tostring(state.titan_variants_enabled)
