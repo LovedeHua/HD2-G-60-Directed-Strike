@@ -22,13 +22,23 @@
 
 ### ▶ 演示视频
 
+**👉 [在线播放（浏览器直接播，带播放器）](https://lovedehua.github.io/HD2-G-60-Directed-Strike/demo/)**
+
+<!-- 下面两个 <video> 是"能内嵌就内嵌"的尝试：GitHub 的 markdown 清洗器**可能**会丢掉
+     video 标签，所以每一项旁边都配了普通链接 —— 标签被丢掉时链接仍然可用。 -->
+<video src="https://lovedehua.github.io/HD2-G-60-Directed-Strike/demo/no-enemies-bughole.mp4" controls preload="metadata" width="720"></video>
+<video src="https://lovedehua.github.io/HD2-G-60-Directed-Strike/demo/g60-showcase.mp4" controls preload="metadata" width="720"></video>
+
 | 视频 | 看什么 |
 |---|---|
-| [**① 无敌人时，G-60 也能炸毁标记虫洞**](https://github.com/LovedeHua/HD2-G-60-Directed-Strike/blob/master/demo/no-enemies-bughole.mp4) | v0.1.7 的核心能力：周围**一个敌人都没有**，标记虫洞后扔雷，它照样飞过去炸 |
-| [**② G-60 优化展示**](https://github.com/LovedeHua/HD2-G-60-Directed-Strike/blob/master/demo/g60-showcase.mp4) | 整体接管效果：标记虫洞 / 泰坦 / ping 空地的表现 |
+| [**① 无敌人时，G-60 也能炸毁标记虫洞**](https://lovedehua.github.io/HD2-G-60-Directed-Strike/demo/no-enemies-bughole.mp4) | v0.1.7 的核心能力：周围**一个敌人都没有**，标记虫洞后扔雷，它照样飞过去炸 |
+| [**② G-60 优化展示**](https://lovedehua.github.io/HD2-G-60-Directed-Strike/demo/g60-showcase.mp4) | 整体接管效果：标记虫洞 / 泰坦 / ping 空地的表现 |
 
-> 点标题即可在 GitHub 上**在线播放**（也可在原页面右键下载）。源文件在 `demo/` 目录。
-> 用**绝对链接**是有意的：README 也会打进成品包，相对路径在包里会失效。
+> 上表两条是 **GitHub Pages** 上的直链，浏览器点开就能播（Pages 用 CDN 发 `video/mp4`
+> 并支持 Range 请求）；仓库里也各存一份原片（[①](https://github.com/LovedeHua/HD2-G-60-Directed-Strike/blob/master/demo/no-enemies-bughole.mp4) /
+> [②](https://github.com/LovedeHua/HD2-G-60-Directed-Strike/blob/master/demo/g60-showcase.mp4)）。
+> ⚠ 若视频**一直转圈**，那是 **GitHub 的媒体 CDN 在你的网络下不通**（不是文件坏了）：
+> 用仓库页面右键下载原片，或把仓库 `demo/*.mp4` 拉到本地播。
 
 ### ★ v0.1.7：**没有敌人时也能炸毁标记虫洞**
 

@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>G-60 Directed Strike —— 演示视频</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px 20px 64px;
+    background: #0d1117; color: #e6edf3;
+    font: 16px/1.7 -apple-system, "Segoe UI", "Microsoft YaHei", Roboto, sans-serif;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 0 0 6px; }
+  .sub { color: #8b949e; margin: 0 0 28px; }
+  h2 { font-size: 18px; margin: 36px 0 10px; }
+  .note { color: #8b949e; font-size: 14px; margin: 0 0 14px; }
+  video {
+    width: 100%; height: auto; display: block;
+    background: #000; border: 1px solid #30363d; border-radius: 8px;
+  }
+  .meta { color: #8b949e; font-size: 13px; margin: 8px 0 0; }
+  a { color: #58a6ff; }
+  .top { margin-top: 40px; padding-top: 20px; border-top: 1px solid #21262d; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>G-60 Directed Strike —— 演示视频</h1>
+  <p class="sub">
+    《绝地潜兵2》G-60 反坦克追踪者手雷的「目标专用」接管 mod：
+    <strong>你标记的目标优先</strong>；没标记时什么都不做，完全交还引擎原生。
+  </p>
+
+  <h2>① 无敌人时，G-60 也能炸毁标记虫洞</h2>
+  <p class="note">周围<strong>一个敌人都没有</strong>，标记虫洞后扔雷，它照样飞过去炸（v0.1.7 的核心能力）。</p>
+  <video controls preload="metadata" playsinline
+         src="no-enemies-bughole.mp4">
+    你的浏览器不支持内嵌播放，请<a href="no-enemies-bughole.mp4">点此下载</a>。
+  </video>
+  <p class="meta">no-enemies-bughole.mp4 · 31.7 MB · <a href="no-enemies-bughole.mp4" download>下载原片</a></p>
+
+  <h2>② G-60 优化展示</h2>
+  <p class="note">整体接管效果：标记虫洞 / 泰坦 / ping 空地的表现。</p>
+  <video controls preload="metadata" playsinline
+         src="g60-showcase.mp4">
+    你的浏览器不支持内嵌播放，请<a href="g60-showcase.mp4">点此下载</a>。
+  </video>
+  <p class="meta">g60-showcase.mp4 · 58.9 MB · <a href="g60-showcase.mp4" download>下载原片</a></p>
+
+  <div class="top">
+    <p class="note">
+      ⚠ 如果视频一直转圈加载不出来，通常是 <strong>GitHub 的媒体 CDN 在你的网络下不通</strong>
+      （不是文件坏了）——用上面的「下载原片」，或把仓库里的
+      <code>demo/*.mp4</code> 拉到本地播放。
+    </p>
+    <p><a href="https://github.com/LovedeHua/HD2-G-60-Directed-Strike">← 回到仓库</a> ·
+       <a href="https://github.com/LovedeHua/HD2-G-60-Directed-Strike/releases/latest">下载 mod 最新版</a></p>
+  </div>
+
+</div>
+</body>
+</html>
