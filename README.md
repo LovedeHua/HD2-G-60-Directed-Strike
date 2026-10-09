@@ -20,6 +20,16 @@
 优先级：**虫洞 / 构筑 > 标记单位 > ping 空地**。唯一例外：不让 G-60 追踪
 **运输船 / 光能族增援飞船**（可一键关闭）。
 
+### ▶ 演示视频
+
+| 视频 | 看什么 |
+|---|---|
+| [**① 无敌人时，G-60 也能炸毁标记虫洞**](https://github.com/LovedeHua/HD2-G-60-Directed-Strike/blob/master/demo/no-enemies-bughole.mp4) | v0.1.7 的核心能力：周围**一个敌人都没有**，标记虫洞后扔雷，它照样飞过去炸 |
+| [**② G-60 优化展示**](https://github.com/LovedeHua/HD2-G-60-Directed-Strike/blob/master/demo/g60-showcase.mp4) | 整体接管效果：标记虫洞 / 泰坦 / ping 空地的表现 |
+
+> 点标题即可在 GitHub 上**在线播放**（也可在原页面右键下载）。源文件在 `demo/` 目录。
+> 用**绝对链接**是有意的：README 也会打进成品包，相对路径在包里会失效。
+
 ### ★ v0.1.7：**没有敌人时也能炸毁标记虫洞**
 
 以前这条做不到，原因很硬：引擎只在「候选分数 > 0」时才给 G-60 引导授权（state 4），
