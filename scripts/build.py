@@ -25,14 +25,17 @@ CONFIG = json.loads((ROOT / 'compat/build.json').read_text())
 #
 #   事故背景：发 Release v0.1.2 时成品包还叫 `G60-BugHole-Lock-0.1.0.zip`
 #   —— 因为 TITLE / ZIP_NAME 把 '0.1.0' 硬编码在代码里，与 Release 标签完全脱节。
-RELEASE_VERSION = '0.1.7'
+RELEASE_VERSION = '0.1.8'
+# ★ v0.1.8 的内容（2026-10-09）：**诊断**，不改玩法。
+#   `frame_error` 带**出错处的调用栈** + 停机时 `errors;` 汇总 ⇒
+#   那条 `pointer bound`（启动期引擎根指针未初始化，非故障）终于能归因、能计数。
 # ★ v0.1.7 的内容（2026-10-09，全部实机验证）：
 #   · **无敌人时也能炸毁标记虫洞** —— 强制提升 state=4（`force_lock_enabled`，
 #     本工程唯一的受控写通道；实机 5 颗雷 / 5 个虫洞全部炸毁）。
 #   · **ping 空地路同样支持无敌人** —— 同一套提升 + 门控把"TTL 内的 ping"
 #     当成与标记同级的玩家意图（实机生效）。
-#   · 清理：研究脚手架（code_probe 默认关闭、候选组探针移除）。
-#   ⚠ 这是本工程第一次绕过引擎 API 直接写游戏状态；`force_lock_enabled=false` 一键回退。
+#   · 改名 G-60 Bug Hole Lock → G-60 Directed Strike；清理研究脚手架。
+#   ⚠ v0.1.7 是本工程第一次绕过引擎 API 直接写游戏状态；`force_lock_enabled=false` 一键回退。
 VERSION = RELEASE_VERSION
 # ★ 裁剪版身份：独立 GUID + 独立资源名 + 独立标题，与上游官方包互不覆盖(管理器槽位二选一)。
 # ★ 2026-10-09 改名（用户拍板）：**G-60 Bug Hole Lock → G-60 Directed Strike**。

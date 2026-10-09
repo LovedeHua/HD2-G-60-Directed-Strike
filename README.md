@@ -1,8 +1,12 @@
-# G-60 Directed Strike —— 只打你点的目标
+# G-60 Directed Strike —— 你标记的目标优先
 
 > 《绝地潜兵2》**G-60 反坦克追踪者手雷**的「目标专用」接管 mod。
 > 引擎自己挑目标：附近有敌人就锁敌人，没敌人就原地盘旋、30 秒后自爆——**你标记的虫洞它看都不看**。
-> 这个 mod 把那套决策接管过来：**你点什么，它就打什么。**
+> 这个 mod 在你**标记 / 点名**的那一刻把那套决策接管过来：**你点的目标优先**。
+>
+> ⚠ **准确说它不是"只打你点的目标"**：**没标记时它什么都不做**，
+> G-60 完全按引擎原生逻辑打敌人（照样会去追敌、照样会锁泰坦）。
+> 它改的是**优先级**，不是"唯一目标"。
 
 ### 它接管什么
 
@@ -28,14 +32,21 @@ v0.1.7 用本工程**唯一的受控写通道**（`force_lock_enabled`：只写 
 ⚠ 这是本工程第一次绕过引擎 API 直接写游戏状态，`force_lock_enabled=false` **一键回退**到只读行为；
 风险与细节见下文「受控写通道」一节。
 
-> **当前版本 v0.1.7**。版本号的**唯一来源**是 `scripts/build.py` 的 `RELEASE_VERSION` ——
+> **当前版本 v0.1.8**。版本号的**唯一来源**是 `scripts/build.py` 的 `RELEASE_VERSION` ——
 > `TITLE`（manifest 显示名）、成品包文件名、`BUILD-INFO.json`、日志里的 `version=` 全部由它派生。
 > 发新版**只改那一个常量**。
 > （`compat/build.json` 的 `public_version` 是**上游**的版本，与本裁剪版无关。）
 >
+> **v0.1.8：把「`pointer bound` 看不见」这件事修掉**（诊断，不改玩法）。
+> 那条错误此前只有消息、**没有调用者**，而且被去重后连**发生了几次**都看不到。
+> 现在 `frame_error` 会带上**出错处的调用栈**（`frame_error;detail=…:1026: pointer bound ~~ …`），
+> 停机时还会打一条 `errors;kinds=…;total=…;details=…` 汇总。
+> 顺带说明它的性质：那是**启动期引擎根指针还没初始化**、观测段连续失败几十帧，
+> **"还没准备好"，不是"坏了"**（工程 2026-09-27 就记录过），功能不受影响。
+>
 > **v0.1.7 起改名**：旧名 `G-60 Bug Hole Lock` 是 v0.1.6 之前的能力写照（那时只打虫洞）。
 > 资源名与包名同步更换（`mods/hd2test/g60_directed_strike` /
-> `G60-Directed-Strike-0.1.7.zip`），**归档槽位与 GUID 未变** ⇒ 加载器那边是原地升级。
+> `G60-Directed-Strike-0.1.8.zip`），**归档槽位与 GUID 未变** ⇒ 加载器那边是原地升级。
 >
 > 派生自 [`etxp/HD2-G60-Smart-Targeting`](https://github.com/etxp/HD2-G60-Smart-Targeting) 0.1-beta.1
 > （源码 MIT）。裁剪只动**决策层**；**签名守卫、持锁窗口、状态机白名单、身份复验等安全机制原样保留**。
@@ -346,11 +357,11 @@ ef04cb84d097a497 → content/fac_bugs/cha_strider/cha_strider_gloom
 
 > ### 📦 成品包下载
 > **[GitHub Releases › 最新版](https://github.com/LovedeHua/HD2-G-60-Directed-Strike/releases/latest)**
-> —— 下载 `G60-Directed-Strike-0.1.7.zip` 直接导入 mod 管理器。（本仓库只有**源码**，成品包在 Releases 附件里。）
+> —— 下载 `G60-Directed-Strike-0.1.8.zip` 直接导入 mod 管理器。（本仓库只有**源码**，成品包在 Releases 附件里。）
 
 1. 关闭游戏，安装 [Bingus Shared Loader](https://github.com/CowboyBingus/BingusSharedLoader)
    （**API 1，v15+**，需 addon discovery）。
-2. 把 `G60-Directed-Strike-0.1.7.zip` 导入 mod 管理器。
+2. 把 `G60-Directed-Strike-0.1.8.zip` 导入 mod 管理器。
 3. **与上游官方包二选一** —— 两个包都会改 G-60 的决策，同时启用会打架。
    本包 GUID `9c1d4e77-…`，官方包 GUID `58a16a67-…`。
 4. Purge / Deploy 后重启游戏。
