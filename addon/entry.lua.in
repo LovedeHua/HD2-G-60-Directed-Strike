@@ -704,6 +704,10 @@ local ok,why=pcall(function()
             and not line:match('^engine_explode_probe;')
             -- ★ Mod Options Menu 的注册/回显结果（与上面同理，必须白名单化）
             and not line:match('^menu_')
+            -- ★★ 2026-10-10 语言跟随：**判读"菜单到底用了哪套文案"的唯一证据** ★★
+            --   `menu_lang;tag=<BCP47>;src=game|steam|default;functions=true|false`
+            --   —— 用户报「英语客户端显示中文」这类问题时，没有这一行就只能靠猜。
+            and not line:match('^menu_lang;')
             and not line:match('^menu_probe;')
             and not line:match('^menu_tick_entered;')
             and not line:match('^menu_register_crash;')
@@ -1137,10 +1141,17 @@ local ok,why=pcall(function()
     --     ③ **只注册"改了立刻安全"的项**：能改的是运行期开关（env 里的字段），
     --        不碰编译期常量（如 resource hash、几何表）—— 那些改了要重打包。
     local menu={host=nil,registered={},pushed={}}
+    -- ★★★ 2026-10-10 文案**跟随游戏语言**（用户要求）★★★
+    --   原话：「mod设置的语言要能跟随游戏语言变化，比如说游戏语言是英语，mod设置显示的也是英语」。
+    --   ⇒ 每个菜单项只留一个 `key`，label/desc 全部从 `MenuText` 里取
+    --     （`src/g60/menu_text.lua`：读游戏 Text Language → Steam 语言 → 英语 fail-safe）。
+    --   ⚠ 菜单 API `version>=2` 时 label/description 可以是**函数**，菜单每次打开都会调用
+    --     ⇒ 运行期改语言也能跟上（不用重开游戏）。实机 `menu_probe;…;version=3` ⇒ 走函数路径。
+    --   ⚠ 这里**不再出现任何中文字面量** —— 文案只有一处来源（menu_text.lua），
+    --     否则"英语客户端看到中文"这类问题永远查不干净。
     local MENU_ITEMS={
         -- 安全区（本轮新功能，最需要能在游戏里调）
-        {id='g60.blast_safe_radius',kind='slider',min=0,max=30,step=1,
-            label='爆炸安全区半径',desc='玩家在这个半径（米）内时 G-60 不引爆，继续追踪目标；0=关闭',
+        {id='g60.blast_safe_radius',kind='slider',min=0,max=30,step=1,key='blast_safe_radius',
             get=function() return tonumber(host.env.blast_safe_radius) or 0 end,
             set=function(v) host.env.blast_safe_radius=v end},
         -- ★★ 2026-10-10 绕行半径（用户要求进菜单）★★
@@ -1148,21 +1159,18 @@ local ok,why=pcall(function()
         --   实机 2026-10-10 那一局固定用 5 m，`detour_guide;…;dist=` 显示有时落后
         --   2.5 m、有时落后 9.8 m —— 到底该调大调小，只有在游戏里试才知道。
         --   ⚠ 只在"安全区半径 > 0"时有意义（关掉安全区就没有绕行）。
-        {id='g60.blast_safe_orbit',kind='slider',min=2,max=20,step=1,
-            label='安全区绕行半径',desc='安全区生效时手雷绕目标盘旋的半径（米）；越大离目标越远',
+        {id='g60.blast_safe_orbit',kind='slider',min=2,max=20,step=1,key='blast_safe_orbit',
             get=function() return tonumber(host.env.blast_safe_orbit) or 5 end,
             set=function(v) host.env.blast_safe_orbit=v end},
         -- ★★ 2026-10-10 安全区是否覆盖"引擎自己瞄的雷"（用户报「没标记时不生效」）★★
         --   **默认关**：这是本工程唯一会写"非自有 G-60"的行为，开之前请先看日志判读。
-        {id='g60.safe_zone_engine_hold',kind='toggle',
-            label='安全区管引擎自瞄的雷',desc='实验：玩家在安全区内时，连引擎自己瞄敌人的 G-60 也一起压住（看 safe_engine_* 日志判读）',
+        {id='g60.safe_zone_engine_hold',kind='toggle',key='safe_zone_engine_hold',
             get=function() return host.env.safe_zone_engine_hold==true end,
             set=function(v) host.env.safe_zone_engine_hold=v and true or false end},
         -- ★★ 2026-10-10 冗余第四层（用户拍板做成开关）：清掉引擎的选择 ★★
         --   ⚠ 它清的是**引擎自己的索敌**，所以默认关；菜单里一开就当场生效。
         --   判读：`safe_veto;`（实体式，真的清了）/ `safe_veto_point;`（点式，清不了）。
-        {id='g60.safe_zone_veto_selection',kind='toggle',
-            label='安全区清引擎的选择',desc='实验：玩家在圈内且手雷已贴到取消线以内时，清掉引擎选中的目标（引信就没有可撞的对象）。看 safe_veto_* 日志判读',
+        {id='g60.safe_zone_veto_selection',kind='toggle',key='safe_zone_veto_selection',
             get=function() return host.env.safe_zone_veto_selection==true end,
             set=function(v) host.env.safe_zone_veto_selection=v and true or false end},
         -- ★★ 2026-10-10 贴脸取消（用户拍板选 A，**默认关**）★★
@@ -1190,24 +1198,19 @@ local ok,why=pcall(function()
         -- ★★ 2026-10-10 「清除友方锁定」（用户第二次报的 bug，默认开）★★
         --   引擎锁着一个"不能当目标"的单位（玩家标记了友方）⇒ 手雷被它占着、我们的接管
         --   段进不来。打开后用已审查的"清选择"路径（run_veto）把它清掉，让引擎重新挑。
-        {id='g60.friendly_veto_enabled',kind='toggle',
-            label='清除友方锁定',desc='引擎锁着友方/中性单位时把它清掉（手雷才能被接管）—— 无法抹掉游戏里那个 ping 标记本身',
+        {id='g60.friendly_veto_enabled',kind='toggle',key='friendly_veto_enabled',
             get=function() return host.env.friendly_veto_enabled~=false end,
             set=function(v) host.env.friendly_veto_enabled=v and true or false end},
-        {id='g60.force_lock_enabled',kind='toggle',
-            label='无敌人强制接管',desc='无敌人时把 G-60 提升为可引导状态（本工程唯一的写内存路径）',
+        {id='g60.force_lock_enabled',kind='toggle',key='force_lock_enabled',
             get=function() return host.env.force_lock_enabled~=false end,
             set=function(v) host.env.force_lock_enabled=v end},
-        {id='g60.allow_state3',kind='toggle',
-            label='早期接管',desc='允许在 state 2/3 早期接管 G-60',
+        {id='g60.allow_state3',kind='toggle',key='allow_state3',
             get=function() return host.env.allow_state3~=false end,
             set=function(v) host.env.allow_state3=v end},
-        {id='g60.self_probe_enabled',kind='toggle',
-            label='自机探针',desc='只读输出玩家实体与坐标（诊断用）',
+        {id='g60.self_probe_enabled',kind='toggle',key='self_probe_enabled',
             get=function() return host.env.self_probe_enabled~=false end,
             set=function(v) host.env.self_probe_enabled=v end},
-        {id='g60.enemy_veto_enabled',kind='toggle',
-            label='载具否决',desc='不让 G-60 追运输船 / 光能族增援飞船',
+        {id='g60.enemy_veto_enabled',kind='toggle',key='enemy_veto_enabled',
             get=function() return host.env.enemy_veto_enabled~=false end,
             set=function(v) host.env.enemy_veto_enabled=v end},
     }
@@ -1241,14 +1244,37 @@ local ok,why=pcall(function()
         local h=rawget(_G,'ModOptionsMenu')
         if type(h)~='table' or h.api~=1 or type(h.register_option)~='function' then return end
         menu.host=h
+        -- ★★★ 2026-10-10 文案跟随游戏语言（用户要求）★★★
+        --   原话：「mod设置的语言要能跟随游戏语言变化，比如说游戏语言是英语，mod设置显示的也是英语」。
+        --   机制（照同工程 Aggro Counter 的做法）：
+        --     `version>=2` ⇒ label/description/mod 可以是**函数**，菜单**每次打开**都会调用
+        --       ⇒ 取词时重新读游戏语言 ⇒ **运行期改语言也能跟上**（实机 `version=3` ⇒ 走这条）。
+        --     `version<2` ⇒ 只能吃字符串，且 label≤64 / description≤400 / mod≤40 **字节**；
+        --       装不下就退回英语（**不能截断** —— 截断的中文比英语更难读）。
+        --   ⚠ 全程 pcall + fail-safe：读不到语言就显示英语，**绝不能因此注册失败**。
+        local functions=(tonumber(h.version) or 1)>=2
+        local menu_tr,menu_lang=MenuText.new(read,base)
+        local tag,src=menu_lang()
+        if menu.lang~=tag then
+            menu.lang=tag
+            emit('menu_lang;tag='..tostring(tag)..';src='..tostring(src)
+                ..';functions='..tostring(functions))
+        end
+        local function menu_text(key,bytes)
+            if functions then return function() return menu_tr(key) end end
+            local value=menu_tr(key)
+            if #value<=bytes then return value end
+            return menu_tr(key,'en')
+        end
         local n=0
         for _,it in ipairs(MENU_ITEMS) do
             -- ★ 按官方文档（README "For mod authors"）构造 spec：
             --   mod_id 是**分类稳定 id**（文档 preferred 项）—— 我第一版**没传**，
             --   是从 Aggro Counter 反推的接口，不是照文档写的 ⇒ 菜单没出现。
             --   其余字段：label(≤64 字符) / mod(≤40) / description(≤400) / type / default。
-            local spec={mod='G-60 Directed Strike',mod_id='hd2test.g60_directed_strike',
-                label=it.label,description=it.desc}
+            --   ⚠ 文案**不在本文件里**：全部来自 MenuText（key 规则 `<key>.label` / `<key>.desc`）。
+            local spec={mod=menu_text('mod',40),mod_id='hd2test.g60_directed_strike',
+                label=menu_text(it.key..'.label',64),description=menu_text(it.key..'.desc',400)}
             if it.kind=='toggle' then spec.type='toggle';spec.default=it.get()
             elseif it.kind=='slider' then spec.type='slider';spec.min=it.min;spec.max=it.max
                 spec.step=it.step;spec.default=it.get()

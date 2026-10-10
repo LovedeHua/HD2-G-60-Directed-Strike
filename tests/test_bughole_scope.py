@@ -382,6 +382,12 @@ def check_build_json(up, cur):
         #   与逻辑分开才好重跑、好审计（生成器带抽查，含"哨戒炮/支架/玩家/平民必须
         #   不判为敌人"）。判据与数据源 sha256 都写在生成文件头。
         'enemy_faction',
+        # ★★ 2026-10-10 用户要求「mod设置的语言要能跟随游戏语言变化」⇒ 新增文案模块。
+        #   为什么必须是**独立模块**：文案（en/zh-Hans 两套）+ 语言检测是**纯数据 + 只读内存**
+        #   （无 ffi、无写、无动态符号解析），独立出来才能脱离游戏在离线守门里真跑
+        #   （tests/test_menu_language.py 用 lupa 直接加载它并跑 `M.check()`）。
+        #   ⚠ 这一条正是"只允许 aliases 增加条目"的显式审查点 ⇒ 必须写进这里。
+        'menu_text',
     }
     check('build_json_only_known_additions', set(added) == allowed_new,
           f'新增别名={added}（允许：{sorted(allowed_new)}）')

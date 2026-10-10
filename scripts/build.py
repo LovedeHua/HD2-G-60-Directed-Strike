@@ -25,7 +25,19 @@ CONFIG = json.loads((ROOT / 'compat/build.json').read_text())
 #
 #   事故背景：发 Release v0.1.2 时成品包还叫 `G60-BugHole-Lock-0.1.0.zip`
 #   —— 因为 TITLE / ZIP_NAME 把 '0.1.0' 硬编码在代码里，与 Release 标签完全脱节。
-RELEASE_VERSION = '0.1.9'
+RELEASE_VERSION = '0.1.10'
+# ★ v0.1.10 的内容（2026-10-10，用户要求）：
+#   **Mod 设置的语言跟随游戏语言** —— 原话：「mod设置的语言要能跟随游戏语言变化，
+#   比如说游戏语言是英语，mod设置显示的也是英语」。
+#   · 新增 `src/g60/menu_text.lua`：读**游戏自己的 Text Language 设置**（game.dll 设置表）
+#     → BCP 47 tag → 取对应文案；读不到就显示**英语**（fail-safe）。
+#   · 菜单 API `version>=2` 时 label/description/mod 传**函数**（菜单每次打开都调用）
+#     ⇒ **运行期改语言也能跟上**，不用重开游戏（实机 `menu_probe;…;version=3`）。
+#   · MENU_ITEMS 里**不再有任何文案字面量**：9 项的 label/desc 全部来自 menu_text.lua
+#     （`en` + `zh-Hans` 两套，`en` 必须覆盖每个键 —— 有守门钉着）。
+#   · 新增取证行 `menu_lang;tag=…;src=game|default;functions=…`（判"菜单到底用了哪套文案"）。
+#   · ⚠ 刻意**不查 Steam 语言**：那需要动态符号解析，而本工程构建器把它列为高危面一律禁止。
+#   · 新增守门 `tests/test_menu_language.py`（15 项，含"未翻译语言必须显示英语"）。
 # ★ v0.1.9 的内容（2026-10-10，全部来自用户实机反馈 + 日志判读）：
 #   · **标记友方不再被炸**：旧判据 `calls.target_valid` 被证伪（它是"能不能被打"，
 #     哨戒炮/补给支架有生命值 ⇒ 返回 true ⇒ 被当合法目标）。改为**敌阵营硬门槛**：
