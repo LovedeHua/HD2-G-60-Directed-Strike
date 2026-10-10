@@ -5,6 +5,10 @@ local Data=require('g60.native_target_data')
 local Candidates=require('g60.native_candidates')
 local Policy=require('g60.target_policy')
 local Filter=require('g60.small_filter')
+-- ★★★ 敌阵营判据（2026-10-10，用户第三次报"标记友方被炸"的直接修复）★★★
+--   生成文件，判据与数据源见 src/g60/enemy_faction.lua 文件头。
+--   ⚠ 它替换的是**本文件里那条被证伪的假设** —— 见 generic_validate 里的说明。
+local EnemyFaction=require('g60.enemy_faction')
 local ArrivalPolicy=require('g60.arrival_policy')
 local Context=require('g60.titan_context')
 local Explosive=require('g60.explosive_context')
@@ -64,6 +68,19 @@ local valid=ffi.typeof('bool (*)(void *, uint32_t, const void *)')
 --     +0x4c  f4c —— category_mask 拿它做位测试（实体类别掩码）
 --   ⚠ 纯只读：只做 read 与 target_valid（只读查询，本工程在别处早就在调它当门槛）。
 --   ⚠ 按 (来源,id) 去重；不写任何内存、不改任何决策。
+--   ★★★ 2026-10-10 更正：`f4c` 这个字段是**读错了**，不许再拿它当判据 ★★★
+--     `e.address` 是 `EntityId→Entity` 表里那条 **24 字节**的 identity 记录
+--     （`resource:8 / id:4 / handle:4 / network:4 / ?:4`，见 native_target_data 的
+--     `d.entity`：`root+0xf32f18+index*24`，并 assert 了 `u32(identity,8)==id`）。
+--     所以：
+--       +0x08 → id      ✔（实测 f08=517 就是实体 517）
+--       +0x0c → handle  ✔
+--       +0x4c → **越出这条记录 76 字节 = 后面第 3 条记录的 +4**，读回来的是那个实体
+--               资源哈希的高 32 位碎片（所以那些值看着像随机数：385062858 / 0 …）
+--     ⇒ 反汇编里 `category_mask` 的 +0x4c 是相对**另一个对象**的，不是这里。
+--       我曾据此写下"f4c=0 在友方/敌人里都出现 ⇒ 分不开阵营"，那个结论**建立在错读数上**，
+--       作废。字段先按原样保留（日志格式不动，便于与历史日志对比），但**任何**基于
+--       `f4c` 的推论都不成立。
 local function probe_target_fields(scope,env,e,tag)
     if not (env and env.target_fields_probe and env.emit and scope and e and e.address) then
         return
@@ -334,6 +351,51 @@ function M.new(env)
                 --   被别 G-60 预约的目标不值得再为它花一次原生调用。
                 -- ⚠ 同 owner 幂等：`available` 对"自己已持有"返回 true ⇒ sticky 复用不受影响。
                 if available and not available(e.identity) then return nil,'TARGET_RESERVED' end
+                -- ★★★ 敌阵营硬门槛（2026-10-10，用户第三次报"标记友方被炸"）★★★
+                --
+                --   用户原话：「现在mod会让标记的友方也有候选分数，导致变成可炸毁目标」。
+                --   他说对了方向。完整因果链（实机日志 + 游戏 archetype 数据双重证据）：
+                --
+                --   ① 旧代码把 `calls.target_valid` 当**阵营判据**（下面 336 行起那段，
+                --      注释写「引擎索敌不锁友方 ⇒ 返回 false 就排除了友方」）。
+                --      这条假设**是错的**：`target_valid` = "这个实体**能不能被打**"。
+                --      哨戒炮 / 补给支架**有生命值**（虫子会打它们）⇒ 返回 true
+                --      ⇒ 玩家标记的友方哨戒炮/支架被当成合法目标：
+                --        517 820cc3bafe962858 A/FLAM-40 火焰哨戒炮  valid=true 炸（0.78 m）
+                --        592 37cde43876ba26bb A/MG-43 哨戒机枪    valid=true 炸（0.74 m）
+                --        536 31400a6a3003e29c B-1 补给背包（支架） valid=true 炸
+                --      而信标球 / 武器模型 valid=false ⇒ 被正确忽略 —— **这就是我上次
+                --      误以为"判据成立"的原因：那 4 个样本全是信标球和模型，样本偏了。**
+                --
+                --   ② 无敌人环境下的 `force_lock`（state 3→4 强制提升，v0.1.7 功能）
+                --      让"引擎本来不会锁的目标"也能被我们驱动 —— 引擎自己从不锁友方，
+                --      所以在这个功能之前，被标记的友方**是惰性的**；有了它，mod 就能
+                --      真的把雷飞到玩家标记的友方身上并引爆。⇒ 两个原因叠加才成灾。
+                --
+                --   ⇒ 判据反过来：**只有"可证明是敌人"才允许被当目标**（fail-safe）。
+                --     数据源是游戏自己的 archetype 组件表（EntityComponentMap.json）：
+                --       enemy = 有 AiEnemyComponentData(302)
+                --               且 无 FriendlyNpcComponentData(263)（平民/SEAF/撤离科学家）
+                --               且 无 AvatarComponentData(232)（玩家本体/队友）
+                --     139 条，生成器 scripts/gen_enemy_faction.py 带抽查（含泰坦/蟑龙
+                --     必须判为敌人、哨戒炮/支架/信标球/玩家/平民必须不判）。
+                --
+                --   ▸ 显式例外：`Filter.marked_allowed` 那两项（机器人运输船 /
+                --     光能族增援飞船）是**敌载具**，用户明确要求"标记了就要飞过去炸"，
+                --     但它们没有 AiEnemyComponentData ⇒ 单独放行（原样保留该例外）。
+                --   ▸ 虫洞走 `env.structure_profiles` 白名单分支（上方 498 行起），
+                --     **不经过本函数**；泰坦走 titan/claim_profile 路径（524 行起）。
+                --     ⇒ 本门槛只收窄"通用标记目标"这一类，虫洞/泰坦/空 ping 全不受影响。
+                --   ▸ 数据源里没有的资源 ⇒ **不是**敌人 ⇒ 不接管（交回原生索敌）。
+                --     代价是"游戏新加、表里还没有的敌人"暂时打不了；这是**刻意**选的
+                --     失败方向（宁可漏炸，不可误炸），重新跑生成器即可补上。
+                --   ▸ 诊断不静默：三处调用点都会把 detail 打进
+                --     `generic_rejected;…;detail=NOT_ENEMY_RESOURCE`（或 sticky 路径的
+                --     `structure_lock_lost;…;detail=NOT_ENEMY_RESOURCE`）—— 已被白名单化，
+                --     用户可直接看到"谁因为不是敌人被拒了"。
+                if not EnemyFaction.is_enemy(e.resource) and not Filter.marked_allowed(e.resource) then
+                    return nil,'NOT_ENEMY_RESOURCE'
+                end
                 local ok_valid,valid_now=pcall(function()
                     return scope.calls.target_valid(nil,e.id,
                         ffi.cast('const void *',e.address))
@@ -355,7 +417,26 @@ function M.new(env)
                     --     依旧被挡住（它们的索敌结果也是 false）。
                     --   ⚠ 放行后仍要求下面的只读复核（readonly_alive）通过，
                     --     真正已消失的实体照样被拒。
-                    if not Filter.marked_allowed(e.resource) then return nil,'NOT_VALID_TARGET' end
+                    if not Filter.marked_allowed(e.resource) then
+                        -- ★★★ 2026-10-10 用户要求：把 false **细分** ★★★
+                        --   背景：`generic_rejected;target=537;resource=aab438596f5e8fd9;
+                        --   detail=NOT_VALID_TARGET` 而约 6000 帧前同一实体的探针是
+                        --   `valid=true` ⇒ `target_valid` 是**时变**的。用户看到的是
+                        --   「标记了敌人却一次都没接管」，而日志**分不清**
+                        --   「标记无效（引擎说不能锁）」与「目标已死/已消失」。
+                        --   ⇒ 用**已有的**只读复核（`readonly_alive`，本文件上方 238 行起，
+                        --     返回值 why ∈ ENTITY_GONE / IDENTITY_CHANGED /
+                        --     POSITION_UNREADABLE / ALIVE_BY_READ）把拒绝原因分流。
+                        --   ⚠⚠ 只读复核**只用于分类拒绝原因**，**绝不用于放行** ——
+                        --     放行就是虫洞路径的做法，会放过友方（那正是 2026-10-10
+                        --     用户报"标记友方被炸"的成因）。两条分支都 `return nil`。
+                        --   ⚠ 新串都以 `NOT_VALID_TARGET` 开头 ⇒ 历史 grep 仍然命中。
+                        local ok_live,live_why=readonly_alive(e.id,e.identity)
+                        if ok_live then
+                            return nil,'NOT_VALID_TARGET_UNLOCKABLE'
+                        end
+                        return nil,'NOT_VALID_TARGET_DEAD:'..tostring(live_why)
+                    end
                     if env.emit then env.emit('generic_native_invalid_allowed;target='..e.id
                         ..';resource='..e.resource..';context=GENERIC') end
                 end
@@ -737,7 +818,23 @@ function M.new(env)
                             ..','..tostring(chosen.point[3]))
                     end
                 end
+                -- ★★ 2026-10-10 爆炸安全区：第三条引爆路径（**早期引爆**）★★
+                --   前两条是 `arrival:step`（ping 空地点）与 `titan:step`（虫洞/泰坦/单位）；
+                --   这一条是本文件**直接**调 `calls.explode` 的早期引爆。
+                --   ⚠ 必须**在 explode 之前**判（事后拦不住）。
+                --   ⚠ 用调用方注入的 `env.blast_safe_hold`（可选）：由 runtime 提供，
+                --     这样三条路**共用同一个门**（第一版各写一份 ⇒ 只拦住 ping，实机已踩）。
+                --   ⚠ fail-open：回调不存在/抛错 ⇒ 照常引爆（宁可炸，也不让功能静默失效）。
                 if horiz<=EARLY_DETONATE_RADIUS and math.abs(dz)<=EARLY_DETONATE_DEPTH then
+                    local hold_ok,held=true,false
+                    if env.blast_safe_hold then
+                        hold_ok,held=pcall(env.blast_safe_hold,scope,c)
+                    end
+                    if hold_ok and held then
+                        -- 玩家在安全区内 ⇒ 本帧不引爆，继续引导（返回 lock 保持航路）
+                        return {kind='lock',reason=reason..'+SAFE_HOLD',changed=mutated,
+                            record=after,resource=chosen.entity.resource}
+                    end
                     local ex=Explosive.capture(scope.read,env.base,env.exe,c.identity_bytes,env.fuse_profile)
                     assert(ex.validate() and check()==after,'early explosive changed')
                     scope.calls.explode(ffi.cast('void *',ex.manager),ex.id,ex.invalid_source,nil)

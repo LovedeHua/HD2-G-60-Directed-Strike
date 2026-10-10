@@ -33,6 +33,7 @@
     "native_arrival": "Arrival",
     "native_disposal": "Disposal",
     "geometry": "Geometry",
+    "enemy_faction": "EnemyFaction",
     "native_priority": "Priority",
     "experimental_runtime": "Runtime"
   },

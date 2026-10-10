@@ -180,6 +180,32 @@ ARR_EARLY_ANCHORS = (
 ARR_EARLY_REQUIRED = (
     "env.allow_state3 and (L.u32(record,8)==2 or L.u32(record,8)==3)",
 )
+# ★★ 2026-10-10 贴脸取消（用户拍板选 A）：native_disposal 改用**锚点比对** ★★
+#   背景：安全区的「贴脸取消」要在引擎自己引爆之前主动移除这一发，而本模块的默认语义是
+#   「**寿命到期后**的正常移除」（文件第 1 行），守门就是那句
+#     assert(Policy.elapsed(...)>=Policy.lifetime_ticks,'disposal before expiry')
+#   本次改动是**行内**的（给 step 加一个显式 options + 把那句断言包进
+#   `if not early then … end`）⇒ 无法用"剥离例外片段后逐字节比对"表达
+#   ⇒ 与 native_ping / arrival_policy 同例，改用锚点比对：
+#     · 上游每一条安全断言**必须原样保留**（**尤其那句 lifetime 断言**）；
+#     · 「提前」必须走**显式**开关（`options.early_cancel==true`），默认路径照旧断言。
+DISPOSAL_ANCHORS = (
+    "'disposal ABI'",
+    "'disposal call type'",
+    "'disposal identity'",
+    "'disposal ownership'",
+    "'disposal behavior identity'",
+    "'disposal state'",
+    "assert(Policy.elapsed(now,L.hex64(r,0x188))>=Policy.lifetime_ticks,'disposal before expiry')",
+    "env.calls.remove(ffi.cast('void *',d.root),e.id)",
+    "'disposal queue full'",
+    "'disposal queue postcondition'",
+    "'disposal queued identity mismatch'",
+)
+DISPOSAL_REQUIRED = (
+    "local early=options and options.early_cancel==true",
+    "if not early then",
+)
 # ★ structure_route 的改动：新增"寿命末期已在入口侧 ⇒ 直接 attack"（2026-09-28）。
 #   上游的路线安全属性**一条都不能少**，所以这里按锚点 pin 死：
 #   · 入口轴长度守卫（不进畸形数据）
@@ -287,6 +313,9 @@ SAFETY_ANCHORS = {
     # ★ 2026-10-04 泰坦模板整合：这两个文件改用锚点比对（理由见上方定义处）
     'compat/titan_profile.lua': TITAN_PROFILE_ANCHORS,
     'src/g60/titan_context.lua': TITAN_CONTEXT_ANCHORS,
+    # ★ 2026-10-10 贴脸取消（用户拍板）：native_disposal 的行内改动改用锚点
+    #   （理由见上方 DISPOSAL_ANCHORS 定义处 —— 那句 lifetime 断言仍在锚点里）
+    'src/g60/native_disposal.lua': DISPOSAL_ANCHORS,
 }
 SAFETY_FORBIDDEN = {
     'src/g60/native_ping.lua': PING_FORBIDDEN,
@@ -299,6 +328,7 @@ SAFETY_REQUIRED = {
     'src/g60/native_search_context.lua': SEARCH_CTX_REQUIRED,
     'src/g60/native_arrival.lua': ARR_EARLY_REQUIRED,
     'src/g60/titan_route.lua': TITAN_ROUTE_REQUIRED,
+    'src/g60/native_disposal.lua': DISPOSAL_REQUIRED,
     # ⚠ 此处**不得**再放 `structure_route.lua: ROUTE_REQUIRED` —— 见 ROUTE_REQUIRED
     #   删除处的说明（它要求的 direct_entrance 与本工程的设计意图相反）。
 }
@@ -346,6 +376,12 @@ def check_build_json(up, cur):
                               #     `local Navigation=Navigation`（自引用、右值取外层 nil）。
         'adaptive',           # 上游 2943-3037：animated_belly 的**消费者**（爆点=腹法线×2.5）
         'blast_route',        # 上游 2470-2573：泰坦链第二段（圆柱爆区，随后被 Adaptive 覆盖）
+        # ★ 2026-10-10：敌阵营资源表（用户第三次报"标记友方被炸"的直接修复）。
+        #   为什么必须是**独立模块**：它是一张 139 条、由 `scripts/gen_enemy_faction.py`
+        #   从游戏自己的 archetype 组件表（EntityComponentMap.json）生成的**数据表**，
+        #   与逻辑分开才好重跑、好审计（生成器带抽查，含"哨戒炮/支架/玩家/平民必须
+        #   不判为敌人"）。判据与数据源 sha256 都写在生成文件头。
+        'enemy_faction',
     }
     check('build_json_only_known_additions', set(added) == allowed_new,
           f'新增别名={added}（允许：{sorted(allowed_new)}）')

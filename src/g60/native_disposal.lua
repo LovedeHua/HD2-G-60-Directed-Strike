@@ -11,8 +11,27 @@ function M.new(env)
     local disabled,busy=false,false
     local api={}
     function api:disabled() return disabled end
-    function api:step(m,ready)
+    -- ★★ 2026-10-10 显式的「提前移除」（安全区·**贴脸取消**，用户拍板，默认关）★★
+    --   本模块的默认语义是"**寿命到期后**的正常移除"（见文件第 1 行），所以下面有一句
+    --   硬断言 `disposal before expiry`。而贴脸取消是**另一个意图**：在引擎自己把它引爆
+    --   之前主动移除掉（不爆炸、敌人也不掉血 —— 代价是这一发白扔）。
+    --   ⇒ 只有调用方**显式**传 `{early_cancel=true}` 时才跳过那句断言；
+    --     默认路径**照旧**断言（语义不变，守门钉着）。
+    --
+    --   ⚠⚠⚠ 2026-10-10 实机证实：**跳过断言并不能真的提前移除** ⚠⚠⚠
+    --     本模块的移除走的是引擎的 RPC/队列（见文件末尾的说明："it does not delete
+    --     inline"），而实机取证表明**引擎只对"寿命已到期"的雷兑现这条移除**：
+    --       · `safe_cancel;`（成功返回）之后，同一颗雷（id **未**被复用 —— 日志里没有
+    --         新的 `sel_probe;…;was=first`）又活了 **323 / 430 / 353 帧**（5~7 秒），
+    --         期间引擎还在给它换目标（`safe_engine_lost;sel=…`）；
+    --       · 另外 4 例"取消后 1~6 帧消失"其实是**被引擎炸了**（`safe_engine_exploded`
+    --         出现在同一帧），不是被移除。
+    --     ⇒ 那句 `disposal before expiry` 是**功能性前提**（引擎的状态机只在到期后才
+    --       处理移除），不是单纯的策略守门。贴脸取消这条路**防不了爆**；
+    --       保留它只为"以后若找到真正的提前移除手段，现成的取证行还能用"。
+    function api:step(m,ready,options)
         if disabled or busy then return nil,'DISPOSAL_DISABLED' end
+        local early=options and options.early_cancel==true
         busy=true
         local mutated=false
         local ok,result=pcall(function()
@@ -33,7 +52,10 @@ function M.new(env)
             local clock=d.ptr(env.base+0x3326348)
             local now=L.hex64(d.read(clock+0x18,8),0)
             Search.pending_events(d.read,header,now,d.invalid,{[m.id]=true})
-            assert(Policy.elapsed(now,L.hex64(r,0x188))>=Policy.lifetime_ticks,'disposal before expiry')
+            -- ⚠ 提前取消是**显式**的例外：只有 `options.early_cancel==true` 才跳过。
+            if not early then
+                assert(Policy.elapsed(now,L.hex64(r,0x188))>=Policy.lifetime_ticks,'disposal before expiry')
+            end
             assert(d.read(d.root+0xf3f828,3)=='\1\0\0','disposal world inactive')
             -- Native removal either sends the normal removal RPC or appends the
             -- entity index to this existing queue; it does not delete inline.

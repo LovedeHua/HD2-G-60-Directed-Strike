@@ -25,7 +25,20 @@ CONFIG = json.loads((ROOT / 'compat/build.json').read_text())
 #
 #   事故背景：发 Release v0.1.2 时成品包还叫 `G60-BugHole-Lock-0.1.0.zip`
 #   —— 因为 TITLE / ZIP_NAME 把 '0.1.0' 硬编码在代码里，与 Release 标签完全脱节。
-RELEASE_VERSION = '0.1.8'
+RELEASE_VERSION = '0.1.9'
+# ★ v0.1.9 的内容（2026-10-10，全部来自用户实机反馈 + 日志判读）：
+#   · **标记友方不再被炸**：旧判据 `calls.target_valid` 被证伪（它是"能不能被打"，
+#     哨戒炮/补给支架有生命值 ⇒ 返回 true ⇒ 被当合法目标）。改为**敌阵营硬门槛**：
+#     只有"可证明是敌人"才允许被当目标（数据源 = 游戏自己的 archetype 组件表，
+#     生成器 scripts/gen_enemy_faction.py 带抽查）。虫洞/泰坦/空 ping 三条路不受影响。
+#   · **安全区大幅加固**：圆心三源（实体/记录点/上次已知）、入口放宽到点式选择、
+#     两个写者互斥（谁写了谁负责）、"无执行者"告警 `safe_noexec;`、
+#     贴脸取消的危险距离独立成口径且**以手雷为中心**、
+#     **覆盖队友**（读游戏 avatars 列表；实机 `safe_players;n=4` 验证）。
+#   · **贴脸取消与取消距离从菜单隐藏**（功能保留、默认开）。
+#   · 修两个**只有实机才暴露**的词法作用域 bug（`faction` 崩溃 / `pointer` 让队友
+#     安全区静默失效）⇒ 新增通用门 `tests/check_local_order.py`，并接进构建期。
+#   · 修一条**早就死掉的门**（test_runtime_perf 的锚点停留在 `pcall`，源码早已 `xpcall`）。
 # ★ v0.1.8 的内容（2026-10-09）：**诊断**，不改玩法。
 #   `frame_error` 带**出错处的调用栈** + 停机时 `errors;` 汇总 ⇒
 #   那条 `pointer bound`（启动期引擎根指针未初始化，非故障）终于能归因、能计数。
@@ -107,6 +120,29 @@ def assert_alias_order(aliases):
                     f"before its users in compat/build.json aliases.")
 
 
+def assert_local_order():
+    """★ 校验没有任何 `local` 在"声明之前 / 声明所在块之外"被使用（2026-10-10）。
+
+    事故（同一类坑咬了两次，都只有实机才暴露）：
+      ① `local function faction` 定义在 `if structure_ping then` 块**内部**，
+         而兜底 veto 那处调用在该块**闭合之后** ⇒ 取到全局 = nil ⇒
+         `frame_error;…:8960: attempt to call global 'faction' (a nil value)`，
+         每触发一次就中止当帧剩余全部处理。
+      ② `local function pointer` 在第 683 行，而 players_scan 在第 242 行就用它 ⇒
+         `safe_players;n=0;reason=…:7297: attempt to call global 'pointer' (a nil value)`
+         ⇒ **队友安全区整段静默失效**。
+
+    与 assert_alias_order / assert_field_refs 同类：luac 通过、单测通过、只有实机炸。
+    三者一起构成"构建期必须拦住的语义错误"关卡。
+    """
+    proc = subprocess.run(
+        [sys.executable, '-B', 'tests/check_local_order.py'],
+        cwd=ROOT, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise AssertionError(
+            'local scope order check failed:\n' + proc.stdout + proc.stderr)
+
+
 def assert_field_refs():
     """★ 校验跨模块字段引用真实存在（2026-09-28 11:40 实机事故的直接修复）。
 
@@ -133,6 +169,7 @@ def assert_field_refs():
 def assemble():
     aliases = CONFIG['aliases']
     assert_alias_order(aliases)
+    assert_local_order()
     assert_field_refs()
     modules = []
     for name, alias in aliases.items():

@@ -53,10 +53,27 @@ v0.1.7 用本工程**唯一的受控写通道**（`force_lock_enabled`：只写 
 ⚠ 这是本工程第一次绕过引擎 API 直接写游戏状态，`force_lock_enabled=false` **一键回退**到只读行为；
 风险与细节见下文「受控写通道」一节。
 
-> **当前版本 v0.1.8**。版本号的**唯一来源**是 `scripts/build.py` 的 `RELEASE_VERSION` ——
+> **当前版本 v0.1.9**。版本号的**唯一来源**是 `scripts/build.py` 的 `RELEASE_VERSION` ——
 > `TITLE`（manifest 显示名）、成品包文件名、`BUILD-INFO.json`、日志里的 `version=` 全部由它派生。
 > 发新版**只改那一个常量**。
 > （`compat/build.json` 的 `public_version` 是**上游**的版本，与本裁剪版无关。）
+>
+> **v0.1.9：友方不再被炸 + 安全区大幅加固**（全部来自实机日志判读）。
+> · **标记友方不再被炸**：旧判据 `calls.target_valid` 被**证伪** —— 它是"能不能被打"，
+>   而哨戒炮 / 补给支架**有生命值** ⇒ 返回 true ⇒ 被当成合法目标炸掉（实机 3 例：
+>   A/FLAM-40 火焰哨戒炮、A/MG-43 哨戒机枪、B-1 补给背包支架）。改为**敌阵营硬门槛**：
+>   只有"可证明是敌人"才允许被当目标，数据源是游戏自己的 archetype 组件表
+>   （`scripts/gen_enemy_faction.py` 生成 + 抽查）。虫洞 / 泰坦 / 空 ping 三条路不受影响。
+> · **安全区**：圆心三源（引擎选中的实体 / 记录里的点 / 上次已知）、入口放宽到"引擎把
+>   目标表示成点"那一类、两个写者互斥（谁写了谁负责）、新增 `safe_noexec;`
+>   （"玩家在圈内却没人压这颗雷"从此**不可能静默**）、贴脸取消的危险距离独立成口径
+>   且**以手雷为中心**（用户纠正）、**覆盖队友**（读游戏 avatars 列表，
+>   实机 `safe_players;n=4` 四人满编验证）。
+> · **贴脸取消与取消距离从菜单隐藏**（功能保留、默认开）—— 实测它防不了爆
+>   （`native_disposal` 的移除只对寿命已到期的雷兑现），但留着当取证。
+> · 修两个**只有实机才暴露**的词法作用域 bug（`faction` 崩溃 / `pointer` 让队友安全区
+>   静默失效）⇒ 新增通用门 `tests/check_local_order.py`，并接进构建期
+>   （`luac` 通过、单测通过、只有实机炸的那一类，现在构建期就拦）。
 >
 > **v0.1.8：把「`pointer bound` 看不见」这件事修掉**（诊断，不改玩法）。
 > 那条错误此前只有消息、**没有调用者**，而且被去重后连**发生了几次**都看不到。
@@ -67,7 +84,7 @@ v0.1.7 用本工程**唯一的受控写通道**（`force_lock_enabled`：只写 
 >
 > **v0.1.7 起改名**：旧名 `G-60 Bug Hole Lock` 是 v0.1.6 之前的能力写照（那时只打虫洞）。
 > 资源名与包名同步更换（`mods/hd2test/g60_directed_strike` /
-> `G60-Directed-Strike-0.1.8.zip`），**归档槽位与 GUID 未变** ⇒ 加载器那边是原地升级。
+> `G60-Directed-Strike-0.1.9.zip`），**归档槽位与 GUID 未变** ⇒ 加载器那边是原地升级。
 >
 > 派生自 [`etxp/HD2-G60-Smart-Targeting`](https://github.com/etxp/HD2-G60-Smart-Targeting) 0.1-beta.1
 > （源码 MIT）。裁剪只动**决策层**；**签名守卫、持锁窗口、状态机白名单、身份复验等安全机制原样保留**。
@@ -378,11 +395,11 @@ ef04cb84d097a497 → content/fac_bugs/cha_strider/cha_strider_gloom
 
 > ### 📦 成品包下载
 > **[GitHub Releases › 最新版](https://github.com/LovedeHua/HD2-G-60-Directed-Strike/releases/latest)**
-> —— 下载 `G60-Directed-Strike-0.1.8.zip` 直接导入 mod 管理器。（本仓库只有**源码**，成品包在 Releases 附件里。）
+> —— 下载 `G60-Directed-Strike-0.1.9.zip` 直接导入 mod 管理器。（本仓库只有**源码**，成品包在 Releases 附件里。）
 
 1. 关闭游戏，安装 [Bingus Shared Loader](https://github.com/CowboyBingus/BingusSharedLoader)
    （**API 1，v15+**，需 addon discovery）。
-2. 把 `G60-Directed-Strike-0.1.8.zip` 导入 mod 管理器。
+2. 把 `G60-Directed-Strike-0.1.9.zip` 导入 mod 管理器。
 3. **与上游官方包二选一** —— 两个包都会改 G-60 的决策，同时启用会打架。
    本包 GUID `9c1d4e77-…`，官方包 GUID `58a16a67-…`。
 4. Purge / Deploy 后重启游戏。

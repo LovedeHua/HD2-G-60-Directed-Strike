@@ -1373,13 +1373,21 @@ def test_generic_takeover():
     _vblk = _blk[_vi:_ve]
     check("generic_target_valid_false_gated_by_marked_allowed",
           "Filter.marked_allowed(e.resource)" in _vblk
-          and "return nil,'NOT_VALID_TARGET' end" in _vblk,
+          and "return nil,'NOT_VALID_TARGET_UNLOCKABLE'" in _vblk
+          and "return nil,'NOT_VALID_TARGET_DEAD:'" in _vblk,
           "★ target_valid=false ⇒ 仅当资源在 small_filter.marked_allowed 里才放行"
-          "（点名标记的载具），其余仍直接拒")
+          "（点名标记的载具），其余仍直接拒；"
+          " ⚠ 2026-10-10 用户要求把拒绝**细分**：还活着但引擎说不能锁 ⇒ UNLOCKABLE，"
+          " 只读复核报已消失/已变/读不到 ⇒ DEAD:<why>（原来一律 NOT_VALID_TARGET，"
+          " 用户分不清「标记无效」与「目标已死」；两个新串都以 NOT_VALID_TARGET 开头，"
+          " 历史 grep 仍命中）")
     check("generic_target_valid_false_has_no_readonly_override",
-          "readonly_alive" not in _vblk and "check_alive(" not in _vblk,
-          "★ 例外块内不得用只读复核推翻（那正是虫洞路径的做法，会放过友方）；"
-          "复核在下面统一做")
+          ("readonly_alive" not in _vblk) or (
+              "return nil,'NOT_VALID_TARGET_UNLOCKABLE'" in _vblk
+              and "return nil,'NOT_VALID_TARGET_DEAD:'" in _vblk),
+          "★ 只读复核**只许用于分类拒绝原因**，绝不许用于放行（放行 = 虫洞路径的做法，"
+          "会放过友方 —— 那正是 2026-10-10「标记友方被炸」的成因）；"
+          " 本门判法：出现 readonly_alive 时，两条分类分支必须都是 `return nil`")
     check("generic_still_rechecks_entity_after_valid",
           "readonly_alive" in _blk[_ve:],
           "放行后仍做实体/identity 复核（防实体 id 被复用）")
@@ -1779,20 +1787,28 @@ def test_enemy_veto_wiring():
           "无标记路径的否决判定仍在 take_gate 的 no_mark_no_hold 之后（不变）")
     check("veto_fallback_after_priority",
           "run_veto(m,vr,'after_priority')" in r
-          and "if structure_mark and not abandoned" in r,
-          "★ 新增兜底触发点：有标记但 priority 没接管时也否决（修复运输船漏过滤）")
+          and "(structure_mark or mark_friendly) and not abandoned" in r,
+          "★ 新增兜底触发点：有标记但 priority 没接管时也否决（修复运输船漏过滤）；"
+          " ★ 2026-10-10 追加：判为**友方**时 structure_mark 已被置 nil ⇒ 条件必须带 "
+          "`mark_friendly`，否则「友方锁定」没人清（用户第二次报的 bug）")
     check("veto_fallback_requires_no_hold",
           "and not (old and (old.lock or old.titan))" in r,
           "★ 兜底不得在'正飞向自己的目标'时触发（那会破坏自己的锁定）")
     check("veto_single_implementation",
           r.count("local function run_veto(") == 1
-          and r.count("runner:release(veto_ref)") == 1
+          and r.count("R:release(veto_ref)") == 1
           and r.count("enemy_veto;entity=") == 1,
-          "★ veto 执行只有**一份实现**，两个触发点共用（防'改一份漏一份'）")
+          "★ veto 执行只有**一份实现**，两个触发点共用（防'改一份漏一份'）；"
+          " ⚠ 2026-10-10 加 `use_runner` 参数后，实例由局部 `R` 承载"
+          "（安全区那条路要用专用实例，见 safe_veto_uses_dedicated_runner）")
 
     # 3) ★ 最关键：否决实现不得建锁、不得引导
     i = r.index("local function run_veto(")
-    j = r.index("for _,m in ipairs(observed.matches) do", i)
+    #   ⚠ 2026-10-10：右锚点原来是"下一处 matches 循环"，但 run_veto 与那个循环之间
+    #     现在夹了另一个 helper（`run_safe_hold` —— 安全区管"引擎自己瞄的雷"），
+    #     而它**本来就该**调 `arrival:step`（那就是它的工作）。
+    #     ⇒ 切片必须**只覆盖 run_veto**，否则这条守门会把邻居的代码当成否决实现来误报。
+    j = r.index("local function run_safe_hold(", i)
     blk = r[i:j]
     check("veto_creates_no_tracked",
           "tracked[m.id]=" not in blk and "old.lock=" not in blk
@@ -1803,11 +1819,14 @@ def test_enemy_veto_wiring():
           and "priority:step" not in blk,
           "★ 不调任何引导：只走 runner 的 search（clear）")
     check("veto_releases_runner_state",
-          "runner:release(veto_ref)" in blk,
+          "R:release(veto_ref)" in blk,
           "★ 立刻释放 runner 状态，否则 search 成功后每帧 CONTINUE_SEARCH ⇒ 一直盘旋")
     check("veto_is_failclosed",
-          "runner:disabled()" in blk and "self.disabled=true" in blk,
-          "部分写入后失败 ⇒ 停手（与既有引导路径同一处置）")
+          "R:disabled()" in blk and "self.disabled=true" in blk
+          and "if R==runner then" in blk,
+          "部分写入后失败 ⇒ 停手（与既有引导路径同一处置）；"
+          " ⚠ 但**只对主 runner**：专用实例（安全区清选择）是隔离域，"
+          " 它 disabled 只该关掉那一个功能，不许让整局 mod 停手")
     check("veto_logged", "enemy_veto;" in blk, "否决有专门日志（含 result/why）")
     # ★★ 日志字段必须按 runner:step 的**真实返回契约**取值 ★★
     #   2026-09-29 我按 (ok,result,why) 取，而契约是 **(result, reason)**
@@ -2611,6 +2630,535 @@ def test_force_lock():
           "and not line:match('^errors;')" in e,
           "★★ `errors;` 必须进节流白名单：emit 超 60 行后只写白名单行，"
           "而汇总正是在停机那一刻打的 ⇒ 不白名单化 = 静默丢弃 = 等于没加")
+    # ★★ 2026-10-09 自机探针（只读 · 为「G-60 爆炸安全区」打底）★★
+    #   目的：确认"我自己"（玩家角色）是谁 + 坐标怎么取。本步**不改任何行为**。
+    _ping = (ROOT / "src/g60" / "native_ping.lua").read_text(encoding="utf-8")
+    _self = _ping[_ping.index("function api:self()"):_ping.index("function api:observe()")]
+    check("self_probe_exists_and_read_only",
+          "function api:self()" in _ping and "self_probe_enabled" in e
+          and not any(w in _self for w in ("env.write", "calls.orbit", "=4", "ffi.copy")),
+          "★ 自机探针必须存在，且 `api:self()` 内**不得出现任何写操作**（只读）")
+    check("self_probe_reuses_verified_owner_logic",
+          "local_ownership_observed" in _self
+          and _ping.index("function api:self()") < _ping.index("function api:observe()"),
+          "★ 必须复用 native_ping 里**已实机验证**的 owner 判定"
+          "（不重复实现、不新 require Authority）")
+    check("self_probe_pcall_guarded",
+          "pcall(function() return structure_ping:self() end)" in rt,
+          "★★ 探针必须 pcall 包住 —— 历史教训：探针抛错会把整条 priority 打死")
+    # ★★ 2026-10-10 实机教训：探针挂在 `ping` 上 ⇒ `mark_priority_enabled=false`
+    #    时 ping 为 nil ⇒ 守卫 `and ping` 把探针**整条短路**，一条日志都不打
+    #    （沉默的失败 = 没有诊断）。必须挂在**始终存在**的 structure_ping 上。
+    check("self_probe_uses_structure_ping_not_ping",
+          "structure_ping:self()" in rt and "and structure_ping and P.selfprobe" in rt,
+          "★★ 探针必须挂在 structure_ping（不依赖 mark_priority_enabled）—— "
+          "挂 ping 会因该开关关闭而被静默短路（实机已踩：0 条 selfprobe）")
+    check("self_probe_failure_is_loud",
+          "failed_logged" in rt and "selfprobe;err=" in rt,
+          "★★ 失败必须打一条（且只记一次）—— 沉默的失败等于没有诊断")
+    # ★ 2026-10-10：用户给出玩家本体哈希（5556372446766824087 = 4d1c334d294dfa97）。
+    #   用它**交叉校验**探针：双路（hash / ownership）都打出来，看是否同一实体。
+    check("self_probe_dual_match_diagnostic",
+          "by_hash" in rt and "by_owner" in rt and "same=" in rt,
+          "★ 必须同时打 by_hash / by_owner / same —— 这是判断该哈希对不对的**唯一判据**")
+    check("self_resource_constant_wired",
+          "self_resource='4d1c334d294dfa97'" in e and "self_resource=state.self_resource" in e,
+          "★ 玩家哈希必须是**显式常量且接线进 env**（不硬编码在逻辑里，方便关/改）")
+    check("self_probe_does_not_use_hash_for_behavior",
+          rt.count("by_hash") <= 3,
+          "★ 该哈希当前**只用于诊断**，不得参与行为判定（安全区还没做）")
+    # ★★ 2026-10-10 实机教训：我写成 `e.hash` ⇒ 恒 nil ⇒ by_hash 永远 miss
+    #    （日志 `by_hash=miss;...;hash=nil;nets=` 空）。`d.entity()` 的字段叫 **resource**。
+    check("self_probe_uses_resource_field_not_hash",
+          "e.resource==want" in _ping and "e.hash==" not in _ping
+          and "e.hash)" not in _ping,
+          "★★ 实体哈希字段叫 **resource**（不是 hash）—— 写成 e.hash 会恒 nil、"
+          "让哈希那一路永远 miss 且 **nets 全空**（实机已踩）"
+          "（只禁**实际用法**，注释里说明这个坑不算）")
+
+    # ★★ 2026-10-10 爆炸安全区（用户要求：玩家在球形半径内 ⇒ 不引爆，继续追踪）★★
+    check("blast_safe_radius_switch_wired",
+          "blast_safe_radius=0" in e and "blast_safe_radius=state.blast_safe_radius" in e,
+          "★ 安全区必须有开关且**默认 0（关闭）** ⇒ 行为与改动前一致")
+    # ★★ 2026-10-10 实机：安全区**只对空 ping 生效**（用户报）★★
+    #   根因：引爆有**三条独立路径**，第一版只拦了 `arrival:step`（ping 空地点）那条：
+    #     ① `arrival:step`（ping 空地点，runtime 传 terminal）
+    #     ② `titan:step` → 内部 `Policy.step` → explode（虫洞/泰坦/单位）
+    #     ③ `native_priority` 的**早期引爆**（直接调 calls.explode）
+    #   ⇒ 必须**共用同一道门**，且都在 explode **之前**判（事后拦不住）。
+    _pri = (ROOT / "src/g60" / "native_priority.lua").read_text(encoding="utf-8")
+    check("safe_zone_implemented_at_call_site",
+          "local held=not blast_safe_hold(m,scope)" in rt
+          and "arrival:step(scope,target,nil,'vanilla',terminal," in rt
+          and "local terminal=not held" in rt,
+          "★★ 必须在**调用侧**拦（native_arrival 是 SAFETY_LAYER 只读，且 detonate 时"
+          "已调 explode ⇒ 事后拦不住）—— 且必须复用 `blast_safe_hold` 这道门，"
+          "并把**同一次**门判定的结果同时用于 terminal 与绕行（不许调两次）")
+    check("safe_zone_shared_gate_not_duplicated",
+          rt.count("blast_safe_hold") >= 2 and "env.blast_safe_hold=function" in rt,
+          "★★ 三条引爆路径必须**共用同一个门函数** —— 第一版各写一份 ⇒ "
+          "只拦住 ping 那条路（实机已踩：虫洞/泰坦照炸）")
+    check("safe_zone_covers_titan_path",
+          "if not blast_safe_hold(m,scope) then return {kind='safe_hold'} end" in rt
+          and "result.kind=='safe_hold'" in rt,
+          "★★ titan 段（虫洞/泰坦/单位）也必须过门 ⇒ 否则『只对空 ping 生效』会重现；"
+          "且 safe_hold 必须**保留锁定**（否则手雷放弃目标乱飘）")
+    check("safe_zone_covers_early_detonate_path",
+          "env.blast_safe_hold" in _pri
+          and _pri.index("env.blast_safe_hold") < _pri.index("scope.calls.explode"),
+          "★★ native_priority 的**早期引爆**是第三条路径（直接 calls.explode）"
+          "⇒ 也必须过同一道门，且必须在 explode **之前**")
+    check("safe_zone_fail_open",
+          "return true" in rt and "if not mysp then" in rt,
+          "★ 拿不到玩家坐标时**放行**（fail-open：宁可照常引爆，也不让雷失效）")
+    # ★★ 2026-10-10 实机：fail-open **静默** ⇒ 三条路径全不拦时日志里一条都看不到
+    #    （blast_hold 从 1062 变 0，却完全不知道为什么）。⇒ 必须打点。
+    check("safe_zone_fail_open_is_visible",
+          "blast_safe_nopos;entity=" in rt and "safe_nopos" in rt
+          and "and not line:match('^blast_safe_nopos;')" in e,
+          "★★ fail-open 必须**可见**（`blast_safe_nopos;` 按手雷一次 + 白名单）——"
+          " 否则安全区静默失效，与『功能没写』无法区分")
+    # ★★ 同轮根因：`d.unit(e)` 会抛 `pointer bound`，而它只是校验、**坐标不需要它**；
+    #    此前与 position 放同一 pcall ⇒ self() 整体 nil ⇒ by_owner 永远拿不到
+    #    ⇒ 每帧 fail-open ⇒ 全路径不拦。必须单独 pcall。
+    check("self_position_not_hostage_of_unit_check",
+          "local uok=pcall(d.unit,e)" in _ping,
+          "★★ `d.unit` 的校验失败**不得**连累坐标 —— 必须单独 pcall"
+          "（否则 self() 整体为 nil ⇒ 安全区每帧 fail-open ⇒ 全路径失效，实机已踩）")
+    # ★★ 2026-10-10 实机真凶：门函数里写 `structure_ping:self()`，但
+    #    门函数定义在 **`structure_ping` 局部构造之前**（L160 vs L321）⇒
+    #    `attempt to index global 'structure_ping' (a nil value)` ⇒ 每帧 fail-open
+    #    ⇒ **三条路径全不拦**（blast_safe_nopos 直接点名）。
+    #    这类"引用了本作用域还不存在的名字"编译期查不出来（Lua 把它当全局），
+    #    必须用结构守门钉死：门函数只能走 `host.structure_ping`。
+    check("blast_gate_uses_host_not_module_local",
+          "host.structure_ping" in rt
+          and "host.structure_ping=structure_ping" in rt,
+          "★★ 安全区门函数必须走 `host.structure_ping`（M.new 末尾暴露）—— "
+          "不得直接引用本模块同名的局部（它在门函数**定义之后**才构造 ⇒ 恒 nil）")
+    check("gate_defined_before_structure_ping_is_not_referenced",
+          rt.index("local function blast_safe_hold") < rt.index("local structure_ping=env.structure_profiles"),
+          "★ 记录事实：门函数确实定义在 structure_ping 之前 —— 这正是必须用 host 的原因")
+    check("safe_zone_diagnostics_whitelisted",
+          "and not line:match('^blast_hold;')" in e,
+          "★ `blast_hold;` 必须进节流白名单（否则超 60 行被静默丢弃 = 判据不可见）")
+
+    # ★★ 2026-10-10 安全区第二步：**主动绕行**（用户拍板「让它绕着目标转」）★★
+    #   根因（实机 2026-10-10 那一局）：这道门只拦得住**我们自己**的 calls.explode。
+    #   entity=520 在 `blast_hold;player_dist=10.76;radius=12;frame=10610` 的同一帧
+    #   就出现 `explosion already requested` —— **引擎自己**点的火，拦不住。
+    #   ⇒ 唯一杠杆：玩家在圈内时别让手雷到目标身上
+    #     （写成点目标 ⇒ 引擎手里没有实体可撞 ⇒ 撞击/引信无从触发）。
+    check("safe_zone_hold_diverts_not_just_declines",
+          "local held=not blast_safe_hold(m,scope)" in rt
+          and "if held then" in rt and "P.tpos[m.id]" in rt
+          and "mask_only=nil" in rt,
+          "★★ 安全区生效时必须**主动绕行**（把 goal 换成绕目标的旋转点），"
+          "不能只把 terminal 置 false —— 引擎自己的引信照样点火（实机已踩：entity=520）")
+    check("safe_zone_detour_uses_reviewed_point_path",
+          "point_target={ox,oy,c[3]+1.0}" in rt
+          and "region=env.point_arrival_region,point=true" in rt,
+          "★★ 绕行必须复用**已在生产使用**的 `options.point_target` 写路径"
+          "（ping 空地 / 体内爆点同款、写后回读断言已复核）"
+          "—— 不新增写途径、不碰 SAFETY_LAYER")
+    check("safe_zone_detour_point_rotates",
+          "local ang=frame*0.01" in rt and "math.cos(ang)" in rt and "math.sin(ang)" in rt,
+          "★★ 绕行点必须**旋转**：静止的点会被 arrival_policy 判 stalled"
+          "（4 秒无进展）⇒ 转 'search' ⇒ 清锁、手雷乱飘")
+    check("safe_zone_detour_keeps_early_flag",
+          "early=(arr_opts and arr_opts.early) or nil" in rt,
+          "★★ 替换 arr_opts 时必须**继承 early** —— 否则 arrival 内部一次失败就会"
+          "`disabled=true`，把整条 arrival 段**永久关掉**（本项目踩过：整局 mod 停手）")
+    check("safe_zone_gate_not_called_twice",
+          rt.count("local terminal=blast_safe_hold")==0 and "local terminal=not held" in rt,
+          "★★ 门**每帧每颗只准调一次**：门每成立一次写一条 `blast_hold;`，"
+          "调两次 = 日志翻倍（去重表按手雷去重，防不住同帧的两次调用）")
+    check("safe_zone_detour_degrades_visibly",
+          "blast_detour_nopos;entity=" in rt and "P.dg_nopos[m.id]=true" in rt
+          and "and not line:match('^blast_detour_nopos;')" in e,
+          "★★ 拿不到圆心时退回「只拦我们自己」必须**可见** —— "
+          "静默降级会让「绕行没生效」与「功能没写」无法区分（本项目已栽过多次）")
+    check("safe_zone_detour_diagnostics_whitelisted",
+          "and not line:match('^blast_detour;')" in e
+          and "and not line:match('^detour_guide;')" in e
+          and "and not line:match('^detour_stalled;')" in e,
+          "★★ `blast_detour;` 是「绕行到底有没有注入」的**唯一**判据；"
+          "`detour_guide;` 是标定环绕半径的唯一数据 —— 被节流掉 = 诊断不存在")
+    check("safe_zone_detour_guide_tagged",
+          "(P.dg[m.id] and 'detour')" in rt,
+          "★ 绕行期间必须有到达诊断（否则完全看不见它在绕着转、还是往目标里钻）")
+    check("safe_zone_detour_state_cleared_on_release",
+          "P.tpos[id]=nil;P.dg[id]=nil;P.dg_nopos[id]=nil" in rt,
+          "★★ 绕行状态必须随持有一起清 —— 手雷 id 会被引擎复用，"
+          "残留圆心会让**下一颗**手雷张冠李戴（与 retired 的教训同源）")
+    # ★★ 2026-10-10 自查发现的**死锁**：绕行期间我们给锁写了 `point_bytes`
+    #   ⇒ priority 的 `continued` 下一帧为真 ⇒ **跳过 setter**（绕行期间正是要的）。
+    #   但玩家离开后如果不清，`continued` **永远**为真 ⇒ priority 永不写回实体选择
+    #   ⇒ arrival 的实体 aim 断言每帧失败（`arrival selected target mismatch`）
+    #   ⇒ 只能等 guide_fail 熔断（30 帧）退休 = 雷白扔。
+    check("safe_zone_detour_release_clears_lock_point_bytes",
+          "if old.lock then old.lock.point_bytes=nil end" in rt,
+          "★★ 绕行结束必须清掉锁上的 `point_bytes` —— 否则 priority 的 `continued` "
+          "永远为真、永不写回实体选择 ⇒ arrival 每帧 `arrival selected target mismatch` "
+          "直到 30 帧熔断（死锁；runtime 第 618 行的注释正是警告这个状态）")
+    # ★★ 2026-10-10 用户要求：绕行半径也进 ModOptionsMenu ★★
+    #   它是绕行**唯一需要标定**的量（实机那一局固定 5 m，`detour_guide;dist=`
+    #   显示有时落后 2.5 m、有时 9.8 m —— 只有游戏里试才知道该调大还是调小）。
+    check("blast_safe_orbit_switch_wired",
+          "blast_safe_orbit=5" in e and "blast_safe_orbit=state.blast_safe_orbit" in e,
+          "★ 绕行半径必须有默认值（5）**且**从 state 一路接进 env 字面量 —— "
+          "少任何一处，菜单改的值都进不了运行期（env_fields_all_wired 那类静默不触发）")
+    check("menu_exposes_orbit_radius",
+          "g60.blast_safe_orbit" in e and "host.env.blast_safe_orbit=v" in e
+          and "min=2,max=20,step=1" in e,
+          "★★ 绕行半径必须是菜单滑杆（2~20 米），且 on_change 要写回 `host.env` —— "
+          "只注册不写回 = 菜单能动、运行期不变（本项目踩过同类静默失败）")
+    check("safe_zone_orbit_radius_is_configurable",
+          "local R=tonumber(env.blast_safe_orbit) or 5.0" in rt
+          and "if R<2 then R=2 elseif R>20 then R=20 end" in rt
+          and "local R=5.0" not in rt,
+          "★★ 运行期必须**读 env** 而不是写死 5.0（否则菜单白做）；"
+          "并夹到 [2,20]（<2 米等于没绕开、>20 米玩家离开后回不来），"
+          "夹取后的值照样进 `blast_detour;radius=`（不静默）")
+
+    # ★★ 2026-10-10 用户报「没有标记时不生效」★★
+    #   根因是结构性的：门只在「我们在驾驶这颗雷」的路径上跑
+    #   （decide_guidance 要求 old.lock/titan/point）⇒ 玩家什么都没 ping
+    #   （引擎自己瞄敌人）时门一次都不会被调用。⇒ 需要第二条坐标来源。
+    #   ⚠ 但"同一个判断写两遍"是本工程反复踩的坑 ⇒ 判定必须只留一份。
+    check("safe_zone_gate_shares_one_judgment",
+          "local function blast_safe_hold_at(ident,own)" in rt
+          and rt.count("return blast_safe_hold_at(ident,okv and v or nil)")==2
+          and rt.count("if d2>safe*safe then return true end")==1
+          and rt.count("local safe=tonumber(env.blast_safe_radius) or 0")==1,
+          "★★ 安全区判定只能有**一份**（半径/玩家距离/safehold 记账都在 `blast_safe_hold_at`）——"
+          " 两个包装只准各自解决「这颗雷在哪」（已接管走 scope、非自有走 TargetData）")
+    check("safe_zone_noown_failopen_visible",
+          "blast_safe_noown;entity=" in rt and "safe_nopos" in rt
+          and "and not line:match('^blast_safe_noown;')" in e,
+          "★★ 读不到「这颗雷在哪」时放行必须**可见**（`blast_safe_noown;`）——"
+          " 原来那处是静默 `return true`，与 blast_safe_nopos 同族的坑")
+    check("safe_zone_engine_hold_default_off_and_wired",
+          "safe_zone_engine_hold=false" in e
+          and "safe_zone_engine_hold=state.safe_zone_engine_hold" in e,
+          "★★ 写「非自有 G-60」这件事必须**默认关**（默认开 = 系统性地改变引擎自己的雷），"
+          " 且开关要从 state 一路接进 env 字面量（少一处就静默不生效）")
+    check("menu_exposes_engine_hold_toggle",
+          "g60.safe_zone_engine_hold" in e and "host.env.safe_zone_engine_hold=v" in e,
+          "★ 该实验项必须能在游戏里开关（并写回 host.env），否则没法做对照实验")
+    check("safe_zone_engine_hold_never_fights_our_own_lock",
+          "local safe_path_open=safe_engine_hold and not gate.drive" in rt
+          and "and not (old and (old.lock or old.titan or old.point))" in rt
+          and "if safe_path_open and not retired[m.id]" in rt
+          and "local safe_engine_hold=env.safe_zone_engine_hold==true" in rt,
+          "★★ 非自有那一路**绝不能**和已接管路径抢同一颗雷（.drive 为真时不走；"
+          " 且必须确认我们没持有）；开关关着时连函数都不调用（零额外读取）"
+          " ⚠ 2026-10-10 把这段抽成 `safe_path_open`：原来同一串条件写了两遍"
+          "（if 一遍、not(...) 一遍），加冗余告警的 elseif 分支时必然写第三遍。")
+    check("safe_zone_engine_hold_reuses_reviewed_point_path",
+          "arrival:step(scope,nil,nil,'vanilla',false,nil,nil," in rt
+          and "point_target={ox,oy,c[3]+1.0},early=true})" in rt,
+          "★★ 非自有那一路也必须复用 `options.point_target`（写点目标 ⇒ 引擎无实体可撞），"
+          " 并带 `early=true` —— 写非自有 G-60 竞争概率更高，失败绝不许永久禁用 arrival")
+    check("safe_zone_engine_hold_has_survival_probe",
+          "safe_engine_lost;entity=" in rt and "safe_engine_kept;entity=" in rt
+          and "P.ehq[match.id]={bytes=zres.point_bytes,frame=frame,fp=fp,tid=tid}" in rt,
+          "★★ 这个实验的**唯一判读依据**：写下去的点下一帧还在不在"
+          "（`safe_engine_kept;` 抢赢 / `safe_engine_lost;` 被引擎抢回）——"
+          " 没有它，开了开关也答不出「这条路到底可行吗」")
+    # ★★ 2026-10-10 实机发现的**采样 bug**：调用条件原来写成 `m.selection_id~=0`，
+    #   而我们自己写下去的点会让 selection_id 变 0 ⇒ 下一帧起条件就不成立
+    #   ⇒ 整条路只在"引擎恰好重新锁上目标"的那几帧才跑。
+    #   证据（10:45 那局）：entity=596 跨度 364 帧只有 5 条 blast_hold；
+    #                       entity=615 跨度 726 帧只有 9 条。
+    check("safe_zone_engine_hold_runs_every_frame",
+          "(m.selection_id~=0 or m.selection_flag==1 or P.ehq[m.id]~=nil)" in rt,
+          "★★ 调用条件必须是「引擎确实选了什么 **或 我们已经压了一个点**」—— "
+          "只判 selection_id~=0 会让压制断断续续（实机：跨度 726 帧只跑了 9 次）；"
+          " ⚠ 2026-10-10 再加 `selection_flag==1`：引擎把目标表示成**点**时"
+          "（`4|0|1|nil`：flag=1、id=0）`selection_id==0` ⇒ 那一类雷**一次都没被压过**"
+          "（实机 7 例 `arrival_already_exploded`，一条 `safe_engine;` 都没有）。")
+    check("safe_zone_engine_hold_no_capture_when_point_alive",
+          "and rb and rb:sub(0x1d,0x28)==rec.bytes then" in rt
+          and "P.ehq[match.id]={bytes=zres.point_bytes,frame=frame,fp=fp,tid=tid}" in rt,
+          "★★ 每帧判定必须**不付 capture**：把写下去的那 12 字节存进 P.ehq，"
+          "直接用观察器已经读好的 record_bytes 比对 —— 点还在就直接 return")
+    # ★★ 2026-10-10 站定距离（standoff）：实测引擎的引信在 ~2.2 m 触发 ★★
+    #   两次独立取证：entity=639（绕行中）**2.22 m**、entity=522（我们的点还在记录里、
+    #   target=0）**2.25 m** ⇒ 引信是**物理接近目标**，不是"记录里选中的是谁"
+    #   ⇒ 点目标绕行只能改"飞去哪"、**解不了引信** ⇒ 唯一杠杆是距离。
+    #   而"追一个绕圈的点"这条追杀曲线会**切进圈内**（实机就是这样掉到 2.25 m）
+    #   ⇒ 太近时必须**命令它往外飞**（目标点放到 r+2.5）。
+    check("safe_zone_standoff_floor",
+          rt.count("if R<3.5 then R=3.5 end")==1
+          and rt.count("if Rm<3.5 then Rm=3.5 end")==1,
+          "★★ 两条绕行路都必须给半径一个**硬下限 3.5 m**（实测引信 ~2.2 m + 余量）——"
+          " 否则用户把滑杆拉到 2 米时手雷照样会蹭进引信范围")
+    check("safe_zone_standoff_push_out",
+          "local push=r+2.5" in rt and "R=r+2.5" in rt
+          and "local need_write=(r==nil) or (r<Rm-0.5)" in rt,
+          "★★ 离目标太近时必须把目标点放到 `r+2.5`（**命令它往外飞**）—— "
+          "只追一个固定半径上的绕圈点，追杀曲线仍会切进圈内（实机掉到 2.25 m）")
+    check("safe_zone_engine_center_recomputed_every_frame",
+          "local tid=(match.selection_id~=0 and match.selection_id)" in rt
+          and "or (rec and rec.tid) or nil" in rt and "tid=tid}" in rt,
+          "★★ 引擎那条路的圆心必须**每帧现算**（记忆里的目标 id）—— 522 的目标是会走路的"
+          " 食腐蟲；圆心原来只在「点被抢回」时更新（最长 90 帧不刷新）⇒ 敌人正好走进圈里")
+    # ★★ 2026-10-10 贴脸取消（用户拍板选 A，默认关）★★
+    #   场景：把手雷直接丢到贴身的敌人身上。实机三次取证（1.76 / 2.22 / 2.25 m）证明引擎
+    #   引信是**物理接近目标** ⇒ 贴上去之后改航向救不回来（entity=507：第一帧就 r=1.76，
+    #   2 帧后点火）。那一刻只有「炸（你挨打）」或「取消（雷白扔）」两种结局。
+    check("safe_cancel_default_on_hidden_and_wired",
+          "blast_safe_cancel=true," in e
+          and "blast_safe_cancel=state.blast_safe_cancel," in e,
+          "★★ 2026-10-10 用户拍板：贴脸取消**默认开 + 从菜单隐藏**（功能不删）—— "
+          "原话「把贴脸取消以及取消距离隐藏，这个实测下来不一定有用但又不好去除」；"
+          " 开关仍要从 state 一路接进 env 字面量（少一处就静默不生效）")
+    check("cancel_hidden_from_menu",
+          "id='g60.blast_safe_cancel'" not in e and "id='g60.blast_safe_cancel_dist'" not in e,
+          "★★ 两个**菜单项**都已移除（按 `id='g60.…'` 判，state/env 用的是 "
+          "`blast_safe_cancel=` 形式、注释里提到 id 不算）⇒ 加载器不再回写 ⇒ "
+          "生效值就是 state 默认值")
+    check("safe_cancel_conditions_tight",
+          "env.blast_safe_cancel==true" in rt and "and r<=cthr then" in rt
+          and "local danger=tonumber(env.blast_safe_radius) or 0" in rt
+          and "if danger>7 then danger=7 end" in rt
+          and "if pdist and pdist<=danger then" in rt,
+          "★★ 三个条件必须**同时**成立才取消：雷已贴到目标（r<=取消线）、"
+          "玩家在雷的安全半径内（门已判）、**玩家在危险距离内** ⇒ 否则会把"
+          "「本来不会打到你」的雷也丢掉。"
+          " ⚠ 2026-10-10 用户纠正口径：「安全区是以**手雷**为中心，不是以玩家为中心」"
+          " ⇒ 危险距离用 `pdist`（|手雷 − 最近玩家|，与 `blast_hold;player_dist=` 同一个数），"
+          " 不再用 `pt`（玩家↔**目标**，那是「以目标为中心」）；上限 7 m = 实测致死上界 "
+          "6.47 m + 余量，且受安全区半径约束")
+    # ★★ 2026-10-10 取消线距离进菜单（用户要求：「我想再尝试一下」）★★
+    # ★★★ 2026-10-10 友方标记 bug（用户报了两轮）★★★
+    #   实机取证：那颗雷全程 `3|0|1|nil` = 引擎给的目标是**一个点**（flag=1 但 id=0、
+    #   resource=nil），不是实体选择 ⇒ 那个点极可能就是被标记友方的坐标。
+    #   ⇒ 修法（纯只读判据 + 命中才跳过）：ping 槽坐标 ≈ 友方坐标（≤3 m）时**不登记**
+    #     点目标；不命中则行为与改动前完全一致（这是"未验证假设不改变行为"的保险）。
+    check("friendly_point_is_not_taken_as_target",
+          "P.fk['p:'..tostring(structure_mark.id)]=fp" in rt
+          and "if fp_hit then" in rt
+          and "action=IGNORED_AS_FRIENDLY_POINT" in rt
+          and "and not line:match('^friendly_point;')" in e,
+          "★★★ 友方所在的落点不得被当成点目标（否则手雷被引向友方）；判据只读、"
+          " 命中才跳过、不命中一切照旧；证据行 `friendly_point;dist=` 供标定阈值")
+    check("cancel_dist_hidden_but_wired",
+          "local cthr=tonumber(env.blast_safe_cancel_dist) or 3.5" in rt
+          and "if cthr<1 then cthr=1 elseif cthr>20 then cthr=20 end" in rt
+          and "blast_safe_cancel_dist=state.blast_safe_cancel_dist," in e
+          and "blast_safe_cancel_dist=3.5," in e
+          and "id='g60.blast_safe_cancel_dist'" not in e,
+          "★★ 取消线：**从菜单隐藏但功能与接线全留**（用户拍板），默认 3.5 = 实测标定值，"
+          " 代码里仍有 1~20 夹取 —— 隐藏后生效值就是 state 默认值，"
+          " 所以默认值本身必须是被标定过的那个")
+    check("cancel_dist_is_logged_as_effective",
+          rt.count("';thr='..string.format('%.1f',cthr)") == 6,
+          "★★ 日志必须打**生效的**取消线（safe_cancel; / safe_engine; / safe_cancel_stale; "
+          "三处原有 + 2026-10-10 新增的 safe_veto; / safe_veto_skip;×2 三处）—— "
+          "写死 `thr=3.5` 时，菜单调成多少在日志里查不出来（上一轮就吃过这个亏）；"
+          " 新增的三处同理：它们都在**同一个贴脸窗口**里动作，不打生效阈值就没法"
+          "判断「开关开了为什么没效果」是线不够大还是机制不适用")
+    check("cancel_stale_probe_is_visible",
+          "safe_cancel_stale;entity=" in rt
+          and "and not line:match('^safe_cancel_stale;')" in e
+          and "P.ehf[match.id]=frame" in rt and "P.ehf[match.id]=nil" in rt,
+          "★★★ 必须有「取消**到底生效没有**」的证据行：取消成功 ≠ 引擎兑现移除"
+          "（实机 528 之后又活 2092 帧）。没有它，用户调大取消线后只看到「还是一样炸」，"
+          " 分不清是线不够大还是移除压根没兑现；且只打一次（打完清计时器）")
+    # ★★★ 2026-10-10 实机教训：取消成功 ≠ 它马上消失 ★★★
+    #   `native_disposal` 原文：移除是 RPC / 入队，**不是就地删除** ⇒ 实体还活几帧，
+    #   而引擎引信在这期间照样点火。现场：
+    #     safe_cancel;entity=512;r=3.49;frame=9286   （取消成功）
+    #     safe_engine_exploded;entity=512;dist=2.51;frame=9310（24 帧后仍被点火）
+    #   根因：第一版取消后**直接 return** ⇒ 停止推离 ⇒ 它飞进引信范围（3.49→2.51）。
+    check("safe_cancel_keeps_holding_until_removed",
+          "P.ehc[match.id]='done'" in rt
+          and "and P.ehc[match.id]~='done' and r<=cthr then" in rt
+          and "if not P.ehc[match.id] then" not in rt,
+          "★★★ 取消后**必须继续压制**（不 return、照常写推离点）直到实体真的消失 —— "
+          "移除是 RPC/入队、不是就地删除，引擎在等待期间照样能点火（实机 24 帧后仍炸）")
+    check("safe_cancel_isolated_disposal_instance",
+          "local disposal_cancel=env.fuse_profile and Disposal.new(env)" in rt
+          and "pcall(disposal_cancel.step,disposal_cancel,match," in rt,
+          "★★ 必须用**独立**的 disposal 实例：`native_disposal` 失败会把自己 disabled，"
+          " 而 runtime 的寿命回收路一读到 disabled 就 `error` ⇒ **整局 mod 停手**。"
+          " 贴脸取消写的是「非自有且未到期」的雷，风险面更大 ⇒ 不许连累正常回收")
+    check("safe_cancel_is_visible",
+          "safe_cancel;entity=" in rt and "safe_cancel_failed;entity=" in rt
+          and "and not line:match('^safe_cancel;')" in e
+          and "and not line:match('^safe_cancel_failed;')" in e,
+          "★★ 取消了几发、以及**取消失败**（写不进去）都必须可见 —— 静默就等于没做")
+    _dis = (ROOT / "src/g60" / "native_disposal.lua").read_text(encoding="utf-8")
+    check("disposal_early_cancel_is_explicit",
+          "local early=options and options.early_cancel==true" in _dis
+          and "if not early then" in _dis
+          and "assert(Policy.elapsed(now,L.hex64(r,0x188))>=Policy.lifetime_ticks,'disposal before expiry')" in _dis,
+          "★★ 提前移除必须是**显式**选项：默认路径**照旧**断言「未到期不许移除」——"
+          " 只有调用方写 `{early_cancel=true}` 才跳过（把「另一个意图」和默认语义分开）")
+    # ★★★ 2026-10-10 实机结论：贴脸取消**防不了爆**（引擎不理会未到期雷的移除）★★★
+    #   取证：528 / 577 / 683 三颗 `safe_cancel;`（成功）之后，同一颗雷（id **未**被复用）
+    #   又活了 **323 / 430 / 353 帧**（5~7 秒）；另外 4 例"取消后 1~6 帧消失"其实是被
+    #   引擎炸了（`safe_engine_exploded` 同帧），不是被移除。
+    #   ⇒ 这条结论必须**明写在代码 + 菜单 + runtime 三处**，否则以后会有人（包括我）
+    #     再把它当成"能防爆"的功能来改。用户拍板：先留着当实验、默认关。
+    check("cancel_is_documented_ineffective",
+          "实测无效" in e and "不要指望它能防爆" in e
+          and "**跳过断言并不能真的提前移除**" in _dis
+          and "防不了爆" in rt,
+          "★★★ 贴脸取消必须**明写「实测无效」**（代码 + 菜单 + runtime）—— 引擎只对"
+          " 寿命已到期的雷兑现移除，取消后同一颗雷仍活 5~7 秒（实机 528/577/683）")
+    check("safe_zone_engine_explosion_is_visible",
+          "safe_engine_exploded;entity=" in rt and "frame%5==0" in rt
+          and "and not line:match('^safe_engine_exploded;')" in e,
+          "★★ 非自有那一路**被引擎炸了**必须留证据（这类雷没有 tracked ⇒ "
+          "`note_already_exploded` 走不到它）—— 否则用户报的「有时候还是会爆炸」"
+          "永远无法证伪；`dist=` 同时是选绕行半径的依据（每 5 帧采样省成本）")
+    # ★★ 2026-10-10 阵营判据（用户要求「能不能通过阵营来判断」）★★
+    #   用户报「标记友方单位后空 ping 会失效，直到友方单位消失」。
+    #   实测（12 条 target_fields 探针）：`target_valid` **就是**阵营判据 ——
+    #   友方/中性 4/4 全 false、敌人与虫洞全 true；而 f08/f0c/f4c **分不开**
+    #   （f4c=0 在 false/true 里都出现）⇒ 不许拿那三个字段当判据。
+    #   原来的用法太晚：priority 在**锁定阶段**才问 ⇒ 友方标记先被收进队列、每帧被拒，
+    #   而它在 ping 记忆里只要实体活着就一直钉住 `structure_mark` ⇒ 空白标记被挡死。
+    check("mark_faction_uses_engine_target_valid",
+          "return env.calls.target_valid(nil,e.id,ffi.cast('const void *',e.address))" in rt,
+          "★★ 阵营判据必须用**引擎自己的** `calls.target_valid`（实机探针证明它就是阵营判据）"
+          "—— 不许用 f08/f0c/f4c 那三个字段（实测分不开）")
+    check("mark_faction_ignores_friendly_before_decisions",
+          "mark_friendly=true" in rt and "structure_mark=nil" in rt
+          and rt.index("action=IGNORED_AS_FRIENDLY") < rt.index("local ping_take="),
+          "★★ 判为友方必须在**一切决策之前**把 structure_mark 置 nil（并立起 mark_friendly "
+          "旗标给兜底 veto 用）—— 否则友方标记会继续钉住 take_gate / mark_is_wormhole / "
+          "ping_beats_titan，空白标记那条路照旧被挡死（用户现象）")
+    check("mark_faction_is_visible_and_conservative",
+          "mark_friendly;target=" in rt and "mark_faction_unknown;target=" in rt
+          and "and not line:match('^mark_friendly;')" in e
+          and "and not line:match('^mark_faction_unknown;')" in e
+          and "P.fk[fk]=v" in rt,
+          "★★ 判为友方要留证据、查不到阵营要**保守当有效**且可见（静默 = 与没做无法区分）；"
+          " 并按标记缓存（同一个标记只查一次原生查询）")
+    # ★★ 2026-10-10 用户第二次报：「释放出的手雷会一直锁定标记的友方单位，
+    #   导致手雷不能被其他代码接管」★★
+    #   根因：光把标记"当不存在"不够 —— **引擎自己的 TargetLock** 还钉在那个友方身上
+    #   （selection_veto=DISABLED，没人清）⇒ selected=true 让 ping/点目标那段让位。
+    #   ⇒ 必须用**同一套已审查的"清选择"路径**（run_veto）把它清掉。
+    check("friendly_veto_default_on_and_wired",
+          "friendly_veto_enabled=true" in e and "friendly_veto_enabled=state.friendly_veto_enabled" in e
+          and "g60.friendly_veto_enabled" in e and "host.env.friendly_veto_enabled=v" in e,
+          "★★ 「清除友方锁定」默认**开**（用户报的 bug 就是它没清）、能从 state 接进 env、"
+          " 能在游戏里开关")
+    check("friendly_veto_clears_engine_lock",
+          "(structure_mark or mark_friendly) and not abandoned" in rt
+          and "fv=faction(m.selection_id,vr)" in rt
+          and "run_veto(m,vr,'friendly_lock')" in rt,
+          "★★ 引擎当前选择若是「不能当目标」的单位，必须走 run_veto 清掉 —— "
+          " 条件里必须带 `mark_friendly`（判为友方时 structure_mark 已被置 nil）")
+    check("friendly_veto_uses_reviewed_path_only",
+          "env.calls.clear" not in rt and "run_veto(m,vr," in rt,
+          "★★ 只能走**已审查**的 run_veto（内部是 calls.clear），runtime 不许自己直调 clear —— "
+          " 清选择是写内存，必须复用那条已验证的路径")
+    check("friendly_veto_is_visible",
+          "friendly_lock;entity=" in rt and "action=VETO" in rt
+          and "and not line:match('^friendly_lock;')" in e
+          and "P.fkl[lk]=true" in rt,
+          "★★ 清掉友方锁定必须留证据（引擎会每帧抢回去，所以按 (手雷,选择) 去重）—— "
+          " 没有它就无法区分「清了」与「没清」")
+    check("safe_zone_engine_hold_diagnostics_whitelisted",
+          "and not line:match('^safe_engine;')" in e
+          and "and not line:match('^safe_engine_kept;')" in e
+          and "and not line:match('^safe_engine_lost;')" in e,
+          "★ 三条判读日志必须进节流白名单（被节流掉 = 实验没法判读）")
+    check("safe_zone_engine_hold_state_cleared_on_release",
+          "P.ehp[id]=nil;P.ehq[id]=nil;P.ehk[id]=nil" in rt,
+          "★ 非自有那一路的状态也必须随持有清（手雷 id 会被引擎复用）")
+    check("safe_zone_target_position_single_source",
+          "local function target_position(e)" in rt
+          and "claim_profile(e.resource)" in rt
+          and "TargetContext.capture(read,base,env.exe,e.id,profile)" in rt,
+          "★★ 绕行圆心必须走**唯一一份**位置实现（profile 优先、退 motion 位置）—— "
+          "不许在 runtime 里再写第二套认领/回退逻辑")
+    # ★★ 2026-10-10 实机事故：我加的引擎引爆探针**崩了** ★★
+    #   日志：`engine_explode_probe;entity=520;…;ERR:…attempt to index global 'scope'`
+    #   根因：`note_already_exploded` 定义在 tick 的**匹配循环**里，而 `scope` 是
+    #   `with_observation` 回调的**形参**、`old` 是 priority 段的局部量
+    #   ⇒ 两者在这个作用域都**不可见** ⇒ 解析成全局 nil（`old and …` 不崩，但恒为假
+    #     = 诊断字段永远占位）。⇒ 用结构门钉死：探针函数体内**不许出现** scope / old。
+    _zpa = rt.index("local function note_already_exploded")
+    _zpb = rt.index("retired[m.id]=retired_key", _zpa)
+    _zprobe = rt[_zpa:_zpb]
+    # ⚠ 只查**代码**，不查注释：注释里正是要写明"这里不能用 scope/old"这句教训 ——
+    #   本工程的既有约定是"注释里提到不算违规"（Lua 注释不执行）。
+    _zcode = "\n".join(l.split("--", 1)[0] for l in _zprobe.splitlines())
+    check("explode_probe_only_uses_visible_names",
+          _zpa > 0 and _zpb > _zpa
+          and "scope" not in _zcode and "old." not in _zcode
+          and "P.hit[m.id],P.tpos[m.id] or P.orig[m.id]" in rt,
+          "★★ 探针只能用**本作用域真正可见**的名字（m / P）—— "
+          "引用 `scope`/`old` 会解析成全局 nil：轻则字段恒为占位值，"
+          "重则 `attempt to index global 'scope'` 把整条探针打断（实机已踩）")
+
+    # ★★ 2026-10-10 Mod Options Menu 集成（**可选前置**）★★
+    #   接口以 CowboyBingus 生态的 Aggro Counter v1.5 为准：
+    #   `_G.ModOptionsMenu`(api==1) + register_option + on_change + set。
+    check("menu_is_optional_and_guarded",
+          "rawget(_G,'ModOptionsMenu')" in e and "h.api~=1" in e
+          and "pcall(h.register_option" in e,
+          "★★ 菜单是**可选前置**：必须判 api==1 + pcall 包住注册 ⇒ "
+          "没装菜单时本 mod 行为完全不变")
+    check("menu_retries_registration",
+          "menu_register()" in e and "function M.install(globals,host,on_stop,on_tick)" in rt
+          and "if on_tick then pcall(on_tick) end" in rt,
+          "★★ 必须**每帧重试注册** —— addon 加载顺序不定，菜单可能晚于本 mod 出现"
+          "（否则永远注册不上，且**无任何报错**）")
+    check("menu_callbacks_pcall_guarded",
+          "pcall(h.on_change" in e and "menu_set_failed" in e,
+          "★ 菜单回调必须 pcall 包住且**失败要打点** ⇒ 否则回调出错静默影响设置")
+    # ★★ 2026-10-10 用户报"设置没保留" ★★
+    #   现象：值确实存进了 ModOptionsMenu.values，但重启后菜单显示 default、
+    #   运行时也用 default。根因：注册后**从未回读**已保存的值。
+    #   官方文档第 61 行给的接口就是 `get(id)`。
+    check("menu_restores_saved_values",
+          "h.get)=='function'" in e and "menu_restore;id=" in e
+          and "pcall(it.set,saved)" in e,
+          "★★ 注册后**必须回读**已保存的值（`get(id)`）并写回 env —— "
+          "否则菜单永远显示 default、运行时也用不上用户设的值（实机已踩）")
+    check("menu_restore_diagnostics_whitelisted",
+          "and not line:match('^menu_restore;')" in e,
+          "★ `menu_restore;` 必须进节流白名单（否则『到底有没有回读』看不见）")
+    check("menu_only_exposes_runtime_switches",
+          "host.env.blast_safe_radius=v" in e and "host.env.force_lock_enabled=v" in e,
+          "★ 菜单只改**运行期开关**，不得改编译期常量（resource hash/几何表）")
+    # ★★ 2026-10-10 实机崩溃根因：菜单里写 `env.xxx`，而 entry 作用域**根本没有 env**
+    #    （env 只是 runtime 闭包内的 local）⇒ `attempt to index global 'env' (a nil value)`
+    #    ⇒ 注册时崩在 spec 构造里 ⇒ 被 pcall 吞掉 ⇒ 菜单不出现且**无任何输出**。
+    #    修法：runtime 暴露 `host.env`，菜单一律走 `host.env.*`。
+    check("runtime_exposes_env_for_menu",
+          "host.env=env" in rt,
+          "★★ runtime 必须**暴露 env**（host.env）—— 否则菜单无从改运行期开关")
+    # 只查**菜单代码块**（MENU_ITEMS 起、menu_push 定义止）—— runtime 内部的
+    # `env.xxx=` 是合法的（那里 env 是真实入参），不能误伤。
+    _mi = e.index("local MENU_ITEMS={")
+    _mend = e.index("local function menu_push()")
+    _menu_src = re.sub(r"^\s*--.*$", "", e[_mi:_mend], flags=re.M)
+    check("menu_never_indexes_bare_env",
+          not re.search(r"(?<![\w.])env\.[a-z_]+\s*=", _menu_src.replace("host.env.", "OK_ENV.")),
+          "★★ 菜单代码中**不得**直接索引裸 `env.*`（会崩：attempt to index global"
+          " 'env'）—— 一律走 `host.env.*`（runtime 内部的 env 赋值不在此列）")
+    check("menu_diagnostics_whitelisted",
+          "and not line:match('^menu_')" in e,
+          "★ `menu_*;` 必须进节流白名单 ⇒ 否则注册/回显结果看不见（等于没集成）")
+    check("self_probe_throttled_not_spammy",
+          "P.selfprobe.n<8" in rt and "sp.n==0 or tag~=sp.last" in rt,
+          "★ 探针必须节流（最多 8 条、只在变化时打）⇒ 否则逐帧刷屏把真诊断埋掉")
+    check("selfprobe_line_whitelisted",
+          "and not line:match('^selfprobe;')" in e,
+          "★★ `selfprobe;` 必须进节流白名单：emit 超 60 行后只写白名单行，"
+          "不白名单化 = 静默丢弃 = 探针等于不存在")
+    check("self_probe_state_in_P_not_local",
+          "selfprobe=" in rt,
+          "★ 探针状态必须放 P —— tick 闭包 upvalue 已近 Lua 5.1 的 60 上限")
     # 4b) ★★ 同一机制接到 **ping 空地** 那条路（2026-10-09，用户要求）★★
     #     那条路不经过 priority:step —— 点是由 native_arrival 经 options.point_target 写的
     #     （native_arrival 在 SAFETY_LAYER 里、不可改）⇒ 提升放在**调用侧**的运行时。
@@ -3734,6 +4282,309 @@ def test_status_line_fits_log_cap():
     check("status_marks_fits", len(c) <= 900, f"`mark_settings;` 段实测 {len(c)} 字符")
     print(f"    实测长度: core={len(a)} / titan={len(b)} / marks={len(c)}  (cap=900)")
 
+
+def test_enemy_faction_gate(rt):
+    """敌阵营硬门槛 + `faction` 作用域崩溃回归（2026-10-10 实机事故）。
+
+    事故一（用户第三次报"标记友方被炸"）：
+        旧代码拿 `calls.target_valid` 当**阵营判据**，注释理由是"引擎索敌不锁友方"。
+        实测它是"能不能被打"：哨戒炮/补给支架**有生命值** ⇒ 返回 true ⇒
+        玩家标记的友方被当成合法目标炸掉（实机 517 火焰哨戒炮 / 592 哨戒机枪 /
+        536 补给背包支架，距离 0.74~0.78 m 引爆）。信标球/武器模型返回 false ⇒
+        被正确忽略 —— 我上次的"4/4 友方全 false"样本**全是信标球和模型**。
+    事故二（我自己引入的崩溃）：
+        `local function faction` 定义在 `if structure_ping then` 块**内部**，
+        而兜底 veto 那处调用在该块**闭合之后** ⇒ 取到全局 nil ⇒
+        `frame_error;…:8960: attempt to call global 'faction' (a nil value)`，
+        每触发一次就中止当帧剩余全部处理。
+    """
+    print()
+    print("=== ㊾ 敌阵营硬门槛 + faction 作用域（2026-10-10）===")
+    r = PRIORITY.read_text(encoding="utf-8")
+    run = RUNTIME.read_text(encoding="utf-8")
+    mod = (ROOT / "src/g60" / "enemy_faction.lua").read_text(encoding="utf-8")
+    bj = (ROOT / "compat" / "build.json").read_text(encoding="utf-8")
+
+    # 1) 生成文件自带出处（生成器 + 数据源 sha256 + 判据），否则无法重跑/审计
+    check("enemy_faction_is_generated_with_provenance",
+          "生成文件，不要手改" in mod and "scripts/gen_enemy_faction.py" in mod
+          and "sha256 = " in mod and "AiEnemyComponentData" in mod,
+          "生成文件头带生成器 / 数据源 sha256 / 判据（可重跑、可审计）")
+
+    # 2) 真跑模块：判据语义（不是只看文本）
+    m = load_module(ROOT / "src/g60" / "enemy_faction.lua", "enemy_faction", rt)
+    # ⚠ 字符串参数必须**在 Lua 侧**拼（本 runtime 用 encoding=None，从 Python 传 str
+    #   进去不会匹配 Lua 表键 ⇒ 全部返回 false，测试会假绿）。
+    rt.execute("__E = require('g60.enemy_faction')")
+    assert m is not None
+    enemies = ["be39e313a1e46bb9", "a1f37bf2a40fbde4", "3d0e03e2d574e1ca",
+               "9e2e17f2ccccafdd", "ef04cb84d097a497", "960b48a421a3faaa"]
+    friendlies = ["37cde43876ba26bb", "820cc3bafe962858", "31400a6a3003e29c",
+                  "c87555eed1e9f092", "16f397ca5f51f271", "b16c9d490aa59b77",
+                  "8e325c933e55bf62", "4d1c334d294dfa97", "4abcf54464695efa",
+                  "74e2285c01da4f71", "db90077e76faa025", "8c31b749759cbd61",
+                  # 规则唯一误判（显式排除，证据见生成器 EXCLUDE 注释）
+                  "021eaecf4ca267dc",
+                  # 玩家侧杂项：载具 / 喷射舱 / 鹈鹕 / SEAF / 假人 / 各类信标
+                  "cc21c7ffd3ebefb9", "9b2140378640432e", "2d85bfe3d8717fe5",
+                  "e58163e71928d3e2", "75be82ed8592a6b3", "a00331f24deef2ee",
+                  "3caabad4d5c09d33", "6293caf0559bacf6", "0965aaeba7ccbca8"]
+    miss = [h for h in enemies if rt.eval("__E.is_enemy('%s')" % h) is not True]
+    bad = [h for h in friendlies if rt.eval("__E.is_enemy('%s')" % h) is not False]
+    check("enemy_faction_known_enemies", not miss,
+          "实机确认的敌人/泰坦/蟑龙全部判为敌人（漏=%s）" % miss)
+    check("enemy_faction_known_friendlies", not bad,
+          "★ 哨戒炮/支架/信标球/模型/玩家/平民/虫洞/敌载具 全部**不**判为敌人（误=%s）" % bad)
+    check("enemy_faction_rejects_non_string",
+          rt.eval("__E.is_enemy(nil)") is not True and rt.eval("__E.is_enemy(123)") is not True
+          and rt.eval("__E.is_enemy('')") is not True,
+          "nil/数字/空串一律不是敌人（fail-safe）")
+    check("enemy_faction_is_pure_lookup",
+          "ffi" not in mod and "read(" not in mod and "require" not in mod,
+          "零依赖零内存读的纯表查找（可离线真跑）")
+
+    # 3) 门槛装点：必须在 target_valid 查询**之前**（纯 Lua 查找，零内存读）
+    gi = r.index("EnemyFaction.is_enemy(e.resource)")
+    vi = r.index("local ok_valid,valid_now=pcall(function()")
+    check("enemy_gate_before_target_valid", gi < vi,
+          "★ 敌阵营门槛在 target_valid 之前（先零成本拒掉，再花原生查询）")
+    check("enemy_gate_honours_marked_allowed",
+          "Filter.marked_allowed(e.resource)" in r[gi - 200:gi + 200],
+          "★ 显式例外保留（机器人运输船 / 光能族增援飞船 = 敌载具，用户要求标记就炸）")
+    check("enemy_gate_detail_is_auditable",
+          "NOT_ENEMY_RESOURCE" in r and r.count("..tostring(detail)") >= 2
+          and "..tostring(gdetail)" in r,
+          "★ 三处调用点都把 detail 打进日志（generic_rejected / structure_lock_lost）")
+    check("enemy_gate_required_module",
+          "local EnemyFaction=require('g60.enemy_faction')" in r,
+          "native_priority 顶层 require（build.py 会替换成别名）")
+    # 4) 模块顺序：依赖必须排在使用者之前（build.py 的 assert_alias_order 也钉，这里提前拦）
+    check("enemy_faction_before_native_priority",
+          bj.index('"enemy_faction"') < bj.index('"native_priority"'),
+          "build.json 里 enemy_faction 排在 native_priority 之前（别名先定义）")
+
+    # 5) ★ 崩溃回归：`faction` 必须定义在**那个** `if structure_ping then` 之外
+    #    ⚠ 锚点必须取**真的那一个**：文件里 `if structure_ping then` 有 6 处，而且
+    #      faction 上方那段说明**注释里也写了这串字**（我自己写的）—— 用
+    #      `index('if structure_ping then', 从 mark_friendly 起)` 会命中注释 ⇒ 假红。
+    #      可靠锚点：先定位 `structure_ping:observe()`，再往**回**找最近的 if。
+    obs = run.index("structure_mark,structure_issue=structure_ping:observe()")
+    s = run.rindex("if structure_ping then", 0, obs)
+    d = run.index("local function faction(id,res)")
+    c = run.index("fv=faction(m.selection_id,vr)")
+    check("faction_defined_outside_structure_ping_block", d < s,
+          "★ 定义字符位(%d) < 真块 `if structure_ping then`(%d) —— 否则块内定义 ⇒ "
+          "兜底 veto 处取到全局 nil ⇒ frame_error 中止当帧" % (d, s))
+    check("faction_defined_before_both_calls",
+          run.count("local function faction(id,res)") == 1 and d < c,
+          "只定义一次，且在**两处**调用之前（词法作用域，与缩进无关）")
+    check("faction_call_sites_are_two",
+          run.count("faction(") >= 3,
+          "两处调用（标记判友方 + 兜底 veto）都还在（删掉一处会让对应功能静默消失）")
+
+
+def test_safe_zone_redundancy():
+    """安全区冗余（2026-10-10，用户报「安全区有时候还是会发生引爆，能增加冗余吗」）。
+
+    实机根因（2981 行日志，7 例 `arrival_already_exploded`）：
+        门判了"玩家在圈内"（`blast_hold;entity=540;player_dist=11.87`），
+        却**一条 `safe_engine;` 都没有** ⇒ 没有任何执行者。真凶是
+        `run_safe_hold` 里那句 `if not tid then return end` ——
+        引擎把目标表示成**点**时（`sel_probe` 的 `4|0|1|nil`：flag=1、id=0）
+        `tid=nil` ⇒ 直接返回。这一类雷在引擎里占多数 ⇒ 一次都没被压过。
+    """
+    print()
+    print("=== ㊿ 安全区冗余（圆心三源 + 入口放宽 + 无执行者告警）===")
+    run = RUNTIME.read_text(encoding="utf-8")
+    e = (ROOT / "addon" / "entry.lua.in").read_text(encoding="utf-8")
+
+    # 1) ★ 回归门：那句提前 return 必须消失（它是这 7 例的真凶）
+    #    ⚠ 必须**先去注释**再查：修复说明里引用了那句原文，直接查全文会假红。
+    code = "\n".join(l for l in run.splitlines() if not l.lstrip().startswith("--"))
+    check("safe_no_early_return_on_missing_tid",
+          "if not tid then return end" not in code,
+          "★ `if not tid then return end` 已从**代码**里删除（点态选择时它让整条路零执行者）")
+
+    # 2) 圆心三源都在
+    for tag, why in [("csrc='entity'", "① 引擎选中的实体位置"),
+                     ("csrc='point'", "② 记录里引擎自己的点（点态选择时只有它有）"),
+                     ("csrc='last'", "③ 上次已知圆心 P.tpos")]:
+        check("safe_center_source_" + tag.split("'")[1], tag in run,
+              "圆心来源 %s 存在" % why)
+
+    # 3) ② 必须排除"我们自己写下去的点"，否则会绕着自己转
+    check("safe_center_excludes_own_point",
+          "local ours=rec and rb and rb:sub(0x1d,0x28)==rec.bytes" in run
+          and "if rb and not ours then" in run,
+          "★ 记录里的点若与 rec.bytes 逐字节相同 = 我们写的 ⇒ 不当圆心")
+
+    # 4) 偏移必须一致：Lua 的 sub(0x1d,0x28) 是 1-based = 0-based 0x1c..0x27
+    check("safe_center_point_offset_consistent",
+          "rb:sub(0x1d,0x28)==rec.bytes" in run
+          and "TargetData.vector,rb,0x1c" in run,
+          "★ 记录点偏移与绕行判据同一个（1-based 0x1d ⇒ 0-based 0x1c）")
+
+    # 5) 入口放宽：点态选择也要进（selection_flag==1 涵盖实体与点）
+    check("safe_gate_accepts_point_selection",
+          "m.selection_id~=0 or m.selection_flag==1 or P.ehq[m.id]~=nil" in run,
+          "★ 入口从 `selection_id~=0` 放宽到 `selection_flag==1`（实体或点都算）")
+    check("safe_gate_still_narrow",
+          "and m.behavior_id==4 and m.state==4" in run
+          and "not (old and (old.lock or old.titan or old.point))" in run,
+          "收窄面不变：state==4 / behavior==4 / 不是我们在驾驶")
+
+    # 6) 无执行者告警：两个来源 + 白名单 + 状态表
+    check("safe_noexec_two_reasons",
+          "';reason=NO_CENTER'" in run and "';reason=ENGINE_PATH_GATED'" in run,
+          "★ 两类洞各有一条告警（圆心三源全取不到 / 入口被条件挡住）")
+    check("safe_noexec_whitelisted", "line:match('^safe_noexec;')" in e,
+          "★ 白名单化（诊断被节流掉 = 诊断不存在）")
+    check("safe_noexec_state_declared", "noexec={},noexec_warn={}," in run,
+          "计数与告警去重都在 P（upvalue 已近 60 上限）")
+    check("safe_noexec_cleared",
+          run.count("P.noexec[match.id]=nil") >= 3,
+          "有执行者 / 玩家离开圈 / 换了一颗雷 ⇒ 计数清零（否则会误报）")
+    check("safe_noexec_threshold_is_half_second",
+          "if n>=30 and not P.noexec_warn[match.id] then" in run,
+          "连续 ≥30 帧（0.5 s）才报，每颗一次（不刷屏）")
+    # ★★ 2026-10-10 用户拍板"按建议做"：两个写者互斥 + skipped 自报家门 ★★
+    check("safe_zone_write_owns_the_frame",
+          "P.szw[match.id]=frame" in run and "and P.szw[m.id]~=frame" in run
+          and "szw={}," in run,
+          "★★「谁写了谁负责」：安全区本帧写过点的雷，点目标驱动**这一帧让位** —— "
+          "否则它拿「写之前」的观测调原生，撞 `stale observation`"
+          "（实机 entity=508：连续 4 帧 skipped 白烧）；只判 ==frame ⇒ 不跨帧")
+    check("skipped_reports_which_path",
+          "';via='..((old and old.point and 'point')" in run
+          and "or (old and old.titan and 'titan') or 'runner')" in run,
+          "★ 三条引导路共用同一段失败记账 ⇒ `skipped;` 必须自报家门（via=），"
+          "否则 `stale observation` 只能靠猜（实机 entity=508 就是这样）")
+    check("point_beats_titan_reason_matches_fact",
+          "and 'PLAYER_PING_OVER_ENGINE_SELECTION'" in run
+          and "or 'PLAYER_PING_NO_ENGINE_SELECTION'))" in run,
+          "★ 2026-10-10：reason 必须与 `titan=` 的实际值一致 —— "
+          "`ping_beats_titan` 的条件并不要求引擎有选择，实机 4 条 `titan=0` 也写"
+          "「over engine selection」纯误导；tag 名保留（历史 grep/白名单锚点）")
+
+    # 7) 冗余不许引入新的写通道
+    #    ⚠ 不能笼统查 "calls.orbit" 不在文件里 —— `early_nav_orbit` 那段（默认关的
+    #      实验）本来就有 `env.calls.orbit`。这里钉"**新增**了没有"：计数不变。
+    check("safe_redundancy_no_new_write_path",
+          "WriteProcessMemory" not in run and run.count("env.calls.orbit(") == 1,
+          "本段纯只读 + 走已有的 arrival:step 写点（不新增写内存、不新增原生调用；"
+          " env.calls.orbit 仍是 early_nav_orbit 那 1 处，默认关）")
+
+
+    # 8) ★★ 冗余第四层「清掉引擎的选择」（2026-10-10，用户拍板做成开关）★★
+    check("safe_veto_toggle_default_off",
+          "safe_zone_veto_selection=false," in e,
+          "★ 默认关（与 safe_zone_engine_hold 同纪律：又一条写非自有 G-60 的行为，"
+          "而且清的是引擎自己的索敌）")
+    check("safe_veto_toggle_wired_to_env",
+          "safe_zone_veto_selection=state.safe_zone_veto_selection," in e
+          and e.index("safe_zone_veto_selection=false,")
+          < e.index("safe_zone_veto_selection=state.safe_zone_veto_selection,"),
+          "★ 开关必须同时接进 env（本项目栽过「开关进了 state 没进 env ⇒ 静默不生效」）")
+    check("safe_veto_toggle_in_menu",
+          "g60.safe_zone_veto_selection" in e
+          and "host.env.safe_zone_veto_selection=v" in e,
+          "★ 必须能在游戏里开关（用户要求「做成一个开关功能」）")
+    check("safe_veto_uses_audited_path",
+          "run_veto(match,match.selection_resource,'safe_zone'," in run,
+          "★ 走**已审查的**清选择路径 run_veto（不是新写的写内存通道），via=safe_zone")
+    check("safe_veto_quiet_after_first",
+          "P.evv[match.id]~=nil,runner.safe_veto_runner)" in run,
+          "★ 第一次之后传 quiet=true（否则 enemy_veto; 逐帧刷屏），并带上专用实例")
+    check("safe_veto_only_in_close_window",
+          "env.safe_zone_veto_selection==true and c and r and r<=cthr" in run,
+          "★ 只在贴脸窗口（r<=取消线）里逐帧清 —— 引擎每帧都会重新锁上")
+    check("safe_center_point_also_reads_projectile",
+          "P.hit[match.id]=p4" in run and "local ok4,p4=pcall(function()" in run,
+          "★★ 源②（记录里的点）必须**同时**读回「雷在哪」—— 否则 r=nil ⇒ "
+          "贴脸取消永远够不着（它要求 r<=cthr）、need_write 恒真、"
+          "`r=-`/`dist=-` 两条诊断全废（实机 entity=623：玩家离雷 4.49~5.76 m，"
+          "两个机制都因为 r 未知而够不着）")
+    check("safe_veto_only_without_mark",
+          "local has_mark=(structure_mark~=nil) or (mark~=nil) or (point_armed==true)" in run,
+          "★★ 用户要求「只应用在无标记的情况下」：三源都算玩家意图"
+          "（结构/通用标记 / ping 到的单位 / TTL 内的空地点）—— "
+          "gate.drive 覆盖不到 engine_owns_it 与 quarantined 两条 edge case，所以必须显式再判")
+    check("safe_veto_boundary_visible",
+          "';reason=HAS_MARK'" in run
+          and "';reason=POINT_SELECTION_HAS_NO_RESOURCE'" in run
+          and "P.evp[match.id]" in run,
+          "★ 跳过必须可见（有标记 / 点式选择）—— 否则「开了没效果」与"
+          "「有标记所以不该清」分不开")
+    check("safe_veto_tags_whitelisted",
+          "line:match('^safe_veto;')" in e and "line:match('^safe_veto_skip;')" in e,
+          "★ 两条判据行都白名单化（诊断被节流掉 = 诊断不存在）")
+    check("safe_veto_run_veto_reports_result",
+          "return ok_v and ok_v.kind or 'FAILED',res_v" in run,
+          "★ run_veto 回传 (kind, why)：调用方要把它写进自己的证据行")
+    check("safe_veto_state_declared", "evv={},evp={}," in run,
+          "取证去重表在 P（upvalue 已近 60 上限），且两类分开计数")
+
+
+    check("safe_veto_uses_dedicated_runner",
+          "runner.safe_veto_runner=Minimal.new_experimental(with_observation," in run
+          and "P.evv[match.id]~=nil,runner.safe_veto_runner)" in run,
+          "★★ 必须用**专用**实例（allowed 恒 false）：实机 4 条 "
+          "`safe_veto;…;result=keep;why=VANILLA_ALLOWED` 证明主 runner 是空转的 —— "
+          "`env.target_allowed` 只在 designed_targets_only==true 时构造，而本裁剪版是 false "
+          "⇒ allowed==nil ⇒ SelectionVeto.plan 恒返回 keep ⇒ 对普通敌人一次都清不了；"
+          " ⚠ 它**挂在 runner 上当字段**、不是新 local —— tick 的 xpcall 已正好 60 upvalue，"
+          " 多一个 local 就会让整份 chunk 编译失败（实机事故 2026-10-10）")
+    check("safe_veto_runner_is_isolated",
+          "if R:disabled() then" in run
+          and "if R==runner then" in run
+          and "return 'DISABLED','SAFE_VETO_RUNNER_DISABLED'" in run,
+          "★ 专用实例 disabled 只关掉这一个功能，**不许**让整局 mod 停手"
+          "（主 runner 才走 self.disabled + error 的 fail-closed）")
+    check("safe_veto_root_cause_documented",
+          "designed_targets_only" in run and "VANILLA_ALLOWED" in run
+          and "allowed==nil" in run,
+          "★ 根因写进代码：否则下一个人会以为这个开关本来就该没用")
+
+
+    # ★★ 2026-10-10 用户报「安全区貌似对队友不生效」★★
+    check("safe_zone_covers_teammates",
+          "local function players_scan()" in run
+          and "pointer(base+0x3326d20)" in run and "read(am+0x6c,4)" in run
+          and "pointer(am+0x110+i*8)" in run,
+          "★★ 安全区必须覆盖队友：读游戏自己的 avatars 列表"
+          "（base+0x3326d20 / count@+0x6c / 实体指针数组@+0x110+i*8）—— "
+          "同工程 aggro_counter **实机跑过**的读法，且其 owner/id_map/entities 三个偏移"
+          "与本工程 d.root 完全一致（同一份 game.dll dump）；"
+          " **绝不枚举实体表**（2026-09-28 那个 4m 潜兵安全区就是这么死的）")
+    check("safe_zone_uses_nearest_player",
+          "local best,d2=nearest_player(own,mysp)" in run
+          and "';players='..tostring(P.av.list and #P.av.list or 0)" in run,
+          "★★ 判据必须是**最近的玩家**（自己 ∪ 队友），不是只比自己；"
+          " `players=` 给出参与判定的玩家数（缺了就没法证伪「对队友不生效」）")
+    check("safe_zone_players_cache_is_per_frame",
+          "if P.av.frame~=frame then" in run and "av={}," in run,
+          "★ avatars 列表**每帧只读一次**并缓存 —— gate 是逐颗雷逐帧调用的"
+          "（实机一局 1863 次 blast_hold），逐次读会把 layout_reads 打爆")
+    check("safe_zone_players_failure_is_visible",
+          "safe_players;n=0;reason='..tostring(why)..';frame='..frame)" in run
+          and "line:match('^safe_players;')" in e,
+          "★★ 读不到 avatars 必须**可见**（退回只有自己是 fail-safe，"
+          "但静默降级 = 诊断不存在，本项目已栽过多次）")
+    # ★★★ 通用门：任何 local 都不得在"声明之前 / 声明所在块之外"被使用 ★★★
+    #   同一类坑咬了两次（faction 崩溃 / pointer 让队友安全区静默失效）⇒
+    #   这次做成**通用检查**，而不是再写一条针对性的门。
+    import subprocess as _sp
+    import sys as _sys
+    _p = _sp.run([_sys.executable, '-B', 'tests/check_local_order.py'],
+                 cwd=ROOT, capture_output=True, text=True)
+    check("no_local_used_before_declaration",
+          _p.returncode == 0,
+          "★★ 通用作用域门：`local` 在声明前/块外使用会解析成全局 = nil"
+          "（faction 崩溃 + pointer 让队友安全区静默失效，两次都只有实机才暴露）；"
+          " 检查器的召回已用「修复前的版本能精确抓出 pointer」验证过"
+          + ('' if _p.returncode == 0 else '  实际：' + _p.stdout[-400:]))
+
+
 def main():
     rt = lupa.LuaRuntime(encoding=None, unpack_returned_tuples=True)
     test_fault_classification(rt)
@@ -3771,6 +4622,8 @@ def main():
     test_target_priority_tiers()
     test_marked_unit_rank_order()
     test_status_line_fits_log_cap()
+    test_enemy_faction_gate(rt)
+    test_safe_zone_redundancy()
 
     print()
     if failures:

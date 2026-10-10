@@ -152,6 +152,64 @@ function M.new(env,options)
         -- 否则失败帧返回 last_selected 时又会把它喂回给 priority。
         if last_selected and last_selected.identity==identity then last_selected=nil end
     end
+    -- ★★ 2026-10-09：本机玩家（"我自己"）的只读取用 ★★
+    --   为什么放这里：这段 owner 判定（`local_ownership_observed` + 实体/身份复核）
+    --   是本工程**唯一经过实机验证**的"挑出本机玩家"的路径，
+    --   在这里复用 ⇒ runtime 侧不必重复实现、也不必新 require 一个 Authority。
+    --   ⚠ 只读：不写任何内存。⚠ 失败一律返回 `nil,reason`（调用方 pcall 包住）。
+    --   用途：给「G-60 爆炸安全区」确认"玩家是谁 + 坐标"，本身不改变任何行为。
+    function api:self()
+        local ok,result=pcall(function()
+            local d=Data.new(env.read,env.base,env.exe)
+            local actors=d.ptr(env.base+0x3326d20)
+            if not actors then return nil,'actors_unavailable' end
+            local count=d.u32(actors+0x70)
+            if not count or count==0 or count>16 then return nil,'count:'..tostring(count) end
+            local want=env.self_resource          -- 玩家本体哈希（可为 nil）
+            local by_hash,by_owner,slots,nets=nil,nil,0,{}
+            for i=0,count-1 do
+                local p=d.read(actors+0x110+i*8,8)
+                if L.hex64(p,0)~='0000000000000000' then
+                    local address=L.pointer(p,0)
+                    local bytes=d.read(address,24)
+                    local e=d.entity(L.u32(bytes,8))
+                    if e then
+                        slots=slots+1
+                        -- ⚠ 字段名是 **resource**（`d.entity` 里 `resource=L.hex64(identity,0)`），
+                        --   不是 hash —— 我第一版写成 `e.hash` ⇒ 恒 nil ⇒ by_hash 永远 miss
+                        --   （实机日志 `by_hash=miss;...hash=nil;nets=` 空就是这个错）。
+                        nets[#nets+1]=tostring(e.resource)
+                        if want and e.resource==want and not by_hash then
+                            pcall(d.unit,e)
+                            by_hash={entity=e,index=i,position=d.position(e)}
+                        end
+                        -- ② 按本地归属匹配（本工程已实机验证过的那条路）
+                        if Authority.inspect(env.engine,L.u32(bytes,16)).local_ownership_observed
+                            and not by_owner then
+                            -- ★★ 2026-10-10 关键修复（实机：安全区全路径失效）★★
+                            --   `d.unit(e)` 内部读 `d.ptr(exe+0x1a100f0)`，**会抛
+                            --   `pointer bound`**（实机 `selfprobe;err=…:1050: pointer bound` 就是它）。
+                            --   而它只是"这实体确实是 Unit"的**校验**，**坐标根本不需要它**
+                            --   （`d.position` 走 motion manager 0x3326508）。
+                            --   ⚠ 我此前把 unit 与 position 放在**同一个 pcall** 里 ⇒
+                            --     unit 一抛错就把整个 self() 打回 nil ⇒ `by_owner` 永远拿不到
+                            --     ⇒ 门函数每帧 fail-open ⇒ **三条路径全都不拦**
+                            --     （实机铁证：上一版 blast_hold 1062 条 → 本版 **0 条**）。
+                            --   ⇒ 单独 pcall：unit 校验失败**不影响**返回坐标。
+                            local uok=pcall(d.unit,e)
+                            by_owner={entity=e,net=L.u32(bytes,16),index=i,
+                                unit_ok=uok,position=d.position(e)}
+                        end
+                    end
+                end
+            end
+            -- ★ 双路都打出来：这是"这个哈希对不对"的唯一判据 ——
+            --   两条指向同一实体 ⇒ 哈希可用；只有一条 ⇒ 需要判读哪个可信。
+            return {by_hash=by_hash,by_owner=by_owner,count=count,slots=slots,nets=nets}
+        end)
+        if not ok then return nil,tostring(result) end
+        return result
+    end
     function api:observe()
         local ok,result=pcall(function()
             local d=Data.new(env.read,env.base,env.exe)

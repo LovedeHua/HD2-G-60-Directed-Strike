@@ -190,11 +190,14 @@ def main():
           "★ 空闲时按 P.idle_skip 分频跳过整帧")
     _i_inc = text.index("frame=frame+1")
     _i_skip = text.index("if P.idle_skip>0 and (frame%P.idle_skip)~=0 then return end")
-    _i_pcall = text.index("local ok,why=pcall(function()")
+    # ⚠ 2026-10-10：锚点原来写的是 `local ok,why=pcall(function()` —— 而源码早已改成
+    #   `xpcall`（frame_error 要带调用栈，v0.1.8 的说明）⇒ `text.index(...)` 抛
+    #   ValueError，**这条门连同它后面 4 条断言从那一刻起就是死的**（一条都没跑过）。
+    _i_pcall = text.index("local ok,why=xpcall(function()")
     check("skip_after_frame_increment", _i_inc < _i_skip,
           "★ 跳帧判断在 frame+1 **之后**（否则帧号会漏数，perf 窗口与状态追踪都会错）")
     check("skip_before_pcall", _i_skip < _i_pcall,
-          "跳帧判断在 pcall **之前**（否则等于没省：读都做完了）")
+          "跳帧判断在 xpcall **之前**（否则等于没省：读都做完了）")
     _i_lc2 = text.index("local observed=Layout.capture(read,base)")
     _i_busy2 = text.index("local busy,veto_must=(next(tracked)~=nil)")
     _i_idle = text.index("P.idle_skip=busy and (veto_must and 1 or rb) or ri")
