@@ -38,6 +38,9 @@ M.rejected_targets={}
 -- 让位之后如果结构标记这一帧**拿不到**（被别的 G-60 预约 / 超距），
 -- 下一帧会再次让位 ⇒ 不按 (G-60, 结构) 去重就会逐帧刷屏。
 M.yield_reported={}
+-- ★ 2026-10-10 第 1 步诊断：`mark_yield_candidate;` 的去重集合
+--   （键 = G-60 身份 | 新标记 id）⇒ 每对只报一次，且距离只读一次。
+M.yield_candidate_reported={}
 -- 「认出自己写的点、跳过冗余 setter」的去重集合（2026-10-05）。
 -- 理由同 yield_reported：这条日志是"新机制真的生效了吗"的**唯一**判据，
 -- 而它**每帧**都成立（点被引擎保留着就一直成立）⇒ 不去重会逐帧刷屏。
@@ -484,7 +487,7 @@ function M.new(env)
                 return {entity=e,raw=ffi.string(raw,80),score=1,unit=unit,
                     marked_structure=true,generic=true,point=point}
             end
-            local chosen,reason,mark_candidate,chosen_mark_index
+            local chosen,reason,mark_candidate,chosen_mark_index,yield_candidate
             -- An explicit structure mark may interrupt an existing enemy lock.
             -- Never discover structures from the automatic candidate list.
             --
@@ -553,6 +556,43 @@ function M.new(env)
                         elseif env.emit then
                             env.emit('structure_lock_lost;target='..tostring(previous.id)
                                 ..';detail='..tostring(detail)..';generic=true')
+                        end
+                    end
+                    -- ★★ 2026-10-10 第 1 步：**只测量不动作**（(c) 的候选取证）★★
+                    --   用户要的 (b)/(c)：新标记了**更高档**的单位时，已在飞的雷是否该转火。
+                    --   现行规则**只对"新近结构标记"让位**（上面的 `fresh_structure`）；
+                    --   单位→单位**不抢**（同层保持忠实）。这里把"如果放开会怎样"变成数据：
+                    --     判据 = 我锁的是单位、队列里存在 `current==true` 且**档位更优**
+                    --            （`env.mark_tier` 数值更小）的标记。
+                    --   ⚠ **零行为改动**：不设 `yielded_unit`、不动 `chosen`、不释放锁。
+                    --   ⚠ 距离（"还没飞太远"的门槛要用它）只在该 (雷, 新标记) 组合
+                    --     **首次**出现时读一次 `d.position` —— 否则会逐帧 6 次读。
+                    --   ⚠ `env.mark_tier` 由 runtime 提供（**五档的唯一实现**），
+                    --     本模块**不得**再写第二份档位判据。
+                    if not fresh_structure and env.mark_tier and previous.resource
+                        and mark and mark.queue then
+                        local mine=env.mark_tier(previous.resource)
+                        for i=1,#mark.queue do
+                            local cm=mark.queue[i]
+                            if cm.current==true and cm.identity~=previous.identity then
+                                local t=env.mark_tier(cm.resource)
+                                if t<mine then
+                                    local ck=L.u32(c.identity_bytes,8)..'|'..tostring(cm.id)
+                                    if not M.yield_candidate_reported[ck] then
+                                        M.yield_candidate_reported[ck]=true
+                                        local okp,dist=pcall(function()
+                                            local te=d.entity(previous.id)
+                                            local p=d.position(te)
+                                            local s=0;for k=1,3 do s=s+(p[k]-own[k])^2 end
+                                            return math.sqrt(s)
+                                        end)
+                                        yield_candidate={id=previous.id,locked_tier=mine,
+                                            new_id=cm.id,new_tier=t,slot=cm.slot,
+                                            dist=okp and dist or nil}
+                                    end
+                                    break
+                                end
+                            end
                         end
                     end
                 else
@@ -735,7 +775,8 @@ function M.new(env)
             -- 副作用(预期内)：上一帧的 structure 锁若因标记过期而失配，这里不再回退到
             -- 候选列表，改为落到下面的 {kind='keep', released=…}，由 runtime 释放该锁。
             -- structure_ping 自带"标记消失后仍记住目标"的机制，正常操作下不会走到这条路。
-            if not chosen then return {kind='keep',released=previous~=nil} end
+            if not chosen then return {kind='keep',released=previous~=nil,
+                mark_yield_candidate=yield_candidate} end
             local function check()
                 assert(scope.validate() and d.validate(),'priority scope changed')
                 local r=scope.read(c.state_address-8,0x1f8)
@@ -930,6 +971,9 @@ function M.new(env)
             return {kind='lock',reason=reason,changed=mutated,
                 mark_queue_count=#marks,selected_mark_id=chosen_mark and chosen_mark.id,selected_mark_index=chosen_mark_index,
                 mark_id=mark and mark.id,mark_current=mark and mark.current,mark_candidate_observed=mark_candidate,
+                -- ★ 2026-10-10 第 1 步诊断：**(c) 的候选取证**（只测量不动作）
+                --   `{id,locked_tier,new_id,new_tier,slot,dist}` —— runtime 负责打日志。
+                mark_yield_candidate=yield_candidate,
                 record=scope.read(c.state_address-8,0x1f8),resource=chosen.entity.resource,
                 -- ★ marked_structure 必须显式为 true，否则不返回 lock ★
                 -- 上游写的是 `marked_structure=chosen.marked_structure`，可为 nil。

@@ -211,8 +211,20 @@ function M.new(env,options)
         return result
     end
     function api:observe()
+        -- ★★ 2026-10-10 诊断（用户要求"拆 ping 的读"）★★
+        --   本函数实测占**总读量的 27%**（74.3 读/执行帧），而它分两段：
+        --     ① actor 扫描（Data.new + 逐 actor 读 + Authority.inspect）
+        --     ② ping 环扫描（**每个存活槽位一次 0x58 字节读**）
+        --   把两段分别计入通道 8 / 9，并回报"扫了几个 actor / 几个槽位"，
+        --   才能判断"环扫描改批量读"值不值（槽位是连续的 ⇒ 可一次读一大块）。
+        --   ⚠ 通道用**保存/恢复**而不是置 nil —— 否则会把外层的通道（6）抹掉，
+        --     让本函数的其余读错记到 other（v0.1.13 实测就是这么错的）。
+        local actors_seen,slots_seen=0,0
         local ok,result=pcall(function()
             local d=Data.new(env.read,env.base,env.exe)
+            -- 通道 8：actor 扫描段
+            local prev8=env.counters and env.counters.ch
+            if env.counters then env.counters.ch=8 end
             local actors=d.ptr(env.base+0x3326d20)
             local count=d.u32(actors+0x70);assert(count<=16,'Ping actor count')
             local owner
@@ -228,6 +240,8 @@ function M.new(env,options)
                     end
                 end
             end
+            actors_seen=count
+            if env.counters then env.counters.ch=prev8 end
             assert(owner,'local Ping creator unavailable')
             local ring=d.ptr(env.base+0x347ce30)
             local header=d.read(ring,16)
@@ -236,6 +250,9 @@ function M.new(env,options)
             assert(head<128 and tail<128,'Ping ring bounds')
             local marks={}
             local point_seen                      -- 本帧看到的空白标记位置（见 slot_point）
+            -- 通道 9：ping 环扫描段（**每个存活槽位一次 0x58 读** —— 环扫描是这里的主体）
+            local prev9=env.counters and env.counters.ch
+            if env.counters then env.counters.ch=9 end
             for step=0,(tail-head)%128-1 do
                 local slot=(head+step)%128
                 local r=d.read(ring+16+slot*0x58,0x58)
@@ -285,6 +302,8 @@ function M.new(env,options)
                     if not good then diagnose(id,nil,'ENTITY_READ_FAILED:'..tostring(mark)) end
                 end
             end
+            slots_seen=(tail-head)%128
+            if env.counters then env.counters.ch=prev9 end
             local origin=d.position(owner)
             local function valid(m)
                 local good,value=pcall(function()
@@ -303,7 +322,11 @@ function M.new(env,options)
             local observation={scene=tostring(d.root)..':'..tostring(ring)..':'..owner.identity,
                 time=L.hex64(d.read(clock+0x18,8),0),marks=marks}
             local selected=memory:update(observation,valid)
+            -- ★ 诊断通道 10：`d.validate()` 的 guard 复读（本实例本次调用所有读的重读）
+            local prev10=env.counters and env.counters.ch
+            if env.counters then env.counters.ch=10 end
             assert(d.validate(),'Ping observation changed')
+            if env.counters then env.counters.ch=prev10 end
             -- ★★ 记忆的**存续判据**（2026-10-01，用户实机反馈）★★
             --
             --   用户原话：「标记过的单位，即使取消标记，G60 仍会追踪该单位」。
@@ -394,14 +417,15 @@ function M.new(env,options)
             if failed_frames>=FAILURE_RESET_LIMIT then
                 memory:reset();last_selected=nil
             end
-            return last_selected,tostring(result)
+            return last_selected,tostring(result),actors_seen,slots_seen
         end
         failed_frames=0
         -- 直接赋值而不是 `if result then`：观察成功却**没有任何**记住的标记
         -- （场景切换后 memory 内部已 reset）时必须同步清掉 last_selected，
         -- 否则会把上个场景的虫洞当成当前标记继续喂给 priority。
         last_selected=result
-        return result
+        -- ★ 诊断：第 3/4 个返回值 = 本帧扫过的 actor 数 / ping 环槽位数（供 perf; 判读）
+        return result,nil,actors_seen,slots_seen
     end
     return api
 end

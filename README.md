@@ -53,10 +53,139 @@ v0.1.7 用本工程**唯一的受控写通道**（`force_lock_enabled`：只写 
 ⚠ 这是本工程第一次绕过引擎 API 直接写游戏状态，`force_lock_enabled=false` **一键回退**到只读行为；
 风险与细节见下文「受控写通道」一节。
 
-> **当前版本 v0.1.10**。版本号的**唯一来源**是 `scripts/build.py` 的 `RELEASE_VERSION` ——
+> **当前版本 v0.1.22**。版本号的**唯一来源**是 `scripts/build.py` 的 `RELEASE_VERSION` ——
 > `TITLE`（manifest 显示名）、成品包文件名、`BUILD-INFO.json`、日志里的 `version=` 全部由它派生。
 > 发新版**只改那一个常量**。
 > （`compat/build.json` 的 `public_version` 是**上游**的版本，与本裁剪版无关。）
+>
+> **v0.1.22：标记的泰坦不再输给空白 ping（「泰坦只该低于虫洞」）**。
+> 根因：`ping_beats_titan` 的排除项只判「引擎选中的正好是**队列首**那个标记」⇒ ①队列首不是它
+> ②**引擎还没选它**（`m.selection_id`=0）这两种情况下，玩家点名的泰坦仍会输给空白 ping。
+> · 改成**按档位比较**：空白 ping = `env.point_mark_rank`（默认 **1600**）⇒ 只要有活着的实体
+>   标记（虫洞 0 / 蟑龙 500 / 泰坦 1000 / 名册 1000+rank / 其它 1500）就压得住它。
+> · ⚠ **保留** 2026-10-10 的原意：**引擎自己挑的**泰坦（不在队列里）依旧让位给 ping。
+>
+> **v0.1.21：「已在飞的锁 = 玩家意图」（修「标记泰坦后手雷飞向附近的敌人引爆」）**。
+> 证据（v0.1.20 日志）：两条失败样本的共同特征是 **`mark=-`**（标记离开 UI 的 8 秒窗口）+
+> `engine_sel ≠ intended` + `stage=around`。机制：标记过期后被移出队列 ⇒ **没有路径再每帧重申
+> 目标**（泰坦链写的是**绕行点**，不是选择）⇒ 引擎中途改选旁侧敌人 ⇒ 雷在那里引爆。
+> · 修复：**只要还有在飞的 G-60 锁着该目标，该标记就不算过期**（锁就是意图）。
+> · `P.locked_ids` 在 `observe()` **之前**按帧刷新，帧号 TTL 6 帧（防 id 复用/表增长）。
+> · ⚠ 只延长**已被锁**的标记 ⇒ 不影响「取消标记后不再用」的既有语义。
+>
+> **v0.1.20：标记队列审计（纯诊断，零行为改动）** —— 查「标的是泰坦却打了别的目标」。
+> 已查明：泰坦只有 `9e2e17f2ccccafdd`（胆汁泰坦）+ 变体 `ef04cb84d097a497`；而审计到的 8 颗雷
+> 锁的是 `a05bd1ec67b3ac4c`/`dcf8e74212fbee3b`（名册重甲）、`bc2af8548c6d5e06`（结构）。
+> 新增 `mark_queue;entity=…;n=…;ids=…;resources=…;tiers=…;current=…;picked=…;engine_sel=…`
+> ⇒ 一眼分清「标的就是重甲」(a) 还是「泰坦没被选中」(b)。`tiers` 用 `env.mark_tier`（唯一实现）。
+>
+> **v0.1.19：引擎引爆审计（纯诊断，零行为改动）** —— 你报的「标记泰坦后手雷飞向附近的敌人引爆」。
+> 已有的 `engine_explode_probe;` 答不了（它只存安全区/绕行时的位置 ⇒ dist/gp 常为 `-`）。
+> 在**引擎已引爆的判定处**追加：`intended=`（我们锁的）/ `engine_sel=`（引擎选的）/ `stage=` /
+> `guided=`（那帧在不在引导）/ `mark=` ⇒ 一次分清「引擎引信在旁侧提前炸」/「引擎改选旁侧敌人」/
+> 「接管断档」三种可能。⚠ 与已有探针**分开 pcall**（该作用域里 `scope`/`old` 不可见，踩过崩溃）；
+> 只读，字段缺了就是 `-`。
+>
+> **v0.1.18：(c) 让位的候选取证（纯诊断，零行为改动）**。
+> 背景：你要 (b)/(c) —— 新标记**更高档**的单位时，已在飞的雷是否该转火。现行规则**只对
+> 「新近结构标记」让位**，单位→单位不抢。
+> · 五档档位抽成**唯一实现** nv.mark_tier（runtime 定义；options.priority 只转发；
+>   
+ative_priority 里不得再写第二份档位链）。⚠ 必须是 env 字段而非 local —— tick 的
+>   xpcall 正好 60 upvalue。
+> · 新增候选取证：单位锁 + 队列里存在 current==true 且档位更优的标记时，产出
+>   mark_yield_candidate={id,locked_tier,new_id,new_tier,slot,dist}，**不设 yielded_unit、
+>   不动 chosen**（有门断言）；距离只在该 (雷,新标记) 组合首次出现时读一次。
+> · 日志 mark_yield_candidate;entity=…;locked_tier=…;new_tier=…;dist=…;would_yield=…，
+>   would_yield 按提议门槛 nv.mark_yield_distance（默认 **30 m**）**只作判读**。
+>
+> **v0.1.17：修 v0.1.16 的空转事故（自我纠正）**。
+> v0.1.16 的分流/让位/claim 读的是 mark.queue，但 mark_priority_enabled=false（默认）
+> ⇒ ping 为 nil ⇒ **mark 恒为 nil** ⇒ 那段判断从未进入 ⇒ **没修任何东西**。
+> 铁证：日志里 ping_queue; **0 条**（它只在 mark 非空时才可能打），structure_mark; 35 条。
+> · 队列来源改为 **structure_mark or mark**，门里禁止回退到只读 mark。
+> · 关键机制：priority:step 的 mark 参数**只用于日志元数据**（
+ative_priority.lua:928/932），
+>   **选目标只走 structure_mark（第 6 个参数）** ⇒ 挑中的标记必须**同时**传进 my_structure。
+> · 本轮生效范围（诚实边界）：**泰坦链** claim+让位 ✔；**结构/泰坦等 claim_profile
+>   目标**经 my_structure 分流 ✔；**无 profile 的通用单位**本 mod **无法改派**（由引擎决定）。
+>
+> **v0.1.16：多标记分流（修伤害溢出）** —— 你报的：「多个标记敌人在场 + 2 颗 G-60 ⇒
+> 两颗都飞优先级最高的那个」。规则：「**只有 1 个标记时可以接受多颗雷锁定**」。
+> · **根因**：预留系统（`target_reservations`）只接在 `native_priority` 的 3 处，
+>   而**泰坦链 `native_titan_aim` 一次都不查**（`available`/`claim` 出现 0 次），
+>   且它由 `titan:step` 单独驱动 ⇒ **两颗雷各自独立接管同一个标记泰坦**。
+> · **修复三件**：① 每颗雷选「第一个没被别人预留」的标记（队列已是档位顺序）；
+>   ② 泰坦链接管成功后 `claim`（先 `available` 再 `claim` —— 后者对"别人已占"会抛）；
+>   ③ 让位：若「我该打的 ≠ 引擎本帧选的」且「它还没被占」⇒ 本帧不进泰坦链，
+>   交给 priority 把选择写到备选标记上（下一帧引擎选中它 ⇒ 泰坦链自然转过去）。
+> · ⚠ **全都占了（例如只有 1 个标记）⇒ 允许共享**（不拒绝接管，否则会"一颗都不打"）。
+> · ⚠ **五档次序一条没动**（虫洞 0 / 蟑龙 500 / 泰坦 1000 / 名册 1000+rank / 其它 1500）。
+> · 取证行：`mark_alloc;entity=…;path=titan;state=yield;engine_target=…;my_mark=…;queue=…`
+>
+> **v0.1.15：把「guard 复读」单独计量（纯统计，不改玩法）**。
+> v0.1.14 实测（战斗帧每执行帧）：总 **532.8** 读 —— 观察者 236.8（44%）、Search 108.2（20%）、
+> ping 81.3（15%）、安全区 37.7、prio 28.3、verify 24.4、readiness 16.0，**`other_reads` = 0**
+> （10 路已覆盖全部读）。
+> · 新增 **通道 10 = guard 复读**（"证明同帧内引擎没改写这块内存"的那一遍重读）：
+>   `Search.capture` 的复读循环 + `ping.observe` 末尾的 `d.validate()`。
+>   前者所在模块拿不到 `env` ⇒ 由 runtime **经 `opts` 传 `counters`**。
+> · `perf;` 新增 `guard_reread=`；`other_reads` 改为「总数减去 1~10 路」。
+> · 目的：把**安全纪律的开销**变成可读数字（实测约占战斗帧 **17%**），再由你决定
+>   「保留 / 只对小锚点复读 / 同帧去重」。
+> · ⚠ 同版记下两条**实测否掉**的方向：①「观察者扫描收窄到 `active`」会**漏雷**
+>   （`obs_beyond;index=160;active=2;count=161`）；②「ping 环扫描改批量读」不值
+>   （环段实测只有 **7.3 读/执行帧**）。
+>
+> **v0.1.14：修仪器 + 拆开 `ping.observe`（纯统计，不改玩法）**。
+> · **修仪器**：通道改成**保存/恢复**（原来读完置 `nil`）—— `priority:step` 内部会调
+>   `scope.validate`（通道 4），置 `nil` 会把外层通道抹掉 ⇒ v0.1.13 实测 `prio_reads`
+>   **恒为 0**、那些读全掉进 `other_reads`（战斗窗口虚高到 168/帧）。新增门禁止这种写法再出现。
+> · **`ping.observe` 再拆两段**（实测占总读量 **27%** = 74.3 读/执行帧）：
+>   通道 8 = actor 扫描段、通道 9 = **ping 环扫描段**（每存活槽位一次 0x58 读）；
+>   `perf;` 新增 `ping_actor_reads=` / `ping_ring_reads=` / `ping_slots=` / `ping_actors=`。
+>   ⇒ 若环段是主体，就能把**连续槽位一次读一大块**（字节不变、调用数 N→1~2，零行为改动）。
+> · ⚠ 另一条**实测判死**：`obs_beyond;index=160;active=2;count=161` ⇒ 有 G-60 落在活跃前缀
+>   之外（战斗窗口 `obs_beyond=133`）⇒ 「收窄观察者扫描到 active」不仅省不了，**还会漏雷**。
+>
+> **v0.1.13：把「其它读量」也拆开（纯统计，不改玩法）**。
+> v0.1.12 的实测（每执行帧）：总 **355.7** 读 —— 观察者 **187.4（53%）**、
+> **其它 147.5（41%，此前完全没归属）**、search 14、safe 3.5、verify 3.3。
+> · `perf;` 新增 `readiness_reads=`（`jobs_ready` 里的 `Readiness.capture`）/
+>   `ping_reads=`（`ping.observe` 的 actor 扫描）/ `prio_reads=`（`priority:step`），
+>   `other_reads` 改为「总数减去 1~7 路」。
+> · ⚠ 同时记下一个**已被证伪**的结论：`active == count` 在 **368/368 个窗口**成立
+>   ⇒ 「把观察者扫描收窄到 `active`」**一点都省不了**（此前估的「省 26%」作废）；
+>   `obs_beyond` 因此恒为 0，下版删掉。
+> · ⚠ 本版**只统计、不改行为**。
+>
+> **v0.1.12：性能诊断（纯统计，不改玩法）** —— v0.1.11 把尺子修准后暴露了真正的开销。
+> · 实测任务局 **172 读/执行帧**（⚠ 分母是 `frames_seen`，不是窗口的 600），
+>   其中 `Layout.capture` **100（58%）**、其它 72（42%）。
+> · `perf;` 新增**分路读量**：`obs_reads=`（观察者）/ `search_reads=`（Search.capture）/
+>   `safe_reads=`（安全区门）/ `verify_reads=`（`scope.validate` 复核）/
+>   `other_reads=`（其余）⇒ **单项优化从此可单独验收**。
+> · `perf;` 新增收窄扫描的**前置证据**：`obs_slots=` / `obs_active=` / `obs_beyond=`，
+>   首次出现非活跃槽匹配时另打一条 `obs_beyond;index=…;active=…;count=…;id=…`。
+>   观察者现在对**全部 `count` 个槽位**逐个读 24 B identity（≈50 读/执行帧 ≈ 29% 总读量），
+>   而 `active` 只有 1~9 ⇒ **`obs_beyond` 一直是 0 才谈得上收窄到 `active`**（潜在省 ~26%）。
+> · ⚠ 本版**只统计、不改行为**：没有任何判定、门控或写入被改动。
+>
+> **v0.1.11：性能（只降开销，不改玩法）** —— 一次三路只读审查后实施前 4 项。
+> · **先修度量**：`perf;` 原来只累计 `Layout.capture` 的读，而 `Search.capture` /
+>   `TargetData` / 所有 `validate()` 复验读**都不计**（且 `layout_bytes` 只算第一遍）
+>   ⇒ 真实读量约为它的 **2 倍**，任何优化都没法用它验收。现在在**最底层 `read` 包装**
+>   里计数（一处覆盖全部模块），`perf;` 新增 `all_reads=` / `all_bytes=`（**窗口增量**）。
+> · **`structure_ping:self()` 按帧缓存**：原来**每颗雷每帧**一次完整 actor 扫描
+>   （每 actor 2 次读 + `entity` 哈希探测 + `Authority.inspect` + `unit`(pcall)
+>   + `position`，且每次新建一个 `Data.new`）。同帧内所有雷答案相同。
+> · **队友坐标改 ttl=3 帧缓存**：原来每帧重扫 ⇒ 新建 `TargetData` ⇒ 实体缓存每帧失效
+>   ⇒ 约 40~50 次读/帧 + ~50 张小表。精度代价 ~0.35 m，半径 6~30 m 量级；
+>   `safe_players;` 新增 `ttl=` 让新鲜度可见。
+> · **帧内恒定的槽指针每帧只读一次**（root/clock/manager/records/invalid）。
+>   ⚠ `scope.validate()` 里那句「重读复核」**刻意保留** —— 缓存只用在取值处、不用在复核处。
+> · ⚠ **刻意没做**三处：`link;` 去重键（会改日志行密度）、`blast_hold;` 降频
+>   （它是「圈内却零执行者」的唯一判据）、每行 `flush`（它是崩溃后日志还在的保证）。
 >
 > **v0.1.10：Mod 设置的语言跟随游戏语言**（用户要求）。
 > 原话：「mod设置的语言要能跟随游戏语言变化，比如说游戏语言是英语，mod设置显示的也是英语」。
@@ -96,7 +225,7 @@ v0.1.7 用本工程**唯一的受控写通道**（`force_lock_enabled`：只写 
 >
 > **v0.1.7 起改名**：旧名 `G-60 Bug Hole Lock` 是 v0.1.6 之前的能力写照（那时只打虫洞）。
 > 资源名与包名同步更换（`mods/hd2test/g60_directed_strike` /
-> `G60-Directed-Strike-0.1.10.zip`），**归档槽位与 GUID 未变** ⇒ 加载器那边是原地升级。
+> `G60-Directed-Strike-0.1.22.zip`），**归档槽位与 GUID 未变** ⇒ 加载器那边是原地升级。
 >
 > 派生自 [`etxp/HD2-G60-Smart-Targeting`](https://github.com/etxp/HD2-G60-Smart-Targeting) 0.1-beta.1
 > （源码 MIT）。裁剪只动**决策层**；**签名守卫、持锁窗口、状态机白名单、身份复验等安全机制原样保留**。
@@ -407,11 +536,11 @@ ef04cb84d097a497 → content/fac_bugs/cha_strider/cha_strider_gloom
 
 > ### 📦 成品包下载
 > **[GitHub Releases › 最新版](https://github.com/LovedeHua/HD2-G-60-Directed-Strike/releases/latest)**
-> —— 下载 `G60-Directed-Strike-0.1.10.zip` 直接导入 mod 管理器。（本仓库只有**源码**，成品包在 Releases 附件里。）
+> —— 下载 `G60-Directed-Strike-0.1.22.zip` 直接导入 mod 管理器。（本仓库只有**源码**，成品包在 Releases 附件里。）
 
 1. 关闭游戏，安装 [Bingus Shared Loader](https://github.com/CowboyBingus/BingusSharedLoader)
    （**API 1，v15+**，需 addon discovery）。
-2. 把 `G60-Directed-Strike-0.1.10.zip` 导入 mod 管理器。
+2. 把 `G60-Directed-Strike-0.1.22.zip` 导入 mod 管理器。
 3. **与上游官方包二选一** —— 两个包都会改 G-60 的决策，同时启用会打架。
    本包 GUID `9c1d4e77-…`，官方包 GUID `58a16a67-…`。
 4. Purge / Deploy 后重启游戏。

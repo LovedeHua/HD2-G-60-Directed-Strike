@@ -25,7 +25,223 @@ CONFIG = json.loads((ROOT / 'compat/build.json').read_text())
 #
 #   事故背景：发 Release v0.1.2 时成品包还叫 `G60-BugHole-Lock-0.1.0.zip`
 #   —— 因为 TITLE / ZIP_NAME 把 '0.1.0' 硬编码在代码里，与 Release 标签完全脱节。
-RELEASE_VERSION = '0.1.10'
+RELEASE_VERSION = '0.1.22'
+# ★ v0.1.22（2026-10-10，用户报）：**标记的泰坦不该输给空白 ping**（行为修复）。
+#   用户原话：「现在标记的泰坦单位的优先级比空 ping 的优先级低，泰坦的优先级理论上
+#   应该只比虫洞低」。
+#   根因：`ping_beats_titan` 的排除项 `mark_is_this_unit` 只判
+#     「引擎选中的那个正好是**队列首**那个标记」（`m.selection_id==structure_mark.id`）
+#     ⇒ 两种情况下**玩家点名的泰坦仍会输给空白 ping**：
+#       ① 队列首不是它（队列里还有别的标记）② **引擎还没选它**（`m.selection_id`=0/invalid）
+#   修复：改成**按档位比较** —— 空白 ping 视为比**任何实体标记**都低：
+#     · `env.point_mark_rank`（entry 默认 **1600**）⇒ 连"名册外的其它单位"(1500) 也压得住它，
+#       与文档原则「虫洞/构筑 > 标记单位 > 空白标记」一致
+#     · 判据：队列里存在 `current==true` 且 `env.mark_tier(resource) < point_rank` 的标记
+#       ⇒ `better_live_mark` ⇒ ping 不许抢
+#     · 档位一律走 `env.mark_tier`（**唯一实现**），本处不另写第二份
+#   ⚠ **保留 2026-10-10 的原意**：**引擎自己挑的**泰坦（玩家没点名 ⇒ 不在队列里）
+#     依旧让位给 ping —— "玩家意图 > 引擎自动选择" 与 "玩家点名 > 空白 ping" 是两件事。
+#   ⚠ 仍要求 `not (old and old.titan)`（已在跑泰坦航路的不半路改向）。
+
+# ★ v0.1.21（2026-10-10，用户「直接改」）：**「已在飞的锁 = 玩家意图」**（行为修复）。
+#   症状（用户）：「标记泰坦后（无其他标记敌人）投掷手雷，手雷会飞向泰坦附近的敌人引爆」。
+#   实机证据（v0.1.20 日志，10 条 `engine_explode_probe` 里的两条）：
+#     `engine_explode_probe;entity=1227;age=3987552;…;intended=1187;engine_sel=1051;stage=around;
+#      guided=true;mark=-`
+#   共同特征 **`mark=-`**（标记已离开 UI 的 8 秒窗口）+ `engine_sel ≠ intended` + `stage=around`
+#   ⇒ 机制：`remembered_intent` 把过期标记从队列丢掉 ⇒ **没有任何路径再每帧重申目标**
+#     （泰坦链写的是**绕行点**，不是选择；priority 那条路要求队列里有标记）
+#     ⇒ 引擎中途改选旁边那个敌人 ⇒ 雷在旁侧敌人身上引爆。
+#   修复：**只要还有在飞的 G-60 锁着该目标，该标记就不算过期**（锁就是意图）。
+#     · `P.locked_ids[目标 id] = 帧号`，在 `structure_ping:observe()` **之前**刷新
+#       （`remembered_intent` 在 observe 内部被调）
+#     · `remembered_intent` 里 `if P.locked_ids[mark.id] then return true end`
+#     · 帧号 TTL 6 帧 ⇒ 防实体 id 复用与表增长
+#     · ⚠ 只延长**已被锁**的标记 ⇒ 不影响「取消标记后不再用」（`*_live_only`）的既有语义；
+#       工程原本的注释只说"持有 old.lock 的那颗不受影响"，但漏了"它还需要标记留在队列里
+#       才能继续重申目标"这一环。
+#   ★ 其它 8 条 `engine_explode_probe` 是 `engine_sel == intended`（炸在目标本身）⇒ 属正常/另一类。
+
+# ★ v0.1.20（2026-10-10，用户选「1」）：**标记队列审计**（纯诊断，零行为改动）。
+#   背景：用户报「标的是泰坦却打了别的目标」。已查明的事实：
+#     · 泰坦只有两个 resource：`9e2e17f2ccccafdd`（胆汁泰坦，compat/titan_profile.lua）
+#       与变体 `ef04cb84d097a497`（compat/titan_variants.lua）
+#     · 而审计到的那 8 颗雷锁的是 `a05bd1ec67b3ac4c` / `dcf8e74212fbee3b`
+#       （在 priority_catalog + weakpoint_profiles ⇒ **名册重甲，不是泰坦**）
+#       / `bc2af8548c6d5e06`（structure_profiles ⇒ 结构）/ `cc7022fdd172089b`（未知）
+#   ⇒ 两种可能必须分清：
+#     (a) 标的就是名册重甲 ⇒ 行为按设计走（问题在通用路径）
+#     (b) 标了泰坦却没被选中 ⇒ **标记选择 bug**（泰坦档位 1000 本该压过名册 1000+rank）
+#   本版加一行 `mark_queue;`：**投掷那一刻的队列全貌**
+#     `entity=…;n=…;ids=…;resources=…;tiers=…;current=…;picked=…;engine_sel=…;frame=…`
+#     · `tiers` 用 `env.mark_tier`（唯一实现）⇒ 与选择逻辑同一把尺子
+#     · `picked` = 我们实际挑的（多标记分流的产物）/ `engine_sel` = 引擎选的
+#     · 按 (手雷, 队列签名) 去重（`P.mq_logged`，与 `P.explprobe` 同款规模可控）
+#   ⚠ 只读：不改任何选择/判定；已进 emit 白名单。
+
+# ★ v0.1.19（2026-10-10，用户要求「加上诊断呗」）：**引擎引爆审计**（纯诊断，零行为改动）。
+#   用户报：「标记泰坦后（无其他标记敌人）投掷手雷，手雷会飞向泰坦附近的敌人引爆」。
+#   已有的 `engine_explode_probe;` 答不了这个问题（它只存安全区/绕行时的位置 ⇒ dist/gp 常为 `-`）。
+#   在**同一处**（`note_already_exploded`，引擎已引爆的判定）追加审计字段：
+#     `intended=`（我们锁的 id）/ `engine_sel=`（引擎当前选的 id）/ `stage=`（泰坦路线阶段）/
+#     `guided=`（那一帧到底在不在引导）/ `mark=`（当时的标记 id）
+#   ⇒ 一次分清三种可能：
+#     ① guided=true 且 intended=泰坦 ⇒ **引擎引信在旁侧小怪上提前炸**（抑制没覆盖那帧）
+#     ② engine_sel ≠ intended ⇒ **引擎改选了旁边的敌人**（标记没压过引擎选择）
+#     ③ guided=false ⇒ **接管断档**
+#   ⚠ 与已有探针**分开 pcall**：审计若引用了该作用域不可见的名字（`scope`/`old` 就是不可见的，
+#     本文件记录过那次实机崩溃），只丢审计字段，**不能**把已有 dist/own 一起丢掉。
+#   ⚠ 只读：不改任何状态；字段缺了就是 `-`。
+
+# ★ v0.1.18 的内容（2026-10-10，用户要求「先做第 1 步」）：**(c) 让位的候选取证（纯诊断）**。
+#   背景：用户要 (b)/(c) —— 新标记了**更高档**的单位时，已在飞的雷是否该转火。
+#   现行规则**只对"新近结构标记"让位**（`native_priority.lua` 的 `fresh_structure`），
+#   单位→单位不抢（同层保持忠实）。本步**只测量不动作**，把"如果放开会怎样"变成数据。
+#   1) **五档档位抽成唯一实现** `env.mark_tier`（runtime 里定义，env 字段而非 local
+#      —— tick 的 xpcall 正好 60 upvalue，多一个被捕获的 local 会让整份 chunk 编译失败）。
+#      `structure_ping` 的 `options.priority` 只做转发；`native_priority` 里**不得**再写
+#      第二份档位链（门 `mark_tier_single_implementation` 钉着）。
+#   2) `native_priority` 在"单位锁 + 队列里存在 current==true 且档位更优的标记"时，
+#      产出候选取证 `mark_yield_candidate={id,locked_tier,new_id,new_tier,slot,dist}`：
+#        · **零行为改动**：不设 `yielded_unit`、不动 `chosen`、不释放锁
+#          （门 `yield_candidate_is_read_only` 断言候选块代码里没有这两者）
+#        · 距离（"还没飞太远"的门槛要用它）只在该 (雷, 新标记) 组合**首次**出现时
+#          读一次 `d.position`（≈6 次读）—— 不去重会把纯诊断变成新的开销源
+#        · 同时挂在 `lock` 与 `keep` 两种结果上（只挂 lock 会在 `chosen` 为空那一路丢掉证据）
+#   3) runtime 打 `mark_yield_candidate;entity=…;locked=…;locked_tier=…;new=…;new_tier=…;
+#      dist=…;would_yield=…;frame=…`（已进 emit 白名单）；`would_yield` 用提议门槛
+#      `env.mark_yield_distance`（entry 默认 **30 m**）**只作判读**。
+#   ⚠ `env.mark_tier` / `env.mark_yield_distance` 已加进 entry 的 env 字面量 ——
+#     门 `env_fields_all_wired` 要求模块会读的每个 env.X 都在字面量里声明。
+# ★ v0.1.17 的内容（2026-10-10）：**修 v0.1.16 的空转事故**（自我纠正）。
+#   ⚠⚠ v0.1.16 的 bug：分流/让位/claim 读的是 `mark.queue`，但 `mark_priority_enabled=false`
+#      （entry 默认）⇒ `ping` 为 nil ⇒ **`mark` 恒为 nil** ⇒ `if reservations and mark
+#      and mark.queue` 从来没进去过 ⇒ **整个分流逻辑空转，实际没修任何东西**。
+#      实机铁证：日志里 `ping_queue;` **0 条**（它只在 `mark` 非空时才可能打），
+#      而 `structure_mark;` 35 条 ⇒ 标记走的是 **`structure_ping`**。
+#   修复：队列来源改成 **`structure_mark or mark`**（后者只为将来打开
+#      `mark_priority_enabled` 时兜底），并在门里**禁止**回退到只读 `mark`。
+#   ★ 同时查清一个关键机制：`priority:step` 的 **`mark` 参数只用于日志元数据**
+#     （`native_priority.lua:928/932`），**从不用于选目标** —— 选目标只走
+#     **`structure_mark`（第 6 个参数）** 那条路（`claim_profile` 目标：结构/泰坦/蟑龙/变体）。
+#     ⇒ 挑中的标记必须**同时**传进 `my_structure`，否则分流对结构/泰坦不生效。
+#   ★ 本轮实际生效的范围（诚实边界）：
+#     · **泰坦链**：`claim` + 让位门（`my_mark` 现在非空 ⇒ 真正生效）
+#     · **结构/泰坦等 `claim_profile` 目标**：2 个标记 + 2 颗雷 ⇒ 经 `my_structure`
+#       各打一个
+#     · **无 profile 的通用单位**：本 mod **无法**改派（选目标不走 `mark` 参数，
+#       而 `structure_mark` 分支要求 `claim_profile`）⇒ 那类目标由**引擎**决定，
+#       我们只能靠 sticky 保持忠实。要改派得写引擎的选择（更大的一块，未做）。
+# ★ v0.1.16 的内容（2026-10-10，用户要求「直接修复」）：**多标记分流**。
+#   用户原话：「目前存在多个标记敌人在场时如果有 2 颗 G60，这 2 颗 G60 会向优先级最高的
+#   标记敌人飞去，容易造成伤害溢出」；规则：「如果只有 1 个标记，那么可以接受多个手雷的锁定」。
+#   根因（已核实）：预留系统（`target_reservations`）**只接在 `native_priority` 的 3 处**
+#   （`:276` generic_validate / `:353` 另一处校验 / `:647` 虫洞路径），而**泰坦链
+#   `native_titan_aim.lua` 一次都不查**（`available`/`reservations`/`claim` 出现 0 次），
+#   且泰坦链由 `titan:step` **单独驱动**（不走 `priority:step`，拿不到 `available` 闭包）
+#   ⇒ **两颗 G-60 各自独立接管同一个标记泰坦**。
+#   修复三件（都在 runtime，**一处实现**）：
+#     ① **每颗雷选"第一个没被别人预留"的标记**（`mark.queue` 已是档位顺序），
+#        再交给 `priority:step` ⇒ 2 个标记 + 2 颗雷各打一个；
+#     ② **泰坦链接管成功后 `claim`**（先 `available` 再 `claim` —— 后者对"别人已占"是
+#        断言失败，不能直接调）；
+#     ③ **让位**：若"我该打的标记 ≠ 引擎本帧给我选的"且"它还没被别人占" ⇒ 本帧不进泰坦链，
+#        交给 priority 那条路把选择写到备选标记上（下一帧引擎选中它 ⇒ 泰坦链自然转过去）。
+#   ⚠ 用户拍板：**全都占了（例如场上只有 1 个标记）⇒ 允许共享** —— 挑不到空闲标记时
+#     保持档位最高者，**不拒绝接管**（否则会变成"一颗都不打"）。
+#   ⚠ **不动**之前拍板的五档次序（虫洞 0 / 蟑龙 500 / 泰坦 1000 / 名册 1000+rank / 其它 1500）
+#     —— 本次只动"同档内选谁"。有门 `mark_tier_order_unchanged` 钉着。
+#   ★ 取证行：`mark_alloc;entity=…;path=titan;state=yield;engine_target=…;my_mark=…;queue=…`
+#     （每颗雷一条）⇒ 判读"2 个标记 + 2 颗雷有没有各打一个"的唯一依据。
+# ★ v0.1.15 的内容（2026-10-10，用户要求"先做 1"）：**纯诊断，不改玩法**。
+#   背景（v0.1.14 实测，战斗帧每执行帧）：总 532.8 读 —— 观察者 236.8（44%）、
+#   Search 108.2（20%）、ping 81.3（15%）、安全区 37.7、prio 28.3、verify 24.4、
+#   readiness 16.0，`other_reads` **0**（10 路已覆盖全部读）。
+#   新增**通道 10 = guard 复读**（"证明同帧内引擎没改写这块内存"的那一遍重读）：
+#     · `Search.capture` 的复读循环（`native_search_context.lua:186`）——
+#       本模块拿不到 env ⇒ 由 runtime **经 opts 传 `counters`**（`opts` 现在总是建表；
+#       模块里对 options 的用法全是 `options and options.X` ⇒ 语义不变）。
+#     · `ping.observe` 末尾的 `d.validate()`（`native_ping.lua`）。
+#   `perf;` 新增 `guard_reread=`，`other_reads` 改成"总数减去 1..10"。
+#   ⚠ 目的：把**安全纪律的开销**变成可读数字（实测约占战斗帧 17%），
+#     再由用户决定"保留 / 只对小锚点复读 / 同帧去重"—— 这不是我能单方面裁的。
+#   ⚠ 同时记下两条已被实测否掉的方向（免得重走）：
+#     · 「观察者扫描收窄到 active」—— `obs_beyond;index=160;active=2;count=161`
+#       ⇒ 会漏雷，彻底作废；
+#     · 「ping 环扫描改批量读」—— 实测环段只有 **7.3 读/执行帧**（actor 段 13.0、
+#       两段之外 61.0）⇒ 环不是主体，批量读最多省 7 读/帧，不值。
+# ★ v0.1.14 的内容（2026-10-10，用户要求"1+2"）：**纯诊断，不改玩法**。
+#   1) **修仪器**：通道改成**保存/恢复**（原来读完置 nil）——
+#      `priority:step` 内部会调 `scope.validate`（通道 4），置 nil 会把外层通道抹掉 ⇒
+#      v0.1.13 实测 `prio_reads` **恒为 0**，那些读全掉进 `other_reads`（战斗窗口里虚高到 168/帧）。
+#      新增门 `perf_channel_nesting_saves_and_restores`（同时禁止 `env.counters.ch=nil` 再出现）。
+#   2) **把 `ping.observe` 再拆两段**（实测它占总读量 27% = 74.3 读/执行帧）：
+#        通道 8 = actor 扫描段（Data.new + 逐 actor 读 + Authority.inspect）
+#        通道 9 = **ping 环扫描段**（每个存活槽位一次 0x58 读）
+#      `perf;` 新增 `ping_actor_reads=` / `ping_ring_reads=` / `ping_slots=` / `ping_actors=`
+#      （后两个由 `observe()` 作为第 3/4 个返回值回报，窗口累计）。
+#      ⇒ 若环段是主体，就能把**连续的槽位一次读一大块**（字节不变、调用数 N→1~2，
+#        纯收益、零行为改动）。
+#   ⚠ 同时记下另一条**实测判死**的结论：`obs_beyond;index=160;active=2;count=161` ⇒
+#     有 G-60 落在活跃前缀之外（战斗窗口 `obs_beyond=133`）⇒
+#     "把观察者扫描收窄到 active"不仅省不了，**还会漏雷** ⇒ 彻底作废。
+# ★ v0.1.13 的内容（2026-10-10，用户要求"先做 1"）：**纯诊断，不改玩法**。
+#   背景（v0.1.12 实测，每执行帧）：总 355.7 读，观察者 187.4（53%）、
+#   **其它 147.5（41%，完全没归属）**、search 14、safe 3.5、verify 3.3。
+#   ⇒ 再加 3 路通道把"其它"拆开：
+#       5 = readiness（jobs_ready 里的 Readiness.capture，注释写明每次约 16 读）
+#       6 = ping.observe（structure_ping / ping 的 actor 扫描，逐帧）
+#       7 = priority:step（候选扫描 / 各类校验 / 原生查询）
+#   `perf;` 新增 `readiness_reads=` / `ping_reads=` / `prio_reads=`，
+#   并把 `other_reads` 改成"总数减去 1..7"。
+#   ⚠ 只包住各自那一段：通道 7 只包 `priority:step`（`with_observation` 里的
+#     `Search.capture` 是通道 2，在它内部设置 ⇒ 不重叠）。
+#   ⚠ 同时记录一个**已被证伪**的结论（免得下一个人重走）：
+#     v0.1.12 实测 `active == count` 在 **368/368 个窗口**成立 ⇒
+#     "把观察者扫描收窄到 active"**一点都省不了**（此前估的"省 26%"作废）。
+#     `obs_beyond` 因此恒为 0（那条证据行一次都没触发），下版可删。
+# ★ v0.1.12 的内容（2026-10-10，用户要求"先做 1+2"）：**纯诊断，不改玩法**。
+#   背景：v0.1.11 的实测把口径修准了（旧日志漏报 43%），并暴露真正的开销在观察者
+#   ——实测任务局 **172 读/执行帧**，其中 `Layout.capture` 占 100（58%）。
+#   1) **按调用方分路计数**（`perf;` 新增）：
+#        obs_reads=    观察者 Layout.capture
+#        search_reads= Search.capture
+#        safe_reads=   安全区门（self() + 队友坐标）
+#        verify_reads= scope.validate 复核
+#        other_reads=  总数减去上面四路
+#      通道在 entry 的 `read` 里按 `rdcount.ch`（**数字键**，每次读只多一次表索引）
+#      归属，由 runtime 在 4 个高层边界设置 ⇒ **单项优化从此可单独验收**。
+#   2) **收窄观察者扫描的前置证据**（`perf;` + 首次一条 `obs_beyond;`）：
+#        观察者对**全部 count 个槽位**逐个读 24 B identity（实测 count≈49~56
+#        ⇒ 约 50 读/执行帧 ≈ 总读量的 29%），而代码里已有 `active`（活跃前缀，1~9）。
+#        新增 `obs_slots=` / `obs_active=` / `obs_beyond=`（窗口汇总）与
+#        `obs_beyond;index=…;active=…;count=…;id=…`（首次出现）。
+#        ⇒ **obs_beyond 一直是 0，才谈得上把扫描收窄到 active**（潜在省 ~26% 总读量）。
+#   ⚠ 只统计、不改行为：没有任何判定、门控或写入被改动。
+# ★ v0.1.11 的内容（2026-10-10，性能审查后按用户「按你的建议做」实施前 4 项）：
+#   全部**只降开销、不改玩法**，且每条都配了构建期门防回退。
+#   · **先修度量（审查项 #16）**：`perf;` 原来只累计 `Layout.capture` 的读，
+#     而 `Search.capture` / `TargetData` / 所有 `validate()` 复验读都不计
+#     （且 layout_bytes 只算第一遍）⇒ 真实读量约为它的 2 倍，优化无法验收。
+#     现在在**最底层 read 包装**里计数（一处覆盖全部模块），`perf;` 新增
+#     `all_reads=` / `all_bytes=`（**窗口增量**；拿不到计数器时打 -1，不静默）。
+#   · **`structure_ping:self()` 按帧缓存（#1）**：原来每颗雷每帧一次完整 actor 扫描
+#     （每 actor 2 次读 + entity 哈希探测 + Authority.inspect + unit(pcall) + position，
+#     且每次新建一个 Data.new）。同帧内所有雷答案相同。顺带去掉那个 pcall 闭包。
+#   · **avatars 列表改 ttl=3 帧缓存（#3）**：原来每帧重扫 ⇒ 新建 TargetData ⇒
+#     实体缓存每帧失效 ⇒ 约 40~50 次读/帧 + ~50 张小表。精度代价 ~0.35 m
+#     （玩家 ~7 m/s），半径 6~30 m 量级；`safe_players;` 新增 `ttl=` 让新鲜度可见。
+#   · **帧内恒定的槽指针每帧只读一次（#2）**：root/clock/manager/records/invalid
+#     原来在 with_observation（每颗每帧）、scope.validate、Search.capture、
+#     TargetData.new、到达段各读一遍。⚠ `scope.validate()` 里那句**重读复核**
+#     （指针是否仍等于观测时的值）**刻意保留原样** —— 缓存只用在取值处，不用在复核处。
+#   ⚠ 三处**刻意没做**（都需用户拍板或有更好的理由）：
+#     · `link;` 去重键里的 `state_age`（每帧 +1 ⇒ 去重恒不生效、每 tick 全量拼 400 B
+#       后被白名单丢掉）—— 修了会改变 `link;` 行密度，与旧日志不可直接对比；
+#     · `blast_hold;` 降频 —— 它是「玩家在圈内却零执行者」这个洞的**唯一判据**
+#       （旧版「364 帧只有 5 条」正是缺陷证据，test_priority_fault_isolation.py 记着）；
+#     · 每行一次 `log:flush()` —— 它是**崩溃后日志还在**的保证，本工程就是靠日志查案的，
+#       代价（每行一次 write 系统调用）远小于收益。
 # ★ v0.1.10 的内容（2026-10-10，用户要求）：
 #   **Mod 设置的语言跟随游戏语言** —— 原话：「mod设置的语言要能跟随游戏语言变化，
 #   比如说游戏语言是英语，mod设置显示的也是英语」。

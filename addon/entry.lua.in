@@ -708,6 +708,23 @@ local ok,why=pcall(function()
             --   `menu_lang;tag=<BCP47>;src=game|steam|default;functions=true|false`
             --   —— 用户报「英语客户端显示中文」这类问题时，没有这一行就只能靠猜。
             and not line:match('^menu_lang;')
+            -- ★★ 2026-10-10 性能证据行：**活跃前缀之外出现了 G-60** ★★
+            --   这是"能不能把观察者扫描从 count 收窄到 active"的**前置条件**证据
+            --   （实测 count≈49~56 但 active 只有 1~9 ⇒ 潜在省 ~26% 总读量）。
+            --   只在首次出现时打一条（`P.obeyond_logged`），不会刷屏。
+            and not line:match('^obs_beyond;')
+            -- ★★ 2026-10-10 多标记分流（用户要求）：**分配/让位证据行** ★★
+            --   `mark_alloc;entity=…;path=titan;state=yield;engine_target=…;my_mark=…;queue=…`
+            --   —— 判读"2 个标记 + 2 颗雷有没有各打一个"的唯一依据（每颗雷只打一条）。
+            and not line:match('^mark_alloc;')
+            -- ★★ 2026-10-10 第 1 步：**(c) 让位的候选取证**（纯诊断，零行为改动）★★
+            --   `mark_yield_candidate;entity=…;locked=…;locked_tier=…;new=…;new_tier=…;
+            --    dist=…;would_yield=…` —— 判读"新标记更高档单位时该不该转火"的数据来源。
+            and not line:match('^mark_yield_candidate;')
+            -- ★★ 2026-10-10 队列审计：**投掷那一刻的标记队列全貌** ★★
+            --   `mark_queue;entity=…;n=…;ids=…;resources=…;tiers=…;current=…;picked=…;
+            --    engine_sel=…` —— 判读「标的是泰坦却打了别的目标」的唯一依据。
+            and not line:match('^mark_queue;')
             and not line:match('^menu_probe;')
             and not line:match('^menu_tick_entered;')
             and not line:match('^menu_register_crash;')
@@ -736,11 +753,39 @@ local ok,why=pcall(function()
         int ReadProcessMemory(void *,const void *,void *,size_t,size_t *);
         int WriteProcessMemory(void *,void *,const void *,size_t,size_t *);]]
     local k=ffi.load('kernel32');local process=k.GetCurrentProcess()
+    -- ★★ 2026-10-10 性能：**在最底层 read 里计数**（审查项 #16）★★
+    --   为什么放这一层：`perf;` 原来只累计 `Layout.capture` 的读（`P.lreads`），
+    --   而 `Search.capture` / `TargetData` / 所有 `validate()` 复验读**都不计**
+    --   ⇒ 日志里的字节数**约为真实读量的一半**，任何优化都没法用它验收。
+    --   放这里的好处：**一处覆盖全部模块**（runtime / priority / observer / targetdata
+    --   / search / readiness 全都经过它），不必逐个模块加计数。
+    --   ⚠ 成本：每次读 2 次整数加法 —— 相对一次 ReadProcessMemory 可忽略。
+    --   ⚠ 计数器表**必须在 read 之前定义**（read 捕获它），并经
+    --     `Runtime.new{counters=rdcount}` 交给 runtime 打进 `perf;` 行。
+    local rdcount={calls=0,bytes=0,ch=nil,[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0,[8]=0,[9]=0,[10]=0}
     local function read(a,n)
         assert(type(a)=='number' and a>=65536 and a+n<2^47 and n>0 and n<=32768,'read bound')
         local b,count=ffi.new('uint8_t[?]',n),ffi.new('size_t[1]')
         assert(k.ReadProcessMemory(process,ffi.cast('const void *',a),b,n,count)~=0
             and tonumber(count[0])==n,'native memory unreadable')
+        rdcount.calls=rdcount.calls+1;rdcount.bytes=rdcount.bytes+n
+        -- ★★ 2026-10-10 性能诊断（审查项 #16 的第二半）：**按调用方分路计数** ★★
+        --   只有"总数"是没法验收单项优化的（实测 172 读/执行帧里观察者占 58%）。
+        --   通道由调用方在高层边界设置（runtime 里 7 处）：
+        --     1 = 观察者 Layout.capture   2 = Search.capture
+        --     3 = 安全区门（self()+队友坐标）  4 = scope.validate 复核
+        --     5 = readiness（jobs_ready 里的 Readiness.capture）
+        --     6 = ping.observe（structure_ping / ping 的 actor 扫描）
+        --     7 = priority:step（候选扫描 / 校验 / 原生查询）
+        --     8 = ping.observe 的 **actor 扫描段**（在 native_ping 内部细分）
+        --     9 = ping.observe 的 **ping 环扫描段**（每存活槽位一次 0x58 读）
+        --   `other = 总数 - (1..9)`。v0.1.12/13 实测：总 278.9 读/执行帧，
+        --   观察者 150.9（54%）、ping 74.3（27%）、其它 20.4、readiness 16、search 11.7。
+        --   ⚠ 通道必须**保存/恢复**：嵌套设置时置 nil 会抹掉外层通道
+        --     （v0.1.13 实测 `prio_reads` 恒为 0 就是这么来的）。
+        --   ⚠ 用**数字键**而不是字符串键：这是每次读都要走的一行，字符串哈希更贵。
+        local ch=rdcount.ch
+        if ch then rdcount[ch]=rdcount[ch]+1 end
         return ffi.string(b,n)
     end
     -- ★★ 受控写内存（2026-10-09，用户明确拍板"走写内存这条路"）★★
@@ -1022,8 +1067,24 @@ local ok,why=pcall(function()
     calls.remove=ffi.cast('void (*)(void *, uint32_t)',base+0xfdc310)
     calls.aim=ffi.cast('void *(*)(void *, void **, const void *)',base+0x4b0c40)
     host=Runtime.new({read=read,base=base,exe=exe,calls=calls,
+        -- ★ 2026-10-10：底层读计数器（见 read 上方的说明）⇒ `perf;` 行的 all_reads/all_bytes
+        counters=rdcount,
         -- ★ 受控写通道（2026-10-09）：只给 promote_state4 用。见 write() 的边界说明。
         write=write,
+        -- ★★ 2026-10-10：(c) 让位（新标记更高档单位时是否转火）的两块 env ★★
+        --   `mark_tier` —— 五档档位的**唯一实现**由 runtime 在启动时装填
+        --     （`experimental_runtime.lua` 里 `env.mark_tier=function(r)…`）。
+        --     这里**只声明字段**：env 字面量必须列出模块会读的每个 `env.X`
+        --     （有门 `env_fields_all_wired` 钉着，否则 helper 静默不触发）。
+        --     ⚠ **不要在这里写实现** —— 会变成第二份档位链（工程明令「一处实现」）。
+        --   `mark_yield_distance` —— (c) 的"还没飞太远"门槛（米）。第 1 步**只用来算
+        --     `would_yield` 供判读**，不执行转火。
+        mark_tier=nil,mark_yield_distance=30,
+        -- ★ 2026-10-10 用户要求「泰坦只该低于虫洞」：空白 ping（点目标）的档位。
+        --   默认 **1600** ⇒ 比"名册外的其它单位"(1500) 还低 ⇒ 只要有**任何活着的实体标记**
+        --   （虫洞 0 / 蟑龙 500 / 泰坦 1000 / 名册 1000+rank / 其它 1500）就压得住它。
+        --   ⚠ **引擎自己挑的**目标不在队列里 ⇒ 不受此影响（ping 仍然抢得赢它）。
+        point_mark_rank=1600,
         titan_profile=TitanProfile,weakpoint_profiles=WeakpointProfiles,
         -- ★ 泰坦变体（借用基线几何）。见 compat/titan_variants.lua 的证据注释。
         titan_variant_profiles=(TitanVariants and TitanVariants.profiles) or nil,

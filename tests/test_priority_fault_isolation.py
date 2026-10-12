@@ -4368,7 +4368,11 @@ def test_enemy_faction_gate(rt):
     #      faction 上方那段说明**注释里也写了这串字**（我自己写的）—— 用
     #      `index('if structure_ping then', 从 mark_friendly 起)` 会命中注释 ⇒ 假红。
     #      可靠锚点：先定位 `structure_ping:observe()`，再往**回**找最近的 if。
-    obs = run.index("structure_mark,structure_issue=structure_ping:observe()")
+    #      ⚠ 2026-10-10：锚点改成只取调用本身 —— 原来锚的是
+    #        `structure_mark,structure_issue=structure_ping:observe()`，而诊断版把它
+    #        改成多返回值（`local m6,i6,s6,a6=structure_ping:observe()`）⇒ 锚点失效。
+    #        改锚 `structure_ping:observe()`（唯一且不受赋值形式影响）。
+    obs = run.index("structure_ping:observe()")
     s = run.rindex("if structure_ping then", 0, obs)
     d = run.index("local function faction(id,res)")
     c = run.index("fv=faction(m.selection_id,vr)")
@@ -4562,15 +4566,261 @@ def test_safe_zone_redundancy():
           "★★ 判据必须是**最近的玩家**（自己 ∪ 队友），不是只比自己；"
           " `players=` 给出参与判定的玩家数（缺了就没法证伪「对队友不生效」）")
     check("safe_zone_players_cache_is_per_frame",
-          "if P.av.frame~=frame then" in run and "av={}," in run,
-          "★ avatars 列表**每帧只读一次**并缓存 —— gate 是逐颗雷逐帧调用的"
-          "（实机一局 1863 次 blast_hold），逐次读会把 layout_reads 打爆")
+          "if not P.av.frame or frame-P.av.frame>=P.av.ttl then" in run
+          and "av={ttl=3}," in run
+          and "';ttl='..tostring(P.av.ttl)" in run,
+          "★ avatars 列表**按 ttl 帧缓存**（2026-10-10 性能审查项 #3：原来每帧重扫 ⇒ "
+          "新建 TargetData ⇒ 实体缓存每帧失效 ⇒ 约 40~50 次读/帧 + ~50 张小表）。"
+          " ttl=3 的精度代价 ~0.35 m（玩家 ~7 m/s），而半径是 6~30 m 量级；"
+          " `ttl=` 打进日志让新鲜度可见。"
+          " ⚠ **绝不能退化成逐颗雷逐次读** —— 实机一局 1863 次 blast_hold，"
+          "逐次读会把 layout_reads 打爆")
+    # ★★★ 2026-10-10 性能审查（用户要求"按建议做"）—— 逐项加门防回退 ★★★
+    check("safe_self_probe_cached_per_frame",
+          "if P.self_frame~=frame then" in run
+          and "pcall(host.structure_ping.self,host.structure_ping)" in run
+          and "return host.structure_ping and host.structure_ping:self()" not in run,
+          "★★ 审查项 #1：`structure_ping:self()` 必须**按帧缓存**（原来每颗雷每帧一次"
+          "完整 actor 扫描：每 actor 2 次读 + entity 哈希探测 + Authority.inspect + "
+          "unit(pcall) + position，且每次新建 Data.new）。同帧内所有雷答案相同。"
+          " 顺带去掉闭包（`api:self()` 内部本来就 pcall）")
+    check("frame_invariant_slots_cached",
+          "if P.inv_frame~=frame then" in run
+          and "P.inv_root=pointer(base+0x346bf98)" in run
+          and "P.inv_mgr and Layout.pointer(read(P.inv_mgr+0x60,8),0) or nil" in run
+          and "local root,clock,manager=P.inv_root,P.inv_clock,P.inv_mgr" in run
+          and "local manager,records=P.inv_mgr,P.inv_recs" in run
+          and "if not (manager and records) then" in run
+          and "m.selection_id~=P.inv_invalid" in run,
+          "★★ 审查项 #2：帧内恒定的槽指针（root/clock/manager/records/invalid）"
+          "必须每帧只读一次 —— 原来 with_observation（每颗每帧）、scope.validate、"
+          "Search.capture、TargetData.new、到达段各读一遍（每颗每帧白读 5~10 次）。"
+          " ⚠ 两处必须保持 **nil 安全**：`P.inv_mgr` 可能为 nil（启动早期指针未初始化），"
+          "`P.inv_mgr+0x60` 会变成「算术 nil」这种**新的**失败模式 ⇒ "
+          "缓存处用 `and/or`、到达段保留就地读法作回退")
+    check("frame_invariant_cache_keeps_validate_guard",
+          "pointer(base+0x346bf98)==root and pointer(base+0x3326740)==manager" in run
+          and "pointer(base+0x3326348)==clock and read(clock+0x18,8)==time" in run,
+          "★★ 反过来也要钉住：`scope.validate()` 里那句**重读复核**（指针是否仍等于"
+          "观测时的值 + 时钟是否推进）**必须保留原样** —— 把帧内恒定值缓存起来之后，"
+          "很容易顺手把它改成 `P.inv_root==root`（恒真）⇒ 护栏被悄悄废掉。"
+          " 这是刻意的取舍：缓存只用在**取值**处，不用在**复核**处")
+    check("perf_reports_true_read_counts",
+          "';all_reads='..tostring(env.counters and (env.counters.calls-P.acalls) or -1)" in run
+          and "P.acalls,P.abytes=env.counters.calls,env.counters.bytes" in run
+          and "local rdcount={calls=0,bytes=0,ch=nil,[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0,[8]=0,[9]=0,[10]=0}" in e
+          and "rdcount.calls=rdcount.calls+1;rdcount.bytes=rdcount.bytes+n" in e
+          and "local ch=rdcount.ch" in e and "if ch then rdcount[ch]=rdcount[ch]+1 end" in e
+          and "counters=rdcount," in e,
+          "★★ 审查项 #16：**先修度量再优化** —— 原来的 `layout_reads/layout_bytes` 只累计 "
+          "`Layout.capture`，而 `Search.capture` / `TargetData` / 所有 `validate()` 复验读"
+          "**都不计**（且 layout_bytes 只算第一遍）⇒ 真实读量约为它的 2 倍，"
+          "任何优化都没法用它验收。现在在**最底层 read 包装**里计数（一处覆盖全部模块），"
+          "`perf;` 打**窗口增量** `all_reads/all_bytes`；读不到计数器时打 -1（不静默）")
+    check("perf_splits_reads_by_channel",
+          "';obs_reads='..tostring(env.counters and (env.counters[1]-P.cb[1]) or -1)" in run
+          and "';search_reads='" in run and "';safe_reads='" in run
+          and "';verify_reads='" in run and "';other_reads='" in run
+          and "';readiness_reads='" in run and "';ping_reads='" in run
+          and "';prio_reads='" in run
+          and "';ping_actor_reads='" in run and "';ping_ring_reads='" in run
+          and "';ping_slots='" in run and "';ping_actors='" in run
+          and "';guard_reread='" in run
+          and "cb={0,0,0,0,0,0,0,0,0,0}," in run
+          and "ping_slots=0,ping_actors=0," in run
+          and all(("if env.counters then env.counters.ch=%d end" % i) in run for i in range(1, 8))
+          # 通道 8/9/10 在模块内部（ping 的 actor/环段、Search 的 guard 复读）
+          and "if env.counters then env.counters.ch=8 end" in PING_SRC.read_text(encoding="utf-8")
+          and "if env.counters then env.counters.ch=9 end" in PING_SRC.read_text(encoding="utf-8")
+          and "if ctr10 then ctr10.ch=10 end" in (ROOT / "src/g60/native_search_context.lua").read_text(encoding="utf-8"),
+          "★★ 审查项 #16 第二半：**只报总数没法验收单项优化** —— 实测 532.8 读/执行帧（战斗）"
+          "里观察者占 236.8（44%）、Search 108.2（20%）、ping 81.3（15%）。"
+          " 现在按调用方分 10 路 + `other_reads`：1=观察者、2=Search.capture、3=安全区门、"
+          "4=scope.validate 复核、5=readiness、6=ping.observe、7=priority:step、"
+          "8=ping actor 段、9=ping 环段、10=**guard 复读**（安全纪律的开销，单独可见）。"
+          " ⚠ 通道用**数字键**（每次读都要走这一行，字符串哈希更贵）")
+    check("perf_channel_nesting_saves_and_restores",
+          "env.counters.ch=nil" not in run
+          and "local prev7=env.counters and env.counters.ch" in run
+          and "if env.counters then env.counters.ch=prev7 end" in run
+          and "local prevch=env.counters and env.counters.ch" in run
+          and "if env.counters then env.counters.ch=prevch end" in run
+          and "local prev9=env.counters and env.counters.ch"
+              in PING_SRC.read_text(encoding="utf-8")
+          and "if env.counters then env.counters.ch=prev9 end"
+              in PING_SRC.read_text(encoding="utf-8"),
+          "★★ 通道必须**保存/恢复**，绝不能置 nil —— 嵌套设置时置 nil 会抹掉外层通道："
+          " v0.1.13 实测 `prio_reads` 恒为 0（`priority:step` 内部调 `scope.validate`，"
+          "通道 4 读完置 nil ⇒ step 其余读全掉进 `other_reads`）。"
+          " 这条门同时禁止 `env.counters.ch=nil` 这种写法再出现")
+    check("observer_scan_narrowing_evidence",
+          "';obs_slots='..tostring(P.oslots)..';obs_active='..tostring(P.oactive)" in run
+          and "';obs_beyond='..tostring(P.obeyond)" in run
+          and "if observed.matches[i].index>=observed.active_prefix then" in run
+          and "P.obeyond_logged=true" in run
+          and "line:match('^obs_beyond;')" in e,
+          "★★ 收窄观察者扫描的**前置证据**：观察者对全部 `count` 个槽位逐个读 24 B identity"
+          "（实测 count≈49~56 ⇒ 约 50 读/执行帧 ≈ 总读量的 29%），而 `active` 只有 1~9。"
+          " ⇒ 先把\"非活跃槽里有没有 G-60\"测出来：窗口汇总 `obs_slots/obs_active/obs_beyond`，"
+          "首次出现另打一条 `obs_beyond;`（进白名单）。"
+          " **obs_beyond 一直是 0 才谈得上收窄** —— 否则会漏掉需要接管的雷")
     check("safe_zone_players_failure_is_visible",
           "safe_players;n=0;reason='..tostring(why)..';frame='..frame)" in run
           and "line:match('^safe_players;')" in e,
           "★★ 读不到 avatars 必须**可见**（退回只有自己是 fail-safe，"
           "但静默降级 = 诊断不存在，本项目已栽过多次）")
-    # ★★★ 通用门：任何 local 都不得在"声明之前 / 声明所在块之外"被使用 ★★★
+    # ★★★ 2026-10-10 多标记分流（用户要求：「多个标记敌人在场时如果有 2 颗 G60，
+    #   这 2 颗 G60 会向优先级最高的标记敌人飞去，容易造成伤害溢出」）★★★
+    check("titan_chain_reserves_target",
+          "reservations:claim(titan_owner,my_mark.identity)" in run
+          and "reservations:available(titan_owner,my_mark.identity) then" in run,
+          "★★ 根因修复：泰坦链原来**从不 claim**、也从不查 `available` ⇒ 预留系统对它"
+          "完全不起作用 ⇒ 两颗 G-60 各自独立接管同一个标记泰坦（伤害溢出的直接原因）。"
+          " ⚠ 必须先 `available` 再 `claim` —— `claim` 对「别人已占」是**断言失败**（会抛）")
+    check("titan_chain_yields_when_taken",
+          "local titan_yield=false" in run
+          and "titan_yield=my_mark.id~=m.selection_id" in run
+          and "and reservations:available(titan_owner,my_mark.identity)" in run
+          and "if titan_yield then" in run
+          and "elseif titan_selected or (old.titan and not selected) then" in run,
+          "★★ 让位条件：**我该打的标记不是引擎本帧给我选的那个** 且 **它还没被别人占**"
+          "（= 确实有备选可打）⇒ 本帧不进泰坦链，交给 priority 那条路把选择写到备选标记上"
+          "（下一帧引擎就会选中它 ⇒ 泰坦链自然转过去）")
+    check("mark_spread_picks_first_free",
+          # ⚠⚠ 2026-10-10 自我纠正：v0.1.16 第一版读的是 `mark.queue`，而
+          #   `mark_priority_enabled=false`（entry 默认）⇒ `ping` 为 nil ⇒ `mark` 恒为 nil
+          #   ⇒ 分流/让位/claim **全部空转**（实机铁证：`ping_queue;` 日志 0 条）。
+          #   ⇒ 队列来源必须是 `structure_mark or mark`。这条门现在**同时禁止**回退到只读 `mark`。
+          "local spread=structure_mark or mark" in run
+          and "local my_mark=spread" in run
+          and "if reservations and spread and spread.queue then" in run
+          and "if reservations:available(owner,spread.queue[i].identity) then" in run
+          and "my_mark=spread.queue[i];break" in run
+          and "local my_structure=structure_mark" in run
+          and "if my_mark and env.structure_profiles" in run
+          and "my_structure=my_mark" in run
+          and "local a,b=priority:step(scope,old.lock,my_mark,old.blocked,available,my_structure)" in run
+          and "and mark and mark.queue then" not in run,
+          "★★ 每颗雷选**第一个没被别人预留**的标记（队列已是档位顺序）。"
+          " ⚠ **队列来源必须是 `structure_mark or mark`**：`mark_priority_enabled=false` 时 "
+          "`mark` 恒为 nil（`ping_queue;` 日志 0 条就是铁证）⇒ 只读 `mark` 会静默空转。"
+          " ⚠ 而且**选目标只走 `structure_mark`（第 6 个参数）** —— `mark` 参数在 "
+          "`native_priority` 里只用于日志元数据（L928/932）⇒ 必须把挑中的标记也传进 "
+          "`my_structure`，否则分流对结构/泰坦不生效")
+    check("mark_spread_allows_sharing_when_all_taken",
+          "local my_mark=spread" in run
+          and "return" not in run.split("local my_mark=spread")[1].split("local good,result,reason")[0],
+          "★★ 用户拍板：**全都被占了（例如场上只有 1 个标记）⇒ 允许共享** —— "
+          "挑不到空闲标记时**不得**拒绝接管（`my_mark` 保持档位最高者，不 return/不报错），"
+          "否则会变成「一颗都不打」")
+    check("mark_alloc_is_logged_and_whitelisted",
+          "env.emit('mark_alloc;entity='" in run
+          and "line:match('^mark_alloc;')" in e
+          and "P.yield_logged~=m.id" in run,
+          "★★ 分配/让位必须有**取证行**：`mark_alloc;entity=…;path=titan;state=yield;"
+          "engine_target=…;my_mark=…;queue=…` —— 判读「2 个标记 + 2 颗雷有没有各打一个」"
+          "的唯一依据（每颗雷只打一条，`yield_logged` 去重）")
+    # ★★★ 2026-10-10 第 1 步：(c) 让位的**候选取证**（纯诊断，零行为改动）★★★
+    _pri = (ROOT / "src/g60/native_priority.lua").read_text(encoding="utf-8")
+    check("mark_tier_single_implementation",
+          "env.mark_tier=function(r)" in run
+          and "return env.mark_tier(mark.resource)" in run
+          and "return 1000+spec.rank" not in _pri,
+          "★★ 五档档位必须**只有一份实现**（`env.mark_tier`，runtime 里）—— `structure_ping` "
+          "的队内次序与 `native_priority` 的让位判据都复用它。`native_priority` 里**不得**"
+          "出现第二份档位链（工程明令「一处实现」；`enemy_faction` 同款纪律）")
+    check("mark_tier_is_env_field_not_local",
+          "env.mark_tier=function(r)" in run
+          and "local function mark_tier" not in run,
+          "★★ 档位函数必须是 **env 的字段**而不是 runtime 的 local —— tick 的 `xpcall` "
+          "正好 60 upvalue，多一个被它捕获的 local 就会让整份 chunk 编译失败（实机事故）")
+    #   ⚠ 判据只看**代码**：注释里会出现 `yielded_unit`/`chosen`（"不设它们"那句），
+    #     不去注释就会假红（本项目已有多次这种教训）。
+    _blk = "\n".join(l.split("--")[0] for l in
+                     _pri.split("第 1 步：**只测量不动作**")[1].split("break")[0].split("\n"))
+    check("yield_candidate_is_read_only",
+          "yield_candidate={id=previous.id,locked_tier=mine" in _blk
+          and "yielded_unit" not in _blk and "chosen" not in _blk,
+          "★★ 第 1 步必须**只测量不动作**：候选块里**不得**出现 `yielded_unit=` 或 `chosen=`"
+          "（设了就等于真的让位了）。判错会让在飞的雷中途放弃目标白飞一趟 —— "
+          "工程里记录过 `{kind='keep',released=true}` 逐帧抖动那个事故")
+    check("yield_candidate_dedup_and_distance_once",
+          "M.yield_candidate_reported={}" in _pri
+          and "if not M.yield_candidate_reported[ck] then" in _pri
+          and "M.yield_candidate_reported[ck]=true" in _pri
+          and "local okp,dist=pcall(function()" in _pri,
+          "★★ 距离（「还没飞太远」的门槛要用它）只在该 (雷, 新标记) 组合**首次**出现时读一次"
+          "（`d.position` ≈ 6 次读）—— 不去重就会逐帧读，把一个纯诊断变成新的开销源")
+    check("yield_candidate_logged_and_whitelisted",
+          "env.emit('mark_yield_candidate;entity='" in run
+          and "line:match('^mark_yield_candidate;')" in e
+          and "yc.dist>(env.mark_yield_distance or 30)" in run
+          and "mark_yield_candidate=yield_candidate" in _pri
+          and "mark_yield_candidate=yield_candidate} end" in _pri,
+          "★★ 候选取证必须有日志 + 进白名单，且**同时挂在 `lock` 与 `keep` 两种结果上**"
+          "（只挂 lock 的话，`chosen` 为空那一路会把证据丢掉）。"
+          " `would_yield` 用提议门槛（`env.mark_yield_distance`，默认 30 m）**只作判读**")
+    check("engine_explode_audit_fields",
+          "';intended='..tostring(intended or '-')" in run
+          and "';engine_sel='..tostring(m.selection_id or '-')" in run
+          and "';stage='..tostring(stage or '-')" in run
+          and "';guided='..tostring((t and (t.lock or t.titan or t.point))" in run
+          and "';mark='..tostring(structure_mark and structure_mark.id or '-')" in run
+          and "local oka,audit=pcall(function()" in run
+          and "tostring(oka and audit or (';audit=ERR:'" in run,
+          "★★ 用户报「标记泰坦后手雷飞向附近的敌人引爆」的**审计字段**：`intended`（我们锁的）"
+          "/ `engine_sel`（引擎选的）/ `stage` / `guided`（那帧在不在引导）/ `mark` —— "
+          "一次分清「引擎引信在旁侧提前炸」/「引擎改选旁侧敌人」/「接管断档」三种可能。"
+          " ⚠ 必须**独立 pcall**：审计引用了不可见名字时只丢审计字段，不能把已有 dist/own 一起丢掉"
+          "（本文件已记录过 `scope`/`old` 在该作用域不可见导致实机崩溃的事故）")
+    check("mark_queue_audit_logged",
+          "env.emit('mark_queue;entity='" in run
+          and "';tiers='..table.concat(tiers,',')" in run
+          and "';picked='..tostring(my_mark and my_mark.id or '-')" in run
+          and "';engine_sel='..tostring(m.selection_id or '-')" in run
+          and "if P.mq_logged[m.id]~=sig then" in run
+          and "mq_logged={}," in run
+          and "env.mark_tier(q.resource)" in run
+          and "line:match('^mark_queue;')" in e,
+          "★★ 用户报「标的是泰坦却打了别的目标」⇒ 必须能一眼看清**投掷那一刻的队列**："
+          " `n/ids/resources/tiers/current/picked/engine_sel`。`tiers` 用 `env.mark_tier`"
+          "（唯一实现）⇒ 与选择逻辑同一把尺子。⚠ 按 (手雷, 队列签名) 去重，避免逐帧刷屏")
+    check("locked_mark_intent_survives_expiry",
+          "if P.locked_ids[mark.id] then return true end" in run
+          and "locked_ids={}," in run
+          and "P.locked_ids[tid]=frame" in run
+          and "if v<frame-6 then P.locked_ids[k]=nil end" in run
+          and run.index("P.locked_ids[tid]=frame")
+              < run.index("local m6,i6,s6,a6=structure_ping:observe()"),
+          "★★ 用户报「标记泰坦后手雷飞向附近的敌人引爆」的**根因修复**：v0.1.20 日志里两条"
+          "失败样本的共同特征是 **`mark=-`**（标记已离开 UI 的 8 秒窗口）⇒ `remembered_intent`"
+          "把标记从队列丢掉 ⇒ **没有任何路径再每帧重申目标**（泰坦链写的是绕行点，不是选择）"
+          "⇒ 引擎中途改选旁侧敌人（`intended=1187;engine_sel=1051;stage=around;mark=-`）。"
+          " 现在「**已在飞的锁 = 玩家意图**」：只要还有在飞的 G-60 锁着该目标，标记就不算过期。"
+          " ⚠ 刷新必须在 `observe()` **之前**（`remembered_intent` 在它内部被调）；"
+          " ⚠ 用帧号 TTL（6 帧）⇒ 防实体 id 复用与表增长；"
+          " ⚠ 只延长**已被锁**的标记 ⇒ 不影响「取消标记后不再用」的既有语义")
+    check("point_yields_to_live_entity_marks",
+          "local point_rank=env.point_mark_rank or 1600" in run
+          and "if q.current==true and env.mark_tier(q.resource)<point_rank then" in run
+          and "and not better_live_mark" in run
+          and "and not mark_is_this_unit" in run
+          and "and not (old and old.titan)" in run
+          and "point_mark_rank=1600," in e,
+          "★★ 用户报「标记的泰坦优先级比空 ping 低，泰坦只该低于虫洞」：原判据只排除"
+          "「引擎选中的正好是**队列首**那个标记」⇒ ①队列首不是它 ②引擎还没选它"
+          "（`m.selection_id`=0）这两种情况下**玩家点名的泰坦会输给空白 ping**。"
+          " 改成按档位比较（空白 ping = `env.point_mark_rank`，默认 1600 ⇒ 连名册外的"
+          "「其它单位」(1500) 也压得住它）。⚠ 必须**保留** 2026-10-10 的原意："
+          "**引擎自己挑的**泰坦（不在队列里）依旧让位给 ping —— 那是两件事，不能混。"
+          " ⚠ 档位一律走 `env.mark_tier`（唯一实现），不得在此另写一份")
+    check("mark_tier_order_unchanged",
+          "if env.structure_profiles and env.structure_profiles[r]~=nil then return 0 end" in run
+          and "return 500" in run and "if env.titan_profile and env.titan_profile.resource==r then return 1000 end" in run
+          and "if spec and spec.rank then return 1000+spec.rank end" in run
+          and "return 1500" in run,
+          "★★ 分流**不得**改动你之前拍板的五档次序（虫洞 0 / 蟑龙 500 / 泰坦 1000 / "
+          "名册 1000+rank / 其它 1500）—— 本次只动「同档内选谁」，档间一律不动")
     #   同一类坑咬了两次（faction 崩溃 / pointer 让队友安全区静默失效）⇒
     #   这次做成**通用检查**，而不是再写一条针对性的门。
     import subprocess as _sp

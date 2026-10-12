@@ -183,11 +183,20 @@ function M.capture(reader,base,observed,engine,options)
     local speed_mirror_bytes=read(speed_mirror_address,4)
     local ownership=Authority.inspect(engine,u32(identity,16))
     -- Recheck without spinning. This detects changes, not concurrent reader/writer safety.
+    -- ★★ 2026-10-10 诊断（通道 10）：**guard 复读**单独计量 ★★
+    --   这段把本次 capture 的**每一次读**原样重读一遍（安全纪律：证明同帧内引擎
+    --   没有改写这块内存）⇒ 实测约占 `search_reads` 的一半（战斗帧约占总读量 10%）。
+    --   本模块拿不到 env ⇒ `options.counters` 由 runtime 经 opts 传进来。
+    --   ⚠ 保存/恢复（不能置 nil）：外层可能正在计通道 2。
+    local ctr10=options and options.counters
+    local prev10=ctr10 and ctr10.ch
+    if ctr10 then ctr10.ch=10 end
     for _,g in ipairs(guards) do
         total=total+g[2];calls=calls+1
         assert(total<=65536 and calls<=2048,'search context budget')
         assert(reader(g[1],g[2])==g[3],'search context changed')
     end
+    if ctr10 then ctr10.ch=prev10 end
     return {entity_address=entity,state_address=record_address+8,id=id,
         identity_bytes=identity,record_bytes=record,
         selection=M.selection(record,invalid),flight_start=start,time_hex=now,pending_event_observation=pending,
