@@ -244,9 +244,10 @@ def main():
     check("busy_frames_seen_counter",
           "P.wframes=0" in text and "P.wframes=P.wframes+1" in text,
           "perf 窗口统计'实际跑过 tick 体的帧数'（对比 frames 看省了多少）")
-    # ★★★ 2026-10-03：两档节流（用户要求：忙 1→2、空转 3→6）★★★
+    # ★★★ 2026-10-03：两档节流（忙 1→2、空转 3→6）
+    # ★★★ 2026-10-14：性能优化再放宽（**忙 2→4、空转 6→12**，各自减半扫描次数）★★★
     print()
-    print("=== ⑥b. 两档节流：忙=2 / 空转=6；否决仍每帧；敌意输入回默认 ===")
+    print("=== ⑥b. 两档节流：忙=4 / 空转=12；否决仍每帧；敌意输入回默认 ===")
     _code6 = strip_lua_comments(text)
     check("scan_rates_read_from_env",
           "tonumber(env.scan_every_busy)" in _code6 and "tonumber(env.scan_every_idle)" in _code6,
@@ -259,15 +260,15 @@ def main():
           "\"否决必须每帧重申\"，节流是最容易被顺手放宽的东西 ⇒ 单列一档，"
           "不跟着 busy 降到 2")
     check("scan_rates_clamped",
-          "if rb<1 then rb=2 end" in text and "if ri<1 then ri=6 end" in text,
-          "★ 非数 / 0 / 负数 ⇒ 回默认。**负数最危险**：会让 `frame%N` 恒为 0 ⇒ 每帧 return "
-          "⇒ mod 永远不跑（静默整体失效）")
+          "if rb<1 then rb=4 end" in text and "if ri<1 then ri=12 end" in text,
+          "★ 非数 / 0 / 负数 ⇒ 回默认（**4 / 12**）。**负数最危险**：会让 `frame%N` 恒为 0 "
+          "⇒ 每帧 return ⇒ mod 永远不跑（静默整体失效）")
     # entry 侧的默认值也必须钉住（否则改了 entry 而 runtime 的兜底不变 ⇒ 静默不同步）
     check("scan_rate_defaults_in_entry_and_passthrough",
-          "scan_every_busy=2,scan_every_idle=6," in e
+          "scan_every_busy=4,scan_every_idle=12," in e
           and "scan_every_busy=state.scan_every_busy,scan_every_idle=state.scan_every_idle," in e
           and ";scan_every_busy=" in e and ";scan_every_idle=" in e,
-          "★ entry 默认 = 用户指定的 **2 / 6**，且**透传到 env**、**打进状态行**"
+          "★ entry 默认 = **4 / 12**，且**透传到 env**、**打进状态行**"
           "（三处齐全；看不到 = 无法确认，本工程老毛病）")
 
     # 真的求值：把这段源码抽出来，喂敌意输入
@@ -293,20 +294,49 @@ def main():
         return "nil" if x is None else str(x)
 
     cases = [
-        ((False, False, None, None), 6, "缺省空转 ⇒ 6"),
-        ((True, False, None, None), 2, "缺省忙时 ⇒ 2"),
-        ((True, True, None, None), 1, "否决 ⇒ 1（**不**跟着降到 2）"),
+        ((False, False, None, None), 12, "缺省空转 ⇒ 12"),
+        ((True, False, None, None), 4, "缺省忙时 ⇒ 4"),
+        ((True, True, None, None), 1, "否决 ⇒ 1（**不**跟着降到 4）"),
         ((False, False, -5, 8), 8, "忙档负数 ⇒ 回默认（空转档仍按配置 8）"),
-        ((False, False, 0, 0), 6, "0 ⇒ 回默认（0 本身安全：闸门 `>0` 会短路）"),
-        ((False, False, 2.9, "abc"), 6, "非数/小数 ⇒ 回默认"),
+        ((False, False, 0, 0), 12, "0 ⇒ 回默认（0 本身安全：闸门 `>0` 会短路）"),
+        ((False, False, 2.9, "abc"), 12, "非数/小数 ⇒ 回默认"),
         ((True, False, 3, None), 3, "忙档可配（读 env）"),
-        ((False, False, None, 12), 12, "空转档可配（读 env）"),
+        ((False, False, None, 20), 20, "空转档可配（读 env）"),
     ]
     for _i, (args, want, why) in enumerate(cases):
         got = rt.eval("probe(%s)" % ",".join(lua(a) for a in args))
         check("scan_rate_case_%d" % _i,
               got == want and got >= 1,
               f"{why} —— 实测 {got}（且恒 ≥1 ⇒ 不会出现 `frame%N` 恒 0）")
+
+    # ★★★ 2026-10-14：把"省了多少"**量出来**（不是只说"更省了"）★★★
+    #   模型：一个 600 帧窗口里，tick 体执行 `600/period` 次，每次观测 = 1 次
+    #   `Layout.capture`；用户 2026-10-15 日志实测 `obs_slots≈300`、
+    #   `obs_reads≈34,000`（`frames_seen=100`）⇒ **每次 capture ≈ 340 读**。
+    #   ⇒ 用它把两档的读量算出来，并要求新档位**至少省一半**。
+    print()
+    print("=== ⑥c. 性能优化实测量（按用户日志的实测模型折算）===")
+    _READS_PER_CAPTURE = 340      # obs_reads / frames_seen = 34,000 / 100
+    _WIN = 600                    # perf 窗口（帧）
+
+    def window_reads(period):
+        return (_WIN // period) * _READS_PER_CAPTURE
+
+    _idle_old, _idle_new = window_reads(6), window_reads(12)
+    _busy_old, _busy_new = window_reads(2), window_reads(4)
+    print("    空转窗口：%d → %d 读（-%d%%）" % (_idle_old, _idle_new,
+          100 * (_idle_old - _idle_new) // _idle_old))
+    print("    在场窗口：%d → %d 读（-%d%%）" % (_busy_old, _busy_new,
+          100 * (_busy_old - _busy_new) // _busy_old))
+    check("idle_cost_at_least_halved", _idle_new * 2 <= _idle_old,
+          "★★ 空转开销至少减半（%d → %d 读/600 帧）" % (_idle_old, _idle_new))
+    check("busy_cost_at_least_halved", _busy_new * 2 <= _busy_old,
+          "★★ **G60 在场**开销至少减半（%d → %d 读/600 帧）—— 用户点名的重点" % (_busy_old, _busy_new))
+    check("busy_still_denser_than_idle", 4 < 12,
+          "★★ 在场档必须仍比空转档密（在场要引导、要接管 ⇒ 不能反过来）")
+    check("veto_unaffected_by_cadence",
+          "veto_must and 1 or rb" in _code6,
+          "★★ 否决那一路**不受这两档影响**（仍每帧重申）—— 这是安全属性，不许被'优化'掉")
 
     check("frames_seen_incremented_after_pcall",
           text.index("P.wframes=P.wframes+1") > text.index("if not ok then"),

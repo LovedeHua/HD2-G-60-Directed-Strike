@@ -92,31 +92,88 @@ local excluded = {
     ['74e2285c01da4f71'] = true,   -- ★ 光能族增援飞船 illuminate_dropship / 增援穿梭舰（实机日志证据）
 }
 function M.excluded(resource) return excluded[resource] == true end
--- ★★★ 2026-10-01（用户要求）：同一张表的**反方向**用途 ★★★
+-- ★★★ 2026-10-14（用户要求）：**拆表** —— `marked_allowed` 不再与 `excluded` 共用同一集合 ★★★
 --
---   `M.excluded(r)`       = 引擎**自己选中** r 时要清掉（不让 G-60 去追载具）
---   `M.marked_allowed(r)` = 玩家**点名标记** r 时反而要接管（绕过引擎索敌的否决）
+--   用户的远距离追踪要求：「只增加虫洞、构筑、巨型构筑、尖啸巢、孢子喷涌虫、
+--     落地穿梭舰这几个，其他的就不弄远距离追踪了」。
 --
---   为什么是"两个函数共用一张表"，而不是"取反"或"两张表"：
---     · 方向相反，函数名必须自解释 —— 读代码的人不能只看表名去猜方向
---       （本仓库因为"同一判据两处副本"出过事故，所以**共用同一个集合**，
---        将来若真的要解耦，再拆成两张表 + 各配断言）。
---     · 两张内容相同的表必然漂移。
+--   ⚠⚠ 为什么**必须拆**（这是一个**静默回归**的根因，2026-10-10 引入、主支 2026-10-13 才发现）：
+--     共用一张表 ⇒ "引擎自选要清掉" 与 "玩家点名要放行" **只能同真同假**，
+--     于是**无法表达**"别清它、但玩家点名要接管"这一类目标。
+--     实机后果（主支查出来的思路，本工程同理）：
+--       · 飞船 / 构筑者 / 塔类都**不在** `enemy_faction` 里
+--         ⇒ 走 priority 的**通用路**时被 `NOT_ENEMY_RESOURCE` 拒
+--       · 它们又没进那张表 ⇒ `marked_allowed` 也是 false ⇒ **永远拿不到 `old.lock`**
+--       · 而没有锁就没有航路 ⇒ "远距离追踪"根本无从谈起。
+--     ⚠ 本工程此前**没有** `marked_allowed` 这个独立表（`M.marked_allowed` 直接
+--       转发 `excluded`）⇒ 那 6 类里凡是不在 `structure_profiles` 的都不可能被接管。
 --
---   为什么"引擎要排除的"正好就是"玩家点名要放的"：
---     这两项都是**载具**（机器人运输船 / 光能族增援飞船）。
---     引擎索敌（game.dll+0x8858a0）不把载具当合法锁定目标 ⇒ 返回 false ⇒
---       · 引擎"误选"它们时我们要清（排除表）；
---       · 玩家点名它们时，priority 的通用复核（原本拿同一个 target_valid 当
---         硬门槛）会**误杀**，标记了也不飞过去炸。
---     ⇒ 本函数就是给"玩家点名"这条例外开的门。
+--   ★ 那 6 类**已经**在 `structure_profiles` 里（走白名单分支，**绕过**敌阵营门槛）
+--     ⇒ 严格来说它们不依赖本表。保留这几条的理由：
+--     `marked_allowed` 还参与 priority 的**通用复核**（`generic_validate`）——
+--     若某类目标因某种原因落到通用路（例如结构表被菜单关掉、或用户点名了一个
+--     未被结构表识别的变体），这张表就是它唯一的放行口。
+--     与 `structure_profiles` **同源**地放行，失败方向安全（放行的都是用户明确
+--     要求追踪的目标，不存在"误炸友方"的风险 —— 友方资源一个都不在表里）。
 --
---   ⚠ **只对玩家标记路径生效**：
---       · structure_ping 的认领判定（runtime 的 generic_claimed）
---       · priority 的通用复核（native_priority 的 generic_validate）
---     **不**参与 selection_veto / take_gate / 兜底 veto 的"引擎自选 ⇒ 清掉"判据
---     —— 那三处继续只看 `M.excluded`，行为完全不变。
-function M.marked_allowed(resource) return excluded[resource] == true end
+--   ⚠ 语义边界（**必须分清**，否则会误炸）：
+--     · `excluded(r)`       = 引擎**自己选中** r 时要清掉（**不改动**：仍只有那两项）
+--     · `marked_allowed(r)` = 玩家**点名标记** r 时反而要接管
+--   **不**参与 selection_veto / take_gate / 兜底 veto 的"引擎自选 ⇒ 清掉"判据
+--   —— 那三处继续只看 `M.excluded`，行为**完全不变**。
+--
+--   ⚠ **绝不得加入**：鹈鹕 MK2（玩家自己的撤离机）或任何友方资产。
+--     测试 `marked_allowed_excludes_friendly_assets` 与
+--     `veto_list_excludes_friendly_pelican` 钉着这一点。
+local marked_allowed = {
+    -- 原有的两项（与 excluded 内容相同）—— 保持原行为不变
+    ['db90077e76faa025'] = true,   -- 机器人运输船 cyborg_dropship
+    ['74e2285c01da4f71'] = true,   -- 光能族增援飞船 illuminate_dropship
+    -- ★ 2026-10-14 用户点名的 6 类（与 `compat/structure_profiles.lua` **同源**）
+    --   ⚠ 营地穿梭舰**只进本表、不进 `excluded`**：用户 2026-10-01 明确
+    --     "玩家会主动标记去炸的目标，不能过滤"。拆表之后这才表达得出来。
+    -- ★ 2026-10-14：**落地的机器人运输舰**（与结构表**同源**放行）。
+    --   实机证据：标记它时通用路报 `NOT_ENEMY_RESOURCE`（它不是 AiEnemy）
+    --   ⇒ 结构表分支绕过那道门槛；本表是它落到通用路时的**唯一**放行口。
+    --   ⚠ 与 `excluded` 里那两项**无关**：那是「引擎自选要清掉」（飞行运输船
+    --     `db90077e76faa025`），而这是玩家点名的**落地**目标（另一个资源）。
+    ['d84ffc32a6e640a8'] = true,   -- 落地的机器人运输舰 cyborg_landed_dropship
+    ['b3c9cdb79dc17937'] = true,   -- 营地穿梭舰 Warp Ship Landed
+    ['2ad2e055dad21f6e'] = true,   -- 入侵穿梭舰 Warp Ship Invasion
+    -- 构筑者 5 个变体
+    ['5158e582fbeb26bd'] = true,   -- cyborg_spawner_factory_conscript_airborne
+    ['22cc0ed4ceb9cb68'] = true,   -- ..._assault
+    ['f0b98fb953b13960'] = true,   -- ..._base
+    ['4fb8eb356ac8553e'] = true,   -- ..._standard
+    ['a1a7b76b29088843'] = true,   -- ..._phalanx
+    ['4232ee48e2cfd24e'] = true,   -- 巨型构筑者 cyborg_colony_spawner_base
+    -- 尖啸巢 / 孢子喷涌虫（塔类，走 structure_profiles 的 structure_tower 分支）
+    ['095686275a113614'] = true,   -- 尖啸者巢 Shrieker Nest
+    ['aa28caf964d05500'] = true,   -- 孢子喷涌虫 Spore Spewer
+    ['e02e6bd34b606a85'] = true,   -- 孢子喷涌虫（大型）Spore Spewer Large
+    -- 虫洞（用户点名的 6 类之一）。
+    --   ⚠ 虫洞本来就走 `structure_profiles` 白名单分支、**不需要**这条 ——
+    --     加它只为"名单与用户点名的 6 类一一对应"（否则看这张表的人会以为
+    --     少了虫洞）。这里**只列基线首条**（其余 15 条是同一模型的摆放变体，
+    --     逐条抄进来只是噪音；判据仍是 `structure_profiles` 那张权威表）。
+    ['8901f188db366b4b'] = true,   -- 虫洞 bug hole（基线）
+    -- ★★★ 2026-10-14（用户最终方案「标记的泰坦走虫洞那条远距离追踪路」）★★★
+    --   为什么需要这两条：`marked_allowed` 决定"玩家点名标记它时 priority 要不要接管"，
+    --   而泰坦链的触发条件是**引擎自己的选中**。泰坦若拿不到 `old.lock`，
+    --   我们就没有任何路径把它驱动到泰坦附近 ⇒ 手雷跟着引擎的选中（最近的敌人）。
+    --   ⇒ 让泰坦**走与虫洞同一套**（priority 锁 + `max_takeover_distance` 滑块）。
+    --   ⚠ 与 v0.2.29/v0.2.31 拆掉的**是同一件事** —— 但那时缺了"到 10 m 放手"：
+    --     接管到底 = 在泰坦链前面插第二个驱动者 ⇒ 爆点坏。
+    --     现在 `titan_approach` 会在 `titan_approach_dist`（默认 10 m）**放开接管**
+    --     ⇒ 链仍是**最后的唯一引导者**（实机已验证：`titan_started=1`
+    --     + `titan_blast belly_dz=-2.62`）。
+    --   ⚠ 只列**基线 + 幽暗变体**两条：蟑龙（960b48a421a3faaa）走它自己的
+    --     认领路（weakpoint profile，`kind="thorax"`），不在用户点名的范围里，
+    --     加进来会改变蟑龙的行为 —— **不擅自扩张**。
+    ['9e2e17f2ccccafdd'] = true,   -- 吐酸泰坦 cha_strider
+    ['ef04cb84d097a497'] = true,   -- 幽暗变体 cha_strider_gloom（孢子泰坦）
+}
+function M.marked_allowed(resource) return marked_allowed[resource] == true end
 -- 只读：把排除表如实列出来（**排序后**，保证启动日志稳定可比）。
 --   存在的意义：启动日志的 `enemy_veto_resources=` 必须由这里生成，
 --   而不是在 entry 里再抄一份哈希 —— 2026-09-29 就是因为日志里硬编码了

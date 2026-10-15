@@ -59,6 +59,24 @@ local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets
     --     "竖直爆点"几何下才有意义（现在爆点由 `Adaptive` 决定）。
     adaptive_approach=true,blast_regions=true,
     mark_priority_enabled=false,exclusive_targets=true,marked_structures=true,
+    -- ★★★ 2026-10-14（用户要求）：**手雷分配机制**（移自主支 g60-bughole-lock）★★★
+    --   用户原话：「按照主支增加分配机制：单个标记可自定义分配手雷数量，多个标记单位
+    --   也可以自定义分配手雷数量，标记按照时间顺序分配手雷」。
+    --   · `max_grenades_per_target`       = **场上只有 1 个标记**时，该目标最多几颗雷
+    --   · `multi_mark_grenades_per_target` = **2 个及以上标记**时，每个目标最多几颗雷
+    --   ⚠ 默认 **1 / 1** = 逐字节维持既有行为（升级不改变手感）。
+    --     想"多颗雷一起追同一个标记"就把对应那项调大（菜单里有滑块 1~4）。
+    --   ⚠ `exclusive_targets`（上面那个）是**两回事**：它是"要不要预约"
+    --     （false = 完全不预约、不限颗数）；这两项是"预约几个名额"。
+    --   ⚠ 代码里夹取到 ≥1（0/负数会让"可预约"恒假 ⇒ 谁都锁不上）。
+    max_grenades_per_target=1,
+    multi_mark_grenades_per_target=1,
+    -- ★ 缺席宽限：一颗雷在一次完整观测里"没看到"**不足以**判定它已离场
+    --   （状态切换 3→4 / 观测窗口边界 / 刚生成都可能短暂缺席）。
+    --   ⚠ 立刻回收 ⇒ 名额被释放 ⇒ 另一颗雷看到"空闲"就挑了**同一个**标记
+    --     （主支实机：标 2 个构筑、扔 2 颗，只有 1 颗飞）。
+    --   默认 30 次完整观测（≈0.5 秒）；真离场的照样会被回收（连续缺席累计到 grace）。
+    allocation_missing_grace=30,
     -- ★ 吐酸泰坦接管开关（2026-09-29）
     --   本 mod 接管的���标只有两类：玩家标记的虫洞 + 吐酸泰坦。其余全部交还引擎原生
     --   （small_filter 空表 / weakpoint_profiles 空表 / designed_targets_only=false）。
@@ -132,6 +150,58 @@ local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets
     --   content/env_cyborg/gameplay/colony_cyborg_spawner/cyborg_colony_spawner_base）。
     --   设为 false ⇒ 退回旧行为（引擎 aim）。
     blast_sites_enabled=true,
+    -- ★★★ 2026-10-14（用户最终方案）：**接近标记的泰坦，到距离后放手** ★★★
+    --   用户方案原话：「让标记的泰坦走虫洞那条远距离追踪路，手雷进入泰坦约 10 m
+    --   时放开接管，由引擎自身索敌触发泰坦链」。
+    --   三个必需件（缺一不可）：
+    --     ① 泰坦回 `small_filter.marked_allowed` + `native_priority` 不再静默跳过它
+    --        ⇒ 它像虫洞一样被 priority 锁上并被驱动（否则手雷跟着引擎的选中 = 最近的敌人）；
+    --     ② 到距离**必须放手** —— 这是 A/C/D 路一直缺的一环（它们接管到底、
+    --        从不放手，等于在泰坦链前面插了第二个驱动者 ⇒ 爆点坏）；
+    --     ③ 放手不能只清一次 `old.lock` —— priority 每帧重建它（实机 31~83 次
+    --        `priority_locked`），而链的门 `marked_lock_held` 会因此永远挡住泰坦链
+    --        ⇒ 必须让"已放手的那颗雷"不再算持有标记锁（`env.titan_approach_released`）。
+    --   ⚠ 与 v0.2.29/v0.2.31 拆掉的**是同一件事**，区别只有第②环。
+    --   ⚠ 保留一个**状态级**开关（不进菜单 = 一键回退的另一条路），默认开。
+    titan_approach_enabled=true,
+    --   放手距离（米）。与菜单滑块范围 3~60 **对齐**（否则"界面够得着却被夹掉"）。
+    --   默认 10：太远 ⇒ 引擎可能仍选更近的敌人；太近 ⇒ 引擎引信可能抢先。
+    titan_approach_dist=10,
+    -- ★★★ 2026-10-14（用户要求）：**远距离追踪**的接管距离上限 ★★★
+    --   用户原话：「增加主支的远距离追踪功能，不过只增加虫洞、构筑、巨型构筑、
+    --     尖啸巢、孢子喷涌虫、落地穿梭舰这几个，其他的就不弄远距离追踪了」。
+    --   经确认：**这一项只对点名的 6 类生效**；其他标记目标仍固定 200 m。
+    --
+    --   ★ 判据来源 = `structure_profiles` 表**本身**（"能拿到结构锁的目标"）：
+    --     那 6 类全部登记在表里，而"其他的"（普通标记敌人等）不在表里
+    --     ⇒ 用表当名单，**不抄哈希**（"同一个判断不许出现两处"是本工程的硬纪律）。
+    --   ⚠ 原实现是 `40000`（200 m 的平方）**硬编码在 4 处**，其中
+    --     `native_ping.lua` 那处在"标记观察谓词"里 —— 超距的标记**进不了队列**。
+    --     主支 v0.1.35 漏改它 ⇒ 用户报「有一些构筑标记后 G60 不会去追踪」。
+    --     现在四处统一走 `target_policy.max_distance2`（**唯一实现**）。
+    --   ⚠ 夹取 50~1000 m。要"更远地追结构标记"就调大。
+    --   ★★ 2026-10-14 用户定值（推翻了本项初版的 200）★★
+    --     · 结构表里的目标（虫洞 / 构筑 / 巨型构筑 / 尖啸巢 / 孢子喷涌虫 /
+    --       落地穿梭舰 / 广播台屏幕）→ **250 m**（= 本项默认值，可调）
+    --     · 非结构目标 → 100 m（写死在 `target_policy`，**不跟本项走**）
+    --   ⚠⚠ **本项只管结构目标**（用户 2026-10-14 实机修正的说明）：
+    --     泰坦 / 蟑龙 / 泰坦变体**不由本项控制** —— 它们走各自专门的链路
+    --     （泰坦靠**引擎选中**触发 `titan_selected`，再由泰坦链引导；见
+    --      `experimental_runtime.lua` 的 `selected`/`titan_selected`）。
+    --     标记门那个 100 m 只是"玩家标记进不进队列"，**不是**泰坦的行为边界。
+    --     ⇒ 说明里不再把泰坦列进"其他敌人 100 m"，那会说出一个不成立的规则。
+    max_takeover_distance=250,
+    -- ★★★ 2026-10-14（第二轮，用户要求）：**非结构目标的接管距离上限**（米）★★★
+    --   用户原话：「泰坦距离上限跟其他敌人的合并在一起调整」。
+    --   ▸ 作用对象：`target_policy.max_distance2` 的**表外那一档** ——
+    --     泰坦 / 泰坦变体 / 蟑龙 / 普通敌人…（即**所有非结构**的标记目标）。
+    --   ▸ 结构那一档（`max_takeover_distance`，默认 250）**仍独立**：它们走"锁 + 航路"。
+    --   ▸ 默认 **200** = 泰坦改动前的值（用户反复强调泰坦不该被 100 m 卡住）；
+    --     代价是"其他敌人"从 100 → 200（= 0.1.22 上游对一切标记目标的 200 m）。
+    --   ⚠ 要与结构那档一致就跟着调；要"都按 100"就把这里与菜单滑块默认一起改成 100。
+    --   ⚠ 夹取 50~1000，与滑块范围**对齐**（**步长 5**，2026-10-14 用户要求：
+--     原来 25 太粗，落不到想要的刻度，例如 180 / 210 / 230 都设不了）。
+    other_takeover_distance=200,
     -- ★★★ 早期导航探测（2026-10-01，用户要求"无敌人时也能炸虫洞"）★★★
     --   目的：测出 state 2/3（附近无敌人）时**能否拿到 movement 组件地址** ——
     --   这是"绕过 selection、直接用 orbit 写导航目的地"这条路的前提。
@@ -256,18 +326,29 @@ local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets
     --     G-60 飞向地面点时通常会悬在它**上方** ⇒ 必须给 `above` 留量，
     --     否则 dz>0 恒不成立、永远判不到达（虫洞那次的同款坑）。
     point_target_enabled=true,point_target_ttl_frames=1200,
-    -- ★★ 观测节流周期（2026-10-03，用户要求）★★
+    -- ★★ 观测节流周期（2026-10-03 起；2026-10-14 性能优化再放宽一档）★★
     --   `Layout.capture`（遍历 behavior 数组找 G-60）原本是**每帧**跑一次；
-    --   2026-10-02 起改为"有事可做才每帧、纯空转隔 3 帧"；本次再把两档放宽：
-    --     · `scan_every_busy` —— 有事可做（持有/可接管/早期探测）时每 N 帧观测一次（默认 **2**）
-    --     · `scan_every_idle` —— 纯空转（没有可接管的 G-60）时每 N 帧观测一次（默认 **6**）
+    --   2026-10-02 起改为"有事可做才每帧、纯空转隔 3 帧"；2026-10-03 放宽到 2/6；
+    --   2026-10-14 再放宽到 **4/12**（用户要求优化空转与 G60 在场的开销）。
+    --     · `scan_every_busy` —— 有事可做（持有/可接管/早期探测）时每 N 帧观测一次（默认 **4**）
+    --     · `scan_every_idle` —— 纯空转（没有可接管的 G-60）时每 N 帧观测一次（默认 **12**）
+    --   ▸ 依据（用户 2026-10-15 日志的 `perf;` 行，每 600 帧窗口）：
+    --       `all_reads≈43,000` 里 **`obs_reads≈34,000`（79%）**，而 `obs_slots≈300`
+    --       ⇒ 每次 `Layout.capture` 扫约 300 槽、**每执行帧约 340 读**，
+    --       几乎全是"再确认一次还是没有"。
+    --     `native_observer.lua` 在 **SAFETY_LAYER**（只读）⇒ 不能让它少扫槽，
+    --     外部唯一杠杆就是**多久调一次** ⇒ 这两档各自减半扫描次数。
     --   ⚠ **引擎选中要否决的目标那一路仍每帧重申**，不受这两个值影响
     --     （见 runtime 的 `veto_must`；"否决必须每帧重申"是本工程的既有安全属性）。
-    --   ⚠ 代价（知情）：空转时投掷的 G-60 最多晚 5 帧（≈83 ms）被发现；
-    --     有事可做时最多晚 1 帧（≈17 ms）。
+    --   ⚠ 代价（知情）：空转时投掷的 G-60 最多晚 11 帧（≈180 ms）被发现；
+    --     有事可做时最多晚 3 帧（≈50 ms）。两者都远小于"投掷 → 可接管 state-4"
+    --     的时间（`EARLY_MIN_AGE`≥15 帧）⇒ 不改变接管窗口。
+    --   ⚠ 引擎在两次写入之间**一直按记录里存着的点飞**（写入是"改目标"，
+    --     不是"每帧给力"）⇒ 放宽周期不会让雷停住。
+    --   ⚠ 觉得迟滞就把值调回 **2 / 6**（state 级，立即生效，不用改逻辑）。
     --   ⚠ 0 安全（闸门 `if P.idle_skip>0` 会短路），**负数危险**（会让
     --     `frame%N` 恒为 0 ⇒ mod 永远不跑）；runtime 对非数/0/负数一律回默认值。
-    scan_every_busy=2,scan_every_idle=6,
+    scan_every_busy=4,scan_every_idle=12,
     -- ★★ 单位标记的记忆判据（2026-10-01，用户实机反馈）★★
     --   用户原话：「标记过的单位，即使取消标记，G60 仍会追踪该单位」。
     --
@@ -385,15 +466,19 @@ local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets
     --   ⚠ 这是**本工程唯一的写内存路径**（见本文件 write() 的边界说明）。
     --   ⚠ 置 false ⇒ 完全回到只读行为（**一键回退**）。
     force_lock_enabled=true,
-    -- ★ 2026-10-09 自机探针（**只读**，为「G-60 爆炸安全区」打底）。
-    --   目的：确认"我自己"（玩家角色）是哪个实体、坐标怎么取 —— 这是做
-    --   「玩家在 6m 球形半径内不引爆」的**唯一前置缺口**（其余环节我们本来就掌控：
-    --   引爆是我们自己调 `calls.explode`，见 native_arrival；disposal 只 remove 不 explode）。
-    --   做法：遍历 avatar 表 0x3326d20，用 `local_ownership_observed` 挑出本机玩家，
-    --   坐标复用既有 `d.position`（motion 0x3326508 → +0x2e0）——**不新增任何读能力**。
-    --   ⚠ 全程 pcall + 只读，且**只在首次/坐标变化时**打日志（最多 8 条）。
-    --   ⚠ 置 false ⇒ 完全关闭（默认 true，确认坐标后再关）。
-    self_probe_enabled=true,
+    -- ★★★ 2026-10-14（用户要求）：**诊断日志开关**（并把"自机探针"合并进来）★★★
+    --   用户原话：「自机探针开关能合并日志开关吗？」。
+    --   ⇒ 合并为一个 `diagnostics_enabled` —— **探针本来就只为诊断而存在**
+    --     （安全区的玩家坐标来自 `scope.prepared.own_position_bytes`，
+    --      **不**依赖 `P.selfprobe` ⇒ 关掉探针不影响任何玩法）。
+    --   ⚠ 口径照主支 `g60-bughole-lock`（那边的同一项就是这么合并的）：
+    --     本开关管**两件事**：① 关掉自机探针；② 过滤**高频诊断**日志。
+    --   ⚠⚠ 过滤**只删高频诊断**；判断成败所需的证据行**永远保留**
+    --     （`frame_error` / `errors` / `status_*` / `skipped;` / `priority_*` /
+    --      `structure_*` / `arrival_*` / `generic_rejected` / `force_lock` /
+    --      `blast_point` / `blast_hit` / `safe_*` / `mark_*` / `titan_*` …）。
+    --     **"诊断被关掉 = 诊断不存在"** —— 所以只关高频那一类。
+    diagnostics_enabled=true,
     -- ★ 2026-10-10：玩家本体（Player Clone / Avatar）的**实体路径哈希**。
     --   用户提供：`5556372446766824087` = 十六进制 `4d1c334d294dfa97`
     --   （16 位，与本工程所有 resource hash 同规格：G-60 是 8e325c933e55bf62）。
@@ -402,13 +487,44 @@ local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets
     --   ⚠ 目前**只用于诊断**，不参与任何行为判定；置 nil/false 即只用 ownership 那一路。
     --   ⚠ 这是**本局实测值**：换游戏版本可能变，届时以探针打出的 hash 为准。
     self_resource='4d1c334d294dfa97',
-    -- ★★ 2026-10-10 爆炸安全区（用户要求）★★
+    -- ★★★ 2026-10-14（用户要求）：安全区**以引爆点为中心** + 跟主支（上游）口径 ★★★
+    --   用户原话：「安全区机制也改成跟主支类似的获取到玩家的坐标不在安全区内才能引爆，
+    --   而不是现在的机制，然后安全区是以引爆点为中心，而不是手雷为中心」。
+    --
+    --   主支（= 上游 1.4.0 的 `player safety hold`）量的是"玩家离**预期引爆点**多远"，
+    --   不是"离手雷多远"。重构后本工程有**两个**半径，判定顺序与上游一致
+    --   （先手雷、后目标）：
+    --
+    --   ① `safe_zone_target_radius`（**上游的 `target_safety_radius`**，默认 12）
+    --      玩家离**预期引爆点**（`blast_point` / 泰坦的 `route.arrival_point` /
+    --      缓存圆心 `P.tpos`）在这个半径内 ⇒ **不引爆** —— 这是本 mod 的主判据。
+    --      ⚠ 上游发布值是 15；用户 2026-10-13 在主支拍板 **12**。
+    --      ⚠ 上游算式（README 1.3.17）：`半径 − 爆点最大偏离 2.5 = 离玩家最小距离`，
+    --        15 是为了 ≥12.5 m（刚好在 12 m 外圈伤害半径之外）；取 12 时该下界是 9.5 m
+    --        ⇒ **会吃到 12 m 外圈内的减伤**。这是用户知情后的选择，不是笔误。
+    --      ⚠ 0 = 关闭这一条（只留手雷半径）。
+    safe_zone_target_radius=12,
+    -- ★★ 2026-10-10 爆炸安全区（**手雷**半径；上游已移除的 `player_safety_radius`）★★
     --   玩家在这个**球形半径**（米）内 ⇒ G-60 **不引爆**，继续追踪目标，
     --   等玩家离开这个球再炸。默认 **0 = 关闭**（行为与改动前完全一致）。
     --   ⚠ 上限 30 米：G-60 寿命只有 30 秒，安全区太大等于"雷几乎不炸"。
-    --   ⚠ 依赖玩家坐标（`self` 探针那一路）；拿不到玩家坐标时**不做任何拦截**
-    --     （fail-open：宁可按原样引爆，也不因为读不到坐标而让雷失效）。
+    --   ⚠ 这个值同时还是另外两处的口径（**刻意**，不是复用错误）：
+    --     · 绕行激活判据（`run_safe_hold`）—— 绕行是"手雷在玩家附近"才有意义；
+    --     · 贴脸取消的 `danger` 距离（`min(半径,7)`）—— 爆炸发生在**手雷**那里。
+    --     目标半径**不**参与这两处：它们是手雷几何，不是爆点几何。
     blast_safe_radius=0,
+    -- ★★★ 2026-10-14 读不到玩家坐标时的方向（**跟上游：fail-safe**）★★★
+    --   上游 README 1.3.13 原话：`If player positions cannot be read, no grenade
+    --   detonates until they can (fail-safe).`
+    --   true（默认）⇒ 读不到玩家坐标就**不引爆**（宁可让雷失效，也不炸到读不到的队友）。
+    --   false        ⇒ 退回本工程 2026-10-10 的 fail-open（照常引爆，只打一条诊断）。
+    --   ⚠ 工程史警告：fail-open 是"静默失效"的温床 —— 实机出现过
+    --     `blast_hold` 从 1062 条变 **0 条**而日志里看不出原因。所以无论走哪一支，
+    --     失败都**必须**打诊断（`blast_safe_failsafe;` / `blast_safe_nopos;`）。
+    --   ⚠ 与上游的一处**刻意差异**：上游把"玩家读不到"和"手雷读不到"当成同一件事；
+    --     本工程分开 —— 手雷坐标读不到时，只要**目标半径**还有效就仍然按爆点判，
+    --     两边都判不了才走上面这个开关。
+    safe_zone_failsafe=true,
     -- ★★ 2026-10-10 安全区**绕行半径**（用户要求进菜单）★★
     --   玩家在安全区内时，手雷不再飞向目标，而是绕目标**盘旋**（等玩家走开再炸）；
     --   这个值就是盘旋圆的半径（米）。默认 **5**（实机 2026-10-10 那一局用的值）。
@@ -509,8 +625,51 @@ local ok,why=pcall(function()
     end
     local written,lines=0,0
     local last_issues,issue_keys={},0
+    -- ★★★ 2026-10-14（用户要求）：**高频诊断清单**（诊断开关关掉时被过滤）★★★
+    --   用户原话：「自机探针开关能合并日志开关吗？」⇒ 合并为 `diagnostics_enabled`。
+    --   口径照主支（那边同一项就是这么做的），但**标签表按本仓实际会打的标签重列**
+    --   ——主支那份里 `driver_audit` / `titan_probe` / `titan_clearance` / `titan_aim`
+    --   在本仓**根本不存在**，照抄会得到几条永远不匹配的死项。
+    --
+    --   ⚠⚠ **只列高频"仪表"**。凡是用来判断成败的证据行**一律不列**
+    --     （`frame_error` / `errors` / `skipped;` / `priority_*` / `structure_*` /
+    --      `arrival_*` / `generic_rejected` / `force_lock` / `blast_point` /
+    --      `blast_hit` / `safe_*` / `mark_*` / `titan_*` / `observe_*` …）。
+    --     **"诊断被关掉 = 诊断不存在"** —— 关错了就等于把排查手段删掉。
+    --   判据：这一条**只**描述"我们看到了什么/扫到了什么"，而不是"做成了没有"。
+    local DIAG_VERBOSE={
+        perf=true,sel_probe=true,link=true,mark_queue=true,blast_hold=true,
+        takeover_probe=true,target_fields=true,engine_explode_probe=true,
+        ping_slot=true,point_marker=true,obs_beyond=true,priority_continued=true,
+        codeprobe=true,constprobe=true,recptr=true,
+        callerscan=true,callerscan_done=true,statescan=true,statescan_done=true,
+        early_probe=true,
+        menu_probe=true,menu_restore=true,menu_tick_entered=true,menu_lang=true,
+        selfprobe=true,status_len=true,
+        -- ★★ 2026-10-14：`titan_approach` / `titan_pt` **刻意不放进来** ★★
+        --   取舍理由：它们是判断"放手到底发生没发生"的**证据行**，
+        --   而 `titan_approach;…;released=1` 每颗雷**只出现一次**（放手那一帧）
+        --   ⇒ 不属于"高频刷屏"那一类。`titan_pt` 也只在**状态变化**时报
+        --   （主支实机曾一次打 113 行同一原因，那才是该压的）。
+        --   本工程的老规矩：**「诊断被关掉 = 诊断不存在」** —— 关错了就等于把
+        --   判断成败的手段一起删掉。所以宁可不关。
+    }
     local function emit(line)
         if not log then return end
+        -- ★★★ 2026-10-14：**诊断过滤**（读 `host.env`，**不是** `state`）★★★
+        --   ⚠⚠ 这里必须读 `host.env.diagnostics_enabled` —— 那才是**菜单写的那张表**
+        --      （`set=function(v) host.env.diagnostics_enabled=... end`）。
+        --      主支在这个点上栽过：过滤器读了 `state.diagnostics_enabled`（另一张表）
+        --      ⇒ **永远看不到开关的改动** ⇒ 整个开关是空的：探针确实被关掉了
+        --      （runtime 读的是 `env.*`），所以"看起来生效了"，但日志过滤毫无作用。
+        --      **两张表长得一样、名字一样 ⇒ 这种错靠读代码看不出来，只能靠守门钉。**
+        --   ⚠ `host` 是全局赋值（本文件后面 `host=...`）⇒ 在此处**调用时**解析；
+        --      `Runtime.new` 期间 `host` 还是 nil ⇒ 跳过过滤（默认开，无影响）。
+        local he=host and host.env
+        if he and he.diagnostics_enabled==false then
+            local tag=tostring(line):match('^([a-z_0-9]+)[;:]')
+            if tag and DIAG_VERBOSE[tag] then return end
+        end
         -- Bounded diagnostic output must not stop filtering during a long mission.
         line=tostring(line):gsub('[\r\n]',' '):sub(1,900)
         lines=lines+1
@@ -633,6 +792,12 @@ local ok,why=pcall(function()
             -- ★ 安全区拦截的判据行（与 selfprobe 同理，必须白名单化）
             and not line:match('^blast_hold;')
             and not line:match('^blast_safe_nopos;')
+            -- ★★★ 2026-10-14：fail-safe 的判据行（**必须白名单**）★★★
+            --   `blast_safe_failsafe;` = 一个玩家坐标都读不到 ⇒ 按上游**不引爆**。
+            --   它正是"安全区为什么一直不炸"的**唯一**解释行 —— 被节流掉就等于
+            --   用户看到"雷不炸"而日志里什么都查不到（本项目栽过 `blast_hold` 从
+            --   1062 条变 0 条那个坑）。它只在失败时打一条/颗，不会刷屏。
+            and not line:match('^blast_safe_failsafe;')
             -- ★★ 2026-10-10 安全区：**非自有 G-60**（引擎自己瞄的雷）那一路的判据 ★★
             --   `blast_safe_noown;` = 读不到"这颗雷在哪"而放行（与 blast_safe_nopos 同族，
             --     静默 fail-open 就等于诊断不存在）；
@@ -1092,6 +1257,16 @@ local ok,why=pcall(function()
         -- ★ 泰坦接管开关（2026-09-29）。false = 退回"只打虫洞"。
         titan_enabled=state.titan_enabled,
         mark_priority_enabled=state.mark_priority_enabled,exclusive_targets=state.exclusive_targets,
+        -- ★★★ 2026-10-14（用户要求）：**分配机制**的两个上限 + 缺席宽限（见 state 处说明）★★★
+        max_grenades_per_target=state.max_grenades_per_target,
+        multi_mark_grenades_per_target=state.multi_mark_grenades_per_target,
+        allocation_missing_grace=state.allocation_missing_grace,
+        -- ★ 敌阵营判据的**转发**（供 runtime 的分配挑选循环判"可交战"）——
+        --   与 native_priority 的敌阵营门**同一个模块**（判据只有一份，不另写一套）。
+        --   ⚠ runtime 里**不能**新开 `local EnemyFaction=require(...)`：
+        --     build.py 的别名替换会把它变成 `local EnemyFaction=EnemyFaction`（自引用 nil），
+        --     同 `priority_faults` 处记录的坑。经 env 取既安全又保持单一来源。
+        is_enemy=EnemyFaction.is_enemy,
         structure_profiles=state.marked_structures and StructureProfiles or nil,
         -- ★ 早期接管（state 2/3）—— 开启
         --
@@ -1135,8 +1310,15 @@ local ok,why=pcall(function()
         --   · G-60 在**飞行寿命到期（30s）时自然转入 state 4**，与敌人无关
         allow_state3=state.allow_state3,
         force_lock_enabled=state.force_lock_enabled,
-        self_probe_enabled=state.self_probe_enabled,
+        -- ★ 2026-10-14：自机探针并进 `diagnostics_enabled`（见 state 里那条说明）。
+        --   ⇒ 只接这一个字段；runtime 的探针闸门也改读它。
+        diagnostics_enabled=state.diagnostics_enabled,
         self_resource=state.self_resource,
+        -- ★★★ 2026-10-14（用户要求）：安全区两个半径 + fail-safe 方向，全部接进 env ★★★
+        --   ⚠ 三个都必须接：本项目栽过"开关写进 state 却没进 env ⇒ 功能静默不生效、
+        --     门却是绿的"（target_fields_probe，2026-10-08）。
+        safe_zone_target_radius=state.safe_zone_target_radius,
+        safe_zone_failsafe=state.safe_zone_failsafe,
         blast_safe_radius=state.blast_safe_radius,
         blast_safe_orbit=state.blast_safe_orbit,
         safe_zone_engine_hold=state.safe_zone_engine_hold,
@@ -1163,6 +1345,18 @@ local ok,why=pcall(function()
         -- ★ 体内爆点名册（2026-10-03）：见 compat/blast_sites.lua 与 state 处的说明。
         --   与虫洞的"距离<4m"机制**分开**；置 false ⇒ 退回"引擎 aim"。
         blast_sites=state.blast_sites_enabled and BlastSites or nil,
+        -- ★ 2026-10-14：接近标记泰坦后放手（两个字段都由 runtime 的
+        --   `env.titan_approach*` 包装读取；见 state 里那段说明）。
+        titan_approach_enabled=state.titan_approach_enabled,
+        titan_approach_dist=state.titan_approach_dist,
+        -- ★★★ 2026-10-14（用户要求）：远距离追踪的接管距离上限 ★★★
+        --   ⚠ 必须接进 env：本项目栽过"配置写进 state 却没进 env ⇒ 功能静默不生效、
+        --     门却是绿的"（target_fields_probe，2026-10-08）。
+        --   ⚠ `target_policy.max_distance2` 还要读 `env.structure_profiles` 来判断
+        --     "这个目标是不是那 6 类之一" —— 上面那行已经传了，顺序无要求。
+        max_takeover_distance=state.max_takeover_distance,
+        -- ★ 2026-10-14：非结构目标（含泰坦家族）的接管距离上限（见 state 里那段说明）。
+        other_takeover_distance=state.other_takeover_distance,
         early_nav_probe=state.early_nav_probe,early_nav_orbit=state.early_nav_orbit,
         sel_probe_enabled=state.sel_probe_enabled,
         -- ★ 目标字段探针（2026-10-08）。⚠ 这里曾经漏过：开关只写进了 state、
@@ -1211,7 +1405,15 @@ local ok,why=pcall(function()
     --   ⚠ 这里**不再出现任何中文字面量** —— 文案只有一处来源（menu_text.lua），
     --     否则"英语客户端看到中文"这类问题永远查不干净。
     local MENU_ITEMS={
-        -- 安全区（本轮新功能，最需要能在游戏里调）
+        -- ★★★ 2026-10-14（用户要求）：安全区重构 = **以引爆点为中心**（跟主支/上游）★★★
+        --   量的是"玩家离**预期引爆点**多远"，默认 12（用户在主支拍板；上游发布值 15）。
+        --   这是重构后的**主判据** —— 与上游同口径，所以排在最前。
+        --   0 = 关闭这一条（只留手雷半径）。
+        {id='g60.safe_zone_target_radius',kind='slider',min=0,max=30,step=1,key='safe_zone_target_radius',
+            get=function() return tonumber(host.env.safe_zone_target_radius) or 12 end,
+            set=function(v) host.env.safe_zone_target_radius=v end},
+        -- 安全区（**手雷半径**；上游已移除的 `player_safety_radius`，本工程留成选项）
+        --   ⚠ 默认 0 = 关：重构后主判据是上面的目标半径，这一条默认不叠加。
         {id='g60.blast_safe_radius',kind='slider',min=0,max=30,step=1,key='blast_safe_radius',
             get=function() return tonumber(host.env.blast_safe_radius) or 0 end,
             set=function(v) host.env.blast_safe_radius=v end},
@@ -1262,18 +1464,76 @@ local ok,why=pcall(function()
         {id='g60.friendly_veto_enabled',kind='toggle',key='friendly_veto_enabled',
             get=function() return host.env.friendly_veto_enabled~=false end,
             set=function(v) host.env.friendly_veto_enabled=v and true or false end},
-        {id='g60.force_lock_enabled',kind='toggle',key='force_lock_enabled',
-            get=function() return host.env.force_lock_enabled~=false end,
-            set=function(v) host.env.force_lock_enabled=v end},
+        -- ★★★ 2026-10-14（用户要求）：**默认开的开关不进 mod 设置** ★★★
+        --   用户原话：「载具否决、无敌人接管、接近标记泰坦后放手这种都是默认开的东西
+        --   就别放进 mod 设置里面了」。
+        --   ⇒ `force_lock_enabled` / `enemy_veto_enabled` / `titan_approach_enabled`
+        --     三项**撤出菜单**，但**保留为状态级字段**（默认开、仍可改 `state`
+        --     来整体关掉）—— 只是不再占用菜单位、不再让用户误以为"需要调"。
+        --   ⚠ 撤项**不会**串掉已保存的值：mod 侧是按 **id** 注册与回读的
+        --     （`h.register_option(it.id,…)` / `h.get(it.id)`，见下面的 menu_register），
+        --     不是按下标。⚠ 我此前在几处注释/测试里写成"框架按下标恢复保存值"，
+        --     那**没有依据**（本仓代码里找不到下标恢复的痕迹）—— 已一并纠正。
+        --   ⚠ 框架硬上限 16 仍然成立（超了注册会失败），但现在有 3 格余量。
         {id='g60.allow_state3',kind='toggle',key='allow_state3',
             get=function() return host.env.allow_state3~=false end,
             set=function(v) host.env.allow_state3=v end},
-        {id='g60.self_probe_enabled',kind='toggle',key='self_probe_enabled',
-            get=function() return host.env.self_probe_enabled~=false end,
-            set=function(v) host.env.self_probe_enabled=v end},
-        {id='g60.enemy_veto_enabled',kind='toggle',key='enemy_veto_enabled',
-            get=function() return host.env.enemy_veto_enabled~=false end,
-            set=function(v) host.env.enemy_veto_enabled=v end},
+        -- ★★★ 2026-10-14：**诊断日志开关**（自机探针已并进来，见 state 里的说明）★★★
+        --   ⚠ 它当时占用的是"自机探针"那一格（同格替换）。
+        --   ⚠ 纠正：我那时写的"框架按**下标**恢复保存值"**没有依据** ——
+        --     mod 侧是按 **id** 注册与回读的（`h.get(it.id)`），删/换项都不会串值。
+        {id='g60.diagnostics_enabled',kind='toggle',key='diagnostics_enabled',
+            get=function() return host.env.diagnostics_enabled~=false end,
+            set=function(v) host.env.diagnostics_enabled=v and true or false end},
+        -- ★★★ 2026-10-14（用户要求）：**分配机制的两个上限**（移自主支）★★★
+        --   ① 场上只有 1 个标记时，那个目标最多几颗雷（默认 1 = 维持既有行为）
+        {id='g60.max_grenades_per_target',kind='slider',min=1,max=4,step=1,key='max_grenades_per_target',
+            get=function() return tonumber(host.env.max_grenades_per_target) or 1 end,
+            set=function(v) host.env.max_grenades_per_target=v end},
+        --   ② 场上 2 个及以上标记时，每个目标最多几颗雷（默认 1 = 每个目标各一颗）
+        {id='g60.multi_mark_grenades_per_target',kind='slider',min=1,max=4,step=1,
+            key='multi_mark_grenades_per_target',
+            get=function() return tonumber(host.env.multi_mark_grenades_per_target) or 1 end,
+            set=function(v) host.env.multi_mark_grenades_per_target=v end},
+        -- ★★★ 2026-10-14（用户要求）：**远距离追踪的接管距离上限** ★★★
+        --   只对**结构表里的**目标生效（判据 = `structure_profiles` 表本身），默认 250。
+        --   ⚠ 泰坦/蟑龙/泰坦变体**不由本项控制**（它们走各自专门的链路，泰坦靠引擎选中
+        --     + 泰坦链引导）⇒ 说明与注释里都不再提它们，免得说出一个不成立的规则。
+        --   ⚠ 夹取 50~1000（同 `target_policy.max_distance2`）—— 滑块上界与夹取上界**对齐**，
+        --     否则"代码允许 1000 但界面到不了"就是一处**够不着的配置**（本工程忌讳死配置）。
+        --   ⚠ 菜单项总数见 `tests/test_menu_language.py` 的上限门（框架硬上限 16）——
+        --     主支 v0.1.48 因为**超限一项**导致框架按下标错位恢复保存值，
+        --     把 `allow_state3` 恢复成 false ⇒ 整个 mod 什么都不做。加项前先数。
+        {id='g60.max_takeover_distance',kind='slider',min=50,max=1000,step=5,
+            key='max_takeover_distance',
+            get=function() return tonumber(host.env.max_takeover_distance) or 250 end,
+            set=function(v) host.env.max_takeover_distance=tonumber(v) or 250 end},
+        -- ★★★ 2026-10-14（用户最终方案）：**接近标记的泰坦后放手** ★★★
+        --   用户原话：「让标记的泰坦走虫洞那条远距离追踪路，手雷进入泰坦约 10 m
+        --   时放开接管，由引擎自身索敌触发泰坦链」。
+        --   ⚠ 开关**不进菜单**（用户 2026-10-14 第二轮：「默认开的东西就别放进
+        --     mod 设置里面了」）—— `titan_approach_enabled` 保留为状态级字段。
+        --   ⚠ 只留**放手距离**在菜单里：它是真正需要按体型/手感标定的量。
+        --   ⚠ 步长 0.5（主支 v0.2.42 按用户要求从 1 改到 0.5），范围 3~60
+        --     与 runtime 的夹取**对齐**。
+        {id='g60.titan_approach_dist',kind='slider',min=3,max=60,step=0.5,
+            key='titan_approach_dist',
+            get=function() return tonumber(host.env.titan_approach_dist) or 10 end,
+            set=function(v) host.env.titan_approach_dist=tonumber(v) or 10 end},
+        -- ★★★ 2026-10-14（第二轮，用户要求）：**泰坦与其他敌人**合并成一档 ★★★
+        --   用户原话：「泰坦距离上限跟其他敌人的合并在一起调整」。
+        --   ⇒ **非结构**的标记目标（泰坦 / 泰坦变体 / 蟑龙 / 普通敌人…）共用这一个滑块；
+        --     结构那一档（`max_takeover_distance`）**仍独立**（它走"锁 + 航路"。
+        --   ⇒ `target_policy.max_distance2` 里那条"泰坦家族单独一档"的分支**随之删除**
+        --     （合并后它不再需要单独判据 —— 判据简化成"结构表内 / 表外"两档）。
+        --   ⚠ 默认 **200**：泰坦保持改动前的值（用户反复强调泰坦不该被 100 m 卡住），
+        --     代价是"其他敌人"从 100 → 200（回到 0.1.22 上游对一切标记目标的 200 m）。
+        --     要反过来（都按 100）把下面那个 `or 200` 与 state 里的默认值一起改。
+        --   ⚠ 范围 50~1000 **步长 5** 与 runtime 夹取**对齐**（同一轮把 25 改细）。
+        {id='g60.other_takeover_distance',kind='slider',min=50,max=1000,step=5,
+            key='other_takeover_distance',
+            get=function() return tonumber(host.env.other_takeover_distance) or 200 end,
+            set=function(v) host.env.other_takeover_distance=tonumber(v) or 200 end},
     }
     local function menu_register()
         if menu.host then return end
@@ -1454,19 +1714,36 @@ local ok,why=pcall(function()
     --        报 `attempt to concatenate a nil value`；
     --     ② 逐字段判空 —— `nil..'/'` 会当场抛错 ⇒ 又是加载期 disabled
     --        （同一天已经在 `BlastSites[...]` 上栽过一次）。
+    -- ★ 2026-10-14：原来这里**写死 `bughole_profiles=16`**，而结构表早已 27 条
+    --   ⇒ 状态行在**骗人**：用户正是拿它核对"我的候选项生效没有"，
+    --     读到的却是旧数字（2026-10-14 实机日志里就是 `bughole_profiles=16`）。
+    --   ⇒ 改为从表**派生**（本工程纪律：状态行不许硬编码 —— 同 `veto_resources` 那次教训）。
+    --   ⚠ 必须逐层判空：状态行在**加载期**拼，抛错会让整个包 `disabled`
+    --     （本文件已在 `BlastSites[...]` 的 nil 拼接上栽过一次）。
+    local profile_count=0
+    if type(StructureProfiles)=='table' then
+        for _k in pairs(StructureProfiles) do profile_count=profile_count+1 end
+    end
     local status_core='version=@@VERSION@@-bughole;runtime_baseline=@@RUNTIME_BASELINE@@'
         ..';build=BUGHOLE_PLUS_TITAN;scope=marked_bughole_and_bile_titan;'
-        ..'bughole_profiles=16;enemy_priority=REMOVED;weakpoints=REMOVED;'
+        ..'bughole_profiles='..tostring(profile_count)..';enemy_priority=REMOVED;weakpoints=REMOVED;'
         ..'hole_variants=INCLUDED;spore_spewer_egg=REMOVED;target_valid=SOFT_SIGNAL;'
         ..'selection_veto=DISABLED;unmarked_behavior=VANILLA;filter_enabled=true;'
         ..'enemy_tracking=VANILLA_UNTOUCHED;priority_gated=STRUCTURE_ONLY;arrival_gated='
         ..(state.allow_state3 and 'STATE3_ALLOWED' or 'HELD_LOCK_ONLY')
         ..';allow_state3='..tostring(state.allow_state3)..';'
         ..'force_lock_enabled='..tostring(state.force_lock_enabled)..';'
-        ..'self_probe_enabled='..tostring(state.self_probe_enabled)..';'
+        ..'diagnostics_enabled='..tostring(state.diagnostics_enabled)..';'
         ..'disposal_gated=HELD_LOCK_ONLY;'
         ..'designed_targets_only='..tostring(state.designed_targets_only)..';'
         ..'mark_priority_enabled=false;exclusive_targets=true;marked_structures=true;'
+        -- ★★★ 2026-10-14（用户要求）：**分配机制的两个上限必须可见** ★★★
+        --   "看不到就等于无法确认它到底生效了没有"是本工程的老毛病；
+        --   而这两个值直接决定"几颗雷打同一个目标"⇒ 判读日志时是第一眼要看的。
+        --   ⚠ 逐字段判空（`nil..'='` 会当场抛错 ⇒ 加载期 disabled，同日已栽过一次）。
+        ..'max_grenades_per_target='..tostring(state.max_grenades_per_target)
+        ..';multi_mark_grenades_per_target='..tostring(state.multi_mark_grenades_per_target)
+        ..';allocation_missing_grace='..tostring(state.allocation_missing_grace)..';'
         ..'native_lifetime_verified=false;mode=EXPERIMENTAL_NATIVE_CALLS'
         -- ★ 2026-10-03：观测节流周期必须可见 —— "看不到就等于无法确认"（本工程老毛病）
         ..';scan_every_busy='..tostring(state.scan_every_busy)
@@ -1487,6 +1764,18 @@ local ok,why=pcall(function()
         --   "看不到就等于无法确认它到底生效了没有"（本工程老毛病），
         --   而它是唯一需要实机标定的量（改 lift 要能一眼看到日志里变了）。
         ..';blast_sites='..tostring(state.blast_sites_enabled)
+        -- ★★★ 2026-10-14（用户最终方案）：接近泰坦后放手 —— **必须可见** ★★★
+        --   判读前提：这一局到底开没开、放手距离是多少。
+        --   "承诺了却看不到"是本工程老毛病。
+        ..';titan_approach='..tostring(state.titan_approach_enabled)
+        ..';titan_approach_dist='..tostring(state.titan_approach_dist)
+        -- ★★★ 2026-10-14（用户要求）：远距离追踪的接管距离上限**必须可见** ★★★
+        --   用户要求"只对那几个生效"⇒ 判读时必须能确认这个值是多少、
+        --   以及名单是从哪来的（`structure_profiles` 表本身）。
+        ..';max_takeover_distance='..tostring(state.max_takeover_distance)
+        -- ★ 2026-10-14：非结构那一档的距离上限也必须可见
+        --   （两档各自独立，判读时要能分清"结构 250 / 其他 200"）。
+        ..';other_takeover_distance='..tostring(state.other_takeover_distance)
         -- ★ 段内 IIFE：lift + 专用 region（逐字段判空，绝不 `nil..'/'`）
         --   ★ 2026-10-03 追加 `blast_sweep`：标定档位表。**必须在状态行可见** ——
         --   "扫高度的这一局到底扫了哪些档"是判读日志的前提，看不到就只能猜。
@@ -1521,6 +1810,12 @@ local ok,why=pcall(function()
     local status_marks='mark_settings;unit_mark_live_only='..tostring(state.unit_mark_live_only)
         ..';structure_mark_live_only='..tostring(state.structure_mark_live_only)
         ..';marked_unit_rank_first='..tostring(state.marked_unit_rank_first)
+        -- ★★★ 2026-10-14（用户要求）：安全区两个半径 + fail-safe 方向**必须可见** ★★★
+        --   "看不到就等于无法确认它到底生效了没有"是本工程的老毛病；
+        --   而"到底以谁为中心、几个半径"正是判读安全区行为的第一眼。
+        ..';safe_zone_target_radius='..tostring(state.safe_zone_target_radius)
+        ..';blast_safe_radius='..tostring(state.blast_safe_radius)
+        ..';safe_zone_failsafe='..tostring(state.safe_zone_failsafe)
     emit(status_core);emit(status_titan);emit(status_marks)
     emit('status_len;core='..#status_core..';titan='..#status_titan
         ..';marks='..#status_marks..';cap=900')

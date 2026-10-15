@@ -110,6 +110,10 @@ SAFETY_LAYER = (
 #   所以这里比对"去掉 release_owner 之后的剩余部分"。
 SAFETY_LAYER_EXCEPTIONS = {
     'src/g60/target_reservations.lua': ('release_owner',),
+    # ★ 2026-10-14：强袭虫"抬高引爆点"**不改这里** ——
+    #   用户提议参考**巨型构筑**那条已上机的机制（`compat/blast_sites.lua`
+    #   的 `point_target` 显式点目标），它**不在 SAFETY_LAYER 里** ⇒
+    #   `native_arrival.lua` 保持与上游逐字节一致（`+0.25` 与四条断言一字未动）。
 }
 
 # ★ arrival_policy 也不再逐字节等于上游：`dz<=0`（必须在目标**下方**才算到达）
@@ -645,6 +649,14 @@ def main():
     arr_src = (ROOT / 'src/g60/native_arrival.lua').read_text(encoding='utf-8')
     aim_src = (ROOT / 'src/g60/native_titan_aim.lua').read_text(encoding='utf-8')
     entry_src = (ROOT / 'addon/entry.lua.in').read_text(encoding='utf-8')
+    # ⚠⚠ 2026-10-14（本轮修）：下面 `titan_blast_band_fully_reverted` 引用了
+    #   `_adapt_code`，但那个名字**从来没被定义过** ⇒ 抛 NameError ⇒
+    #   **整个 test_bughole_scope 从这里往后一条都不执行**。
+    #   后果比"某条门失败"严重得多：崩溃 = 后面所有守门全部静默消失
+    #   （"不执行的守门 = 不存在的守门"是本工程记过多次的老毛病）。
+    #   它是我上一轮加泰坦浮动带回退时写的，**加完没跑过这一支** ⇒ 一直没暴露。
+    _adapt_code = strip_comments(
+        (ROOT / 'src/g60/adaptive.lua').read_text(encoding='utf-8'))
     check('belly_above_defaults_to_zero_in_arrival',
           'local titan_above=0' in arr_src,
           '★ 缺省 0 ⇒ 不传时与上游行为等价（不是"默认就放宽"）')
@@ -672,6 +684,17 @@ def main():
           and 'titan_standoff_min' not in _entry_code,
           '★ 自研的 standoff 自适应（`titan_standoff_min` / `titan_standoff_adapted` / '
           '`route_standoff`）必须从泰坦路径与配置里**整段消失**')
+    # ★★★ 2026-10-14：爆距浮动带已**整段回退** ★★★
+    #   用户报「泰坦引爆点不太对，能还原到 0.1.22 版本吗」⇒ 泰坦链三个文件
+    #   （`adaptive.lua` / `native_titan_aim.lua` / `compat/titan_variants.lua`）
+    #   已 `git checkout v0.1.22` **逐字节还原**，浮动带的配置/菜单/状态行/文案
+    #   一并清掉。这条门防的是"浮动带死灰复燃"（它会让爆点偏离 0.1.22 的行为）。
+    check('titan_blast_band_fully_reverted',
+          'titan_blast_standoff' not in entry_src
+          and 'titan_blast_standoff' not in aim_src
+          and 'titan_blast_standoff' not in _adapt_code,
+          '★★ 泰坦爆距浮动带必须**整段消失**（用户要求还原到 0.1.22：'
+          '`local c={p[1]+n[1]*2.5,…}` 是唯一的爆点公式）')
     check('titan_belly_above_removed',
           'titan_belly_above' not in _aim_code and 'titan_belly_above' not in _entry_code,
           '★ 腹部提前引爆余量 `titan_belly_above` 已按上游移除（配置 / 透传 / 状态行三处都要没）')
@@ -689,7 +712,8 @@ def main():
           and "local Adaptive=require('g60.adaptive')" in aim_src
           and 'pcall(BlastRoute.refine,own_position,target,prior,profile,value)' in aim_src
           and 'pcall(Adaptive.refine,own_position,target,prior,profile,value,now)' in aim_src,
-          '★ 泰坦链必须是上游的三段：`TitanRoute.step` → `BlastRoute.refine` → `Adaptive.refine`')
+          '★ 泰坦链必须是上游的三段：`TitanRoute.step` → `BlastRoute.refine` → '
+          '`Adaptive.refine`（签名与 v0.1.22 逐字一致 —— 浮动带已整段回退）')
     check('titan_upstream_arrival_region',
           'titan_arrival_region={radius=1.75,depth=0.8},' in entry_src,
           '★ 到达区域回到上游原值 `{radius=1.75,depth=0.8}`（我们曾收到 1.5/1.2 并加 `above`）')

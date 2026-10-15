@@ -112,6 +112,21 @@ local SCAN={}
 --    ⇒ **整个 mod disabled**，日志里只有那一行 `disabled: ...`（一行功能都没跑）。
 --    守门：`tests/test_priority_fault_isolation.py::blast_sites_module_is_a_table`
 --          **用 lupa 真求值**（不是 grep 字符串）。
+--
+-- ★★★ 2026-10-14：本名册同时是**敌阵营门槛的例外源**（用户报"不再上升 8.0"）★★★
+--   症状（用户原话）：「之前的版本巨型构筑引爆点是正常上升 8.0 的，现在 0.1.22
+--     版本没有上升 8.0」。
+--   根因：v0.1.9 为修"标记友方被炸"在 `native_priority.generic_validate` 里加了
+--     **敌阵营硬门槛**，而本名册里的目标是**构筑物**（不是 AiEnemy，也不在
+--     `small_filter.marked_allowed`）⇒ 恒返回 `NOT_ENEMY_RESOURCE` ⇒ 拿不到 `old.lock`。
+--     ⚠ 而"体内爆点"整块**嵌在 `old.lock` 的守卫里**（见 experimental_runtime 的
+--       "体内爆点"段）⇒ 锁拿不到 ⇒ 连 `lift` 都不会被算出来 ⇒ 一条
+--       `blast_point;…;lift=8.00` 都不打，退回引擎 `aim`（在**底部**引爆、不掉血）。
+--   ⇒ 修法：在那道门槛上补一个**与本名册同源**的例外（`env.blast_sites[resource]`），
+--     **不**在 native_priority 里另抄一份哈希（"同一个判断不许出现两处"）。
+--   ⚠ 以后往本表加目标时**不需要**再动门槛 —— 例外自动覆盖（这正是用名册当源的目的）。
+--   ⚠ 守门：`blast_site_targets_pass_enemy_gate`（抠出 shipped 判据**真求值** +
+--     变异测试：删掉例外项必须让名册目标被拒）。
 local sites={}
 sites["4232ee48e2cfd24e"]={resource="4232ee48e2cfd24e",lift=LIFT,
     -- 专用到达区域：必须落进爆炸内半径 4 m（见文件头）
@@ -144,5 +159,115 @@ sites["4232ee48e2cfd24e"]={resource="4232ee48e2cfd24e",lift=LIFT,
 --   runtime 侧：每颗**新的** G-60 推进一档（**不是每帧**推进 —— 否则同一颗手雷
 --   会在飞行途中不停换目标点，等于没测；见 `P.swk`）。
 sites.scan=SCAN
+
+-- ★★★ 2026-10-14（用户要求）：**远距离追踪名单**的爆点登记 ★★★
+--
+--   用户原话：「增加主支的远距离追踪功能，不过只增加虫洞、构筑、巨型构筑、
+--     尖啸巢、孢子喷涌虫、落地穿梭舰这几个」。
+--   本节取自主支（`g60-bughole-lock`，2026-10-13 落地）—— 因为主支的方案是
+--   **免几何兜底**（`kind="structure_vent"` + `motion_point`）：没有锚点几何，
+--   瞄准点用实体 motion 位置，**爆点完全靠这里的 `lift`**。
+--   ⇒ 所以这几类**必须**在本表里有条目，否则爆点会落在实体原点（≈ 地表/地下）。
+--
+--   ⚠⚠ **为什么用"标定档位表"而不是编造单一 lift**：
+--     这几类的通风口/可拆部位高度**未知**（构筑 5 变体与巨型构筑**不是同一模型**，
+--     用户 2026-10-13 明确纠正过"照抄巨型构筑的 8.0"这个假设）。
+--     ⇒ 机制的设计用途就是「逐颗换档，一局扫出判定区」：每颗**新的** G-60 推进一档
+--       （`P.swk[m.id]`，按手雷推进而不是按帧）。
+--   ⚠ 每个目标**自带** `scan`（`site.scan` 优先于全局 `sites.scan`）——
+--     多目标共用一张档位表会**互相污染档号**。
+--   ⚠ `region` 沿用巨型构筑那套**收紧值**（radius 1.5 / depth 0.25 / above 0.6）：
+--     理由是同一个 —— 爆炸中心必须落进 G-60 的 **4 m 内半径**才触发拆毁判定；
+--     水平 1.5 与上沿 0.6 的余量来自巨型构筑实机（远抛过冲实测 0~+0.45）。
+--   ⚠ `lift` 只作 `scan` 缺席时的**兜底**（取档位中位数附近），**不是标定结论**。
+--     扫出结果后把成功档写进 `lift`、清空该条的 `scan`（与巨型构筑同流程）。
+--
+--   ⚠ 哈希若不对，这些条目就是**惰性的** —— 可以放心先加：
+--     runtime 按 `e.resource` 查表，查不到 ⇒ 完全退回旧行为（引擎 aim）
+--     ⇒ **不会造成任何新伤害、也不会误炸别的目标**。
+--     上机核对方式：读现成的 `structure_mark;…;resource=<hash>;reason=ACCEPTED`，
+--     `resource=` 就是引擎给的真值。
+--
+--   ★ 判定真值**不需要新代码**：上机标一个目标，看 `blast_point;…;lift=` 与
+--     `blast_hit;…;delta=` 即可反推判定区高度。
+
+-- 构筑者 5 变体（用户点名"构筑"）。
+--   ⚠⚠ 与巨型构筑**不是同一个模型**（用户 2026-10-13 明确纠正）——
+--     所以**绝对不能**复用巨型构筑已标定的 `LIFT=8.0`。每个目标各自标定。
+--   ★ 五个变体的差别在**生成什么兵**（airborne/assault/base/standard/phalanx），
+--     但**建筑模型不同** ⇒ 通风口高度未知 ⇒ 同样走**标定档位表**。
+--   ⚠ 档位 0.5~8.0 **整体低于**巨型构筑那套（2.0~12.5）：巨型构筑是**大体量**建筑
+--     （实测通风口在 8.02~8.41 m）；普通构筑者体量更小 ⇒ 档位重心放低，但保留上沿余量。
+--   ⚠ 五个共用一条 `FAB_SCAN`（它们是同一类目标的五个变体）——
+--     文件头说过"多目标共用档位表会互相污染档号"，但那是针对**不同种类**的目标；
+--     同一族的变体共用是刻意的（一次扫描同时覆盖五个变体）。
+--   ⚠ 哈希**已离线确认**（名字库反查，哈希与名字一致）⇒ 不需要靠 `resource=` 反查真值。
+local FAB_SCAN={0.5,1.5,2.5,3.5,5.0,6.5,8.0}
+sites["5158e582fbeb26bd"]={resource="5158e582fbeb26bd",lift=2.5,scan=FAB_SCAN,
+    region={radius=1.5,depth=0.25,above=0.6},
+    label="fabricator_cyborg_spawner_factory_conscript_airborne"}
+sites["22cc0ed4ceb9cb68"]={resource="22cc0ed4ceb9cb68",lift=2.5,scan=FAB_SCAN,
+    region={radius=1.5,depth=0.25,above=0.6},
+    label="fabricator_cyborg_spawner_factory_conscript_assault"}
+sites["f0b98fb953b13960"]={resource="f0b98fb953b13960",lift=2.5,scan=FAB_SCAN,
+    region={radius=1.5,depth=0.25,above=0.6},
+    label="fabricator_cyborg_spawner_factory_conscript_base"}
+sites["4fb8eb356ac8553e"]={resource="4fb8eb356ac8553e",lift=2.5,scan=FAB_SCAN,
+    region={radius=1.5,depth=0.25,above=0.6},
+    label="fabricator_cyborg_spawner_factory_conscript_standard"}
+sites["a1a7b76b29088843"]={resource="a1a7b76b29088843",lift=2.5,scan=FAB_SCAN,
+    region={radius=1.5,depth=0.25,above=0.6},
+    label="fabricator_cyborg_spawner_factory_conscript_phalanx"}
+
+-- 落地穿梭舰（用户点名"落地穿梭舰"）。
+--   ⚠ 主支标明这两条哈希是**未验证**的（`warp_ship_*_UNVERIFIED_hash`）——
+--     失败方向安全（见上）：查不到就退回引擎 aim，不会误炸。
+--   ★ 几何未知 ⇒ 同样用档位表。档位范围取 0.5~7.0：落地飞船的可拆部位
+--     （通风口/引擎）比构筑者的红色通风口**低**（构筑者标定出的是 8.02~8.41）。
+local SHIP_SCAN={0.5,1.5,2.5,3.5,4.5,5.5,7.0}
+sites["b3c9cdb79dc17937"]={resource="b3c9cdb79dc17937",lift=2.5,scan=SHIP_SCAN,
+    region={radius=1.5,depth=0.25,above=0.6},
+    label="warp_ship_landed_UNVERIFIED_hash"}
+sites["2ad2e055dad21f6e"]={resource="2ad2e055dad21f6e",lift=2.5,scan=SHIP_SCAN,
+    region={radius=1.5,depth=0.25,above=0.6},
+    label="warp_ship_invasion_UNVERIFIED_hash"}
+
+-- 非法广播任务的广播台（屏幕实体，`structure_profiles` 2026-10-14 新登记）。
+--   ⚠ **高度完全未知** ⇒ 一律档位表，别猜。理由：它是**竖向**结构，屏幕可能在天线中段，
+--     而"拆毁判定"要爆炸中心落进它的可摧毁体内 —— 与巨型构筑（标定 8.0）和
+--     构筑者（8.02~8.41）都不同族，**不能复用**。
+--   ★ 档位覆盖 0.5~12.0：下沿留给"贴实体原点炸"（万一可摧毁体就在原点附近），
+--     上沿留给"屏幕挂得高"的情况。扫描期间每颗新雷推进一档，
+--     日志判读 `blast_point;…;lift=…;sweep=<档号>`，以及 `blast_hit;…;delta=`。
+--   ★ 扫出成功档后：把 `lift` 写死、删掉 `scan=`（与其它目标同一流程）。
+--   ⚠ `label` 里的 `UNVERIFIED_lift` = **高度**未标定（不是哈希未验证 ——
+--     哈希是实机 `resource=` 真值，两局一致）。
+local BROADCAST_SCAN={0.5,1.5,2.5,3.5,5.0,6.5,8.0,10.0,12.0}
+sites["57db57121f3e7ed2"]={resource="57db57121f3e7ed2",lift=2.5,scan=BROADCAST_SCAN,
+    region={radius=1.5,depth=0.25,above=0.6},
+    label="broadcast_tower_screen_UNVERIFIED_lift"}
+
+-- ⚠⚠ 2026-10-14：**强袭虫家族的 4 条已整段回退**（用户原话：「去除这个改动吧，
+--   感觉这种调整方法没啥收益」）。
+--   曾试过两版，都不留：
+--     · 第一版在 `native_arrival.lua` 的 `goal[3]+0.25` 后面加增量 —— 那是**安全层**
+--       （SAFETY_LAYER，要求与上游逐字节一致）⇒ 要"重新论证"并登记例外，代价大；
+--     · 第二版按用户提议改走本文件（`lift` + `options.point_target`，机制是对的、
+--       零安全层改动），并把高度做成菜单滑块（-3~6、步长 0.1、可负数）。
+--   ⇒ 用户上机前判断**收益不足**：本文件的 `lift` 锚点是**实体原点（地表）**，
+--     而"现状高度"= 引擎 `aim` + 0.25，两者差多少**只能靠试**，
+--     试出来的数也未必能迁移到别的姿态/其它强袭虫 ⇒ 不成比例。
+--   ⚠ 因此**没有**任何强袭虫条目留在本文件里 —— 这 4 个回到**通用标记接管**
+--     （引爆位置交给引擎 `aim`，与巨型构筑/虫洞那套无关）。**别再照着加回来**：
+--     要动它们的高度，先想清楚"相对原点的绝对高度"怎么离线确定，否则还是试错。
+--
+-- ⚠ 尖啸巢 / 孢子喷涌虫**不在这里**：它们走 `structure_profiles` 的
+--   `structure_tower` 分支（**有**锚点几何，靠伤害拆，不靠"进入洞口"的距离判定）
+--   ⇒ 爆点由 `structure_route.lua` 算（主干旁 2.5 m），不需要 `lift`。
+--   ⚠ 历史教训（本文件 2026-10-13 记过一次）：把塔类目标登记到**这里**是错的 ——
+--     `blast_sites` 是**到达段**的消费方，而它整块嵌在 `e.identity==old.lock.identity`
+--     的守卫里 ⇒ 必须先有锁；而锁由 priority 建立，priority 的**通用路**有敌阵营硬门槛。
+--     塔类目标既不在 `structure_profiles`（那时）又不是敌人 ⇒ **永远拿不到锁**
+--     ⇒ 本文件的条目**从未被走到过**（实机全日志 0 条 `blast_point`）。
 
 return sites

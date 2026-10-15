@@ -4,6 +4,13 @@ local L=require('g60.native_observer')
 local Data=require('g60.native_target_data')
 local Authority=require('g60.native_authority')
 local Memory=require('g60.ping_memory')
+-- ★★★ 2026-10-14（用户要求远距离追踪）：接管距离上限的**唯一实现** ★★★
+--   ⚠ 为什么本模块也必须用它：这里跑在**标记观察谓词**里 —— 超距的标记
+--     **进不了队列**，后面所有路径都看不到它。主支 v0.1.35 正是漏改了**这一处**
+--     ⇒ 用户报「有一些构筑标记后 G60 不会去追踪」（实机 9 条 `OUTSIDE_200M`）。
+--   ⚠ 局部名 `Policy` 与 `native_priority` 一致（build.py 把 `require(...)`
+--     替换成别名 `TargetPolicy`，局部名不被替换）—— 且本文件无同名冲突。
+local Policy=require('g60.target_policy')
 local M={}
 function M.new(env,options)
     options=options or {}
@@ -312,7 +319,15 @@ function M.new(env,options)
                         or e.identity~=m.identity or d.unit(e)~=m.unit then return false end
                     local p=options.position and options.position(e) or d.position(e);local distance=0
                     for i=1,3 do distance=distance+(p[i]-origin[i])^2 end
-                    if distance>=40000 then diagnose(m.id,m.resource,'OUTSIDE_200M');return false end
+                    -- ★★★ 2026-10-14：距离上限走**唯一实现**（`Policy.max_distance2`）★★★
+                    --   ⚠⚠ **这一处最关键**：它跑在"标记观察谓词"里 ⇒ 超距的标记
+                    --     **进不了队列**，后面所有路径都看不到它。
+                    --     主支 v0.1.35 漏改的就是这一处 ⇒ 用户报
+                    --     「有一些构筑标记后 G60 不会去追踪」（实机 9 条 `OUTSIDE_200M`）。
+                    --   结构目标（用户点名的 6 类）可自定义上限；其他仍 200 m。
+                    if distance>=Policy.max_distance2(env,m.resource) then
+                        diagnose(m.id,m.resource,'OUTSIDE_RANGE');return false
+                    end
                     diagnose(m.id,m.resource,'ACCEPTED');return true
                 end)
                 if not good then diagnose(m.id,m.resource,'POSE_READ_FAILED:'..tostring(value)) end

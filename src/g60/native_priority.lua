@@ -284,7 +284,9 @@ function M.new(env)
                 local ok_pos,p=pcall(d.position,e)
                 if not ok_pos then return false end
                 local distance=0;for i=1,3 do distance=distance+(p[i]-own[i])^2 end
-                if distance>=40000 then return false end
+                -- ★ 2026-10-14：距离上限的唯一实现在 `Policy.max_distance2`
+                --   （结构目标可自定义、其他仍 200 m）——见 target_policy 的说明。
+                if distance>=Policy.max_distance2(env,e.resource) then return false end
                 assert(scope.validate() and d.validate(),'priority target observation changed')
                 local alive=scope.calls.target_valid(nil,e.id,ffi.cast('const void *',e.address))
                 assert(scope.validate() and d.validate(),'priority target changed during validation')
@@ -396,7 +398,41 @@ function M.new(env)
                 --     `generic_rejected;…;detail=NOT_ENEMY_RESOURCE`（或 sticky 路径的
                 --     `structure_lock_lost;…;detail=NOT_ENEMY_RESOURCE`）—— 已被白名单化，
                 --     用户可直接看到"谁因为不是敌人被拒了"。
-                if not EnemyFaction.is_enemy(e.resource) and not Filter.marked_allowed(e.resource) then
+                -- ★★★ 体内爆点名册的目标必须放行（2026-10-14，用户报"巨型构筑者不再上升 8.0"）★★★
+                --
+                --   症状（用户）：v0.1.6~v0.1.8 正常 —— G-60 飞到巨型构筑者的**体内爆点**
+                --     （实体原点 + `lift` 8.0）引爆；**v0.1.9 起不再上升 8.0**
+                --     （日志里 `blast_point;…;lift=8.00` 一条都没有 ⇒ 退回引擎 `aim`
+                --      ⇒ 在它**底部**引爆 ⇒ 不掉血）。
+                --
+                --   根因（离线可复现）：本门槛是 v0.1.9（`bc305cc`）新加的，而体内爆点名册
+                --     （`compat/blast_sites.lua`）里的目标是**构筑物**，不是敌人：
+                --       4232ee48e2cfd24e = cyborg_colony_spawner_base（巨型构筑者）
+                --         · `EnemyFaction.is_enemy` ⇒ **false**（它不是 AiEnemy，是建筑）
+                --         · `Filter.marked_allowed` ⇒ **false**（那张表只有运输船/增援飞船）
+                --       ⇒ 恒返回 `NOT_ENEMY_RESOURCE` ⇒ 拿不到 `old.lock`。
+                --     ⚠ 而"体内爆点"整块**嵌在 `old.lock` 的守卫里**（见
+                --       `experimental_runtime.lua` 的"体内爆点"段）⇒ 锁拿不到 ⇒
+                --       连 `lift` 都不会被算出来 ⇒ 症状恰好是"没有上升 8.0"。
+                --     ⚠ 它**不经过**上面的虫洞白名单分支：`structure_profiles` 里没有它
+                --       （那里 16 条全是 `kind="structure_hole"`），所以它落到**本函数**。
+                --
+                --   为什么用名册当例外源（而不是往别处抄一份哈希）：
+                --     · 名册本身就是"必须换体内爆点的目标"的**唯一清单**；
+                --       能算体内点 ⇔ 该被放行 —— 两件事同源，不会漂移。
+                --     · 本工程明令"同一个判断不许出现两处"（`enemy_faction` / `mark_tier`
+                --       都是这条纪律的产物）⇒ 不许在这里再抄一份资源表。
+                --     · 与上面 `Filter.marked_allowed` 那个例外**同形**：都是"玩家点名标记、
+                --       但引擎不把它当敌人"的显式白名单，且都只作用于**玩家标记**路径。
+                --
+                --   失败方向（知情选择）：本例外**只**对名册里的资源生效，其余照旧一律拒；
+                --     名册是离线 MurmurHash64A 反查 + Darctor `Hash.csv` 双源核对过的
+                --     （见 `compat/blast_sites.lua` 文件头）⇒ 误放友方的风险与
+                --     `marked_allowed` 同级。改判据请改**名册**，不要在这里加哈希。
+                --   ⚠ 开关关闭时 `env.blast_sites` 为 nil ⇒ 本例外自动失效，
+                --     行为逐字节回到"只有 marked_allowed 例外"的旧版本（一键回退）。
+                if not EnemyFaction.is_enemy(e.resource) and not Filter.marked_allowed(e.resource)
+                    and not (env.blast_sites and env.blast_sites[e.resource]) then
                     return nil,'NOT_ENEMY_RESOURCE'
                 end
                 local ok_valid,valid_now=pcall(function()
@@ -451,7 +487,7 @@ function M.new(env)
                 if not ok_pos or not p then return nil,'POSITION_UNREADABLE' end
                 local distance=0
                 for k=1,3 do distance=distance+(p[k]-own[k])^2 end
-                if distance>=40000 then return nil,'OUT_OF_RANGE' end
+                if distance>=Policy.max_distance2(env,e.resource) then return nil,'OUT_OF_RANGE' end
                 -- ★★ 方案一（2026-10-07，用户拍板）：认领 profile 的目标用**几何爆点** ★★
                 --
                 --   实机取证（2026-10-07 War Strider 整合测试局）：generic 写的
@@ -634,17 +670,23 @@ function M.new(env)
                     --   尖啸巢穴不在表内 ⇒ 已满足要求。
                     --   这里把原因打出来，让"未接管"变成可观测事实而非推测。
                     if not profile then
-                        -- ★ 泰坦标记不归 priority 管（2026-09-29）★
-                        -- 泰坦的接管由 titan 段负责（它需要引擎 selection + titan_route
-                        -- 那套为体型标定的几何），priority 的"设目标点"路径对泰坦不适用。
-                        -- ⇒ **静默**跳过，不打 NOT_IN_WHITELIST ——
-                        --   否则日志会出现"不支持"的误导信息。
-                        --   实机就是被这类误导性日志带偏过（我看到 RESOURCE_NOT_SUPPORTED
-                        --   以为是"引擎没选中"，其实是我们自己拒的）。
-                        -- 放行与否的唯一判定在 runtime 的 claim_profile，这里只做分流。
+                        -- ★★★ 2026-10-14（用户最终方案）：**泰坦走虫洞那条远距离追踪路** ★★★
+                        --   虫洞之所以能远距离追踪，是因为它**是结构** ⇒ 走结构接管路
+                        --   （priority 锁 + `max_takeover_distance` 滑块）。⇒ 让标记的
+                        --   泰坦也走**同一套**：这里**不再 `return`**，让它继续走下面的
+                        --   通用接管路径（`generic_validate`；泰坦在 `enemy_faction` 里，
+                        --   过得了那道硬门槛）。
+                        --   ⚠ 到 `titan_approach_dist`（默认 10 m）时 `titan_approach`
+                        --     会**放开接管** ⇒ 引擎自己选中它 ⇒ 泰坦链成为**最后的唯一
+                        --     引导者**。这正是 A/C/D 路当初缺的那一环：它们接管到底、
+                        --     从不放手，等于在链前面插了第二个驱动者 ⇒ 爆点坏。
+                        --   ⚠ 与 v0.2.29/v0.2.31 拆掉的**是同一件事**，区别只有那一环。
+                        --   ⚠ 保留这个 `if` 块**不为执行、只为留档**（判据与
+                        --     `env.titan_profile` 同源，改动它没有意义；删掉会让下一个人
+                        --     看不出"这里曾经跳过泰坦"）。
                         if env.titan_enabled~=false and env.titan_profile
                             and e and e.resource==env.titan_profile.resource then
-                            return
+                            -- 不再 return：与虫洞同路接管。
                         end
                         -- ★★★ 通用标记目标接管（2026-09-30，用户要求）★★★
                         --
@@ -686,7 +728,35 @@ function M.new(env)
                     if e.identity~=structure_mark.identity or d.unit(e)~=structure_mark.unit then return end
                     if available and not available(e.identity) then return end
                     if blocked_now and e.identity==blocked.identity then return end
-                    local pose=Context.capture(scope.read,env.base,env.exe,e.id,profile,structure_mark)
+                    -- ★★★ 2026-10-14（用户要求远距离追踪）：**免几何 profile** 走 motion 位置 ★★★
+                    --   `motion_point=true` 的 profile（构筑 / 巨型构筑 / 飞船）没有锚点几何
+                    --   ⇒ `Context.capture` 的 `assert(boss and belly,'Titan bones unavailable')`
+                    --     会抛错 ⇒ 被本分支的 pcall 吞成 `structure_unavailable`
+                    --     ⇒ **这几类一次都锁不上**（主支 v0.1.34 就是栽在这个形状上：
+                    --       实机 8 条同名错误，用户报「空 ping 都能远距离追踪，
+                    --       标记的构筑反而不能」）。
+                    --   ⚠⚠ 而"锁不上"正是"远距离追踪失效"的直接原因 —— 没有锁就没有航路。
+                    --   ⚠ 这里给的是**真**校验（不是 `return true` 假装成功）：
+                    --     重新读一次 motion 位置，与读到的值不一致就判失败
+                    --     —— 与 `titan_context.capture` 的 guards 复查同一语义。
+                    local pose
+                    if profile.motion_point then
+                        local dpos=Data.new(scope.read,env.base,env.exe)
+                        local mpoint=dpos.position(e)
+                        -- ⚠⚠ 必须带 `validate` 字段：下面那句
+                        --   `assert(pose.validate() and d.validate() and scope.validate(),…)`
+                        --   否则对 nil 取字段 ⇒ 抛 `attempt to call field 'validate'`。
+                        pose={point=mpoint,validate=function()
+                            local ok,again=pcall(dpos.position,e)
+                            if not (ok and again and type(again[1])=='number') then return false end
+                            for k=1,3 do
+                                if math.abs(again[k]-mpoint[k])>1e-6 then return false end
+                            end
+                            return true
+                        end}
+                    else
+                        pose=Context.capture(scope.read,env.base,env.exe,e.id,profile,structure_mark)
+                    end
                     local distance=0;for k=1,3 do distance=distance+(pose.point[k]-own[k])^2 end
                     -- ★ 接管时机诊断（2026-09-28）★
                     -- 这个距离过去算完只用于 200m 射程检查就丢弃了，导致日志里
@@ -728,7 +798,7 @@ function M.new(env)
                                 ..','..tostring(pose.point[3]))
                         end
                     end
-                    if distance>=40000 then return end
+                    if distance>=Policy.max_distance2(env,e.resource) then return end
                     assert(pose.validate() and d.validate() and scope.validate(),'marked structure changed')
                     -- ★ 裁剪 K：软信号校验（原生 target_valid 只是参考，以只读复核为准）
                     if not check_alive(e,'NEW_MARK') then return end
@@ -811,11 +881,37 @@ function M.new(env)
                 -- ★★ 强制提升 state=4（见文件上方 promote_state4 的完整说明）★★
                 --   放在点写入**之后**：先让记录里装好我们的目标，再提升状态 ——
                 --   顺序与引擎自己的提升块一致（candidates → clear → 置 state 4）。
-                --   ⚠ 只对**虫洞**做：通用敌人引擎自己会提升，不需要我们插手；
-                --     少碰一类目标 = 少一类风险面。
+                -- ★★★ 2026-10-14（用户报「普通敌人偶尔生效偶尔不生效，
+                --   即使生效也要等一段时间才飞过去」）—— **从主支补回** ★★★
+                --
+                --   主支 2026-10-13（他们的原话，连实机证据一起抄过来）：
+                --     「**原来这里只对结构提升**（`chosen.marked_structure and not
+                --      chosen.generic`），通用目标（玩家标记的**敌人**）**刻意不提升**，
+                --      理由是『通用敌人引擎自己会提升，不需要我们插手；
+                --      少碰一类目标 = 少一类风险面』。
+                --      ⚠⚠ **那个假设实机不成立** —— 引擎只在**它自己**想锁目标时
+                --      才提升：引擎没提升 ⇒ 手雷停在 **state 3** ⇒ 我们写进去的点
+                --      **驱动不了它** ⇒ 表现就是"有时候飞过去，有时候不飞"
+                --      （**与标记本身无关**，取决于引擎当帧有没有自己的锁定意图
+                --      ⇒ 间歇性）。」
+                --     实机证据（同一局 4 颗雷）：
+                --       · 907/910/917（结构）拿到 `force_lock;…;detail=state=3->4`
+                --         ⇒ `sel_probe` state 4 各 44/58/28 次 ⇒ **全部成功驱动**
+                --       · 1006（标记的**敌人** 519）`force_lock` **0 次**、
+                --         `sel_probe` state 4 **0 次** ⇒ **锁上了却驱动不了**
+                --         （`priority_locked;…;PLAYER_MARK_GENERIC` 有，雷就是不飞）
+                --     ⇒ 现在**两类都提升**（与结构走同一条**已验证**的路：5/5 成功）。
+                --
+                --   ⚠ 用户那句"要等一段时间才飞过去"正对应这里的另一半：
+                --     引擎**自己**提升的时刻由它决定（它想锁谁才提升）⇒ 等它 = 延迟。
+                --   ⚠ 开关仍在 `env.force_lock_enabled`（**状态级、默认开**）——
+                --     它由 `promote_state4` 内部检查，不在这里再判一次
+                --     （"同一个判断不许出现两处"）。
+                --   ⚠ 这是本工程**唯一的写内存路径**，扩大它的作用面是**知情选择**：
+                --     不扩 = 继续赌引擎（就是用户报的这个间歇性问题）。
                 --   ⚠ 按 (flight_start, 结果) 去重：一颗雷最多留两条（成功/失败），
                 --     既能看到"到底成没成"，又不会逐帧刷屏。
-                if chosen.marked_structure and not chosen.generic then
+                if chosen.marked_structure then
                     local okp,pdetail=promote_state4(env,scope,c)
                     local fkey='fl:'..tostring(c.flight_start)..':'..tostring(okp)
                     if env.emit and not M.probed_fields[fkey] then
@@ -871,10 +967,29 @@ function M.new(env)
                     if env.blast_safe_hold then
                         hold_ok,held=pcall(env.blast_safe_hold,scope,c)
                     end
-                    if hold_ok and held then
+                    if hold_ok and not held then
                         -- 玩家在安全区内 ⇒ 本帧不引爆，继续引导（返回 lock 保持航路）
+                        --
+                        -- ★★★ 2026-10-14：**从主支补回两处修复**（照抄 g60-bughole-lock
+                        --   `native_priority.lua` L1042-1056，连他们的理由一起抄）★★★
+                        --
+                        -- 【极性】原来写的是 `if hold_ok and held then`。但
+                        --   `blast_safe_hold_at` 的返回值是「**true = 安全 / 可炸**」
+                        --   （主支 runtime 里那句注释写得很清楚：`返回值取反`），
+                        --   而这里变量名叫 `held` ⇒ 语义反了 ⇒
+                        --   **玩家在安全区内时反而引爆（误炸队友），安全时却按住不炸**。
+                        --   ⇒ 判据必须是 `not held`（"不安全"才按住）。
+                        --
+                        -- 【`track`】这个 `lock` 原来只带 `record`/`resource`，而 runtime
+                        --   对 `kind=='lock'` 是**无条件**取 `result.track.identity` ⇒
+                        --   `attempt to index field 'track' (a nil value)` ⇒
+                        --   **整帧剩余的雷全部被丢掉**（不是"这一颗不炸"那么轻）。
+                        --   兄弟 lock（下面主路径那个）**带** `track` ⇒ 这里也必须带 ——
+                        --   本工程的老教训："只给一份加复核 ⇒ 另一条路越界溜进来"。
                         return {kind='lock',reason=reason..'+SAFE_HOLD',changed=mutated,
-                            record=after,resource=chosen.entity.resource}
+                            record=after,resource=chosen.entity.resource,
+                            track={id=chosen.entity.id,identity=chosen.entity.identity,unit=chosen.unit,
+                                generic=chosen.generic,titan=chosen.titan}}
                     end
                     local ex=Explosive.capture(scope.read,env.base,env.exe,c.identity_bytes,env.fuse_profile)
                     assert(ex.validate() and check()==after,'early explosive changed')

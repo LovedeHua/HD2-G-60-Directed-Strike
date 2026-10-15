@@ -29,4 +29,48 @@ end)
 test('scene reset drops old claims',function()
     local r=R.new();r:claim(a,id(10));r:reset();assert(r:available(b,id(10)))
 end)
+-- ★★★ 2026-10-14（用户要求"每个标记可自定义分配手雷数量"）：多 owner 语义 ★★★
+--   默认 `R.new()`（cap=1）必须与旧行为**逐字节一致** —— 上面 6 条就是它的守门。
+--   下面测 cap>1 的新能力。主支同款语义。
+test('a configured cap lets several grenades share one target',function()
+    local r=R.new(2);r:claim(a,id(10))
+    assert(r:available(a,id(10)) and r:available(b,id(10)))          -- 名人额未满
+    r:claim(b,id(10));assert(r:load(id(10))==2)
+    assert(not r:available(R.owner(match(3)),id(10)))                 -- 满 ⇒ 第三颗拒绝
+end)
+test('load reports the current occupancy of a target',function()
+    local r=R.new(3)
+    assert(r:load(id(10))==0)
+    r:claim(a,id(10));assert(r:load(id(10))==1)
+    r:claim(a,id(10));assert(r:load(id(10))==1)                       -- 同 owner 幂等
+    r:claim(b,id(10));assert(r:load(id(10))==2)
+end)
+test('claim beyond the cap raises instead of silently overfilling',function()
+    local r=R.new(1);r:claim(a,id(10))
+    assert(not pcall(r.claim,r,b,id(10)),'cap=1 时第二颗必须断言失败')
+end)
+test('set_cap retunes the limit at run time',function()
+    local r=R.new(1);r:claim(a,id(10))
+    assert(not r:available(b,id(10)))
+    r:set_cap(2);assert(r:available(b,id(10)))                        -- 上限提高 ⇒ 有名额
+    r:set_cap(0);assert(r:available(a,id(10)))                        -- 夹取 ≥1，本人仍可持有
+end)
+test('keep_only releases every other claim held by that owner',function()
+    local r=R.new(2);r:claim(a,id(10));r:claim(a,id(11))
+    assert(r:load(id(10))==1 and r:load(id(11))==1)
+    r:keep_only(a,id(10))
+    assert(r:load(id(10))==1 and r:load(id(11))==0)                   -- 只留一个
+    assert(r:available(b,id(11)),'腾出的名额必须让别人能拿到')
+end)
+test('reconcile grace keeps a briefly missing owner then reclaims',function()
+    local r=R.new(1);r:claim(a,id(10))
+    r:reconcile({},3);assert(r:load(id(10))==1,'一次缺席不足以判定离场')
+    r:reconcile({},3);r:reconcile({},3);assert(r:load(id(10))==0,'连续缺席到 grace 才回收')
+end)
+test('releasing one owner does not disturb the others on the same target',function()
+    local r=R.new(3);r:claim(a,id(10));r:claim(b,id(10));r:claim(R.owner(match(3)),id(10))
+    r:release_owner(a)
+    assert(r:load(id(10))==2)
+    assert(r:available(a,id(10)),'释放后该 owner 又可用')
+end)
 print('RESULT '..passed..' passed; 0 failed (target reservation lifecycle)')

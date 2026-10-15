@@ -93,9 +93,32 @@ end
 M.TEXT = {
     en = {
         ['mod'] = 'G-60 Directed Strike',
-        ['blast_safe_radius.label'] = 'Blast safe zone radius',
+        -- ★★★ 2026-10-14（用户要求）：远距离追踪的接管距离上限 ★★★
+        --   ⚠ 2026-10-14 用户实机修正：**只保留结构目标的说明**。
+        --     泰坦/蟑龙**不由本项控制** —— 它们走各自专门的链路（泰坦靠**引擎选中**
+        --     触发 `titan_selected`，再由泰坦链引导），标记门那个数字管不到它们。
+        --     ⇒ 说明里不再提"其他敌人 100 m"，免得说出一个不成立的规则。
+        ['max_takeover_distance.label'] = 'Max takeover range: structures (m)',
+        ['max_takeover_distance.desc'] =
+            'How far away a marked STRUCTURE (bug hole / fabricator / Shrieker nest / Spore Spewer / landed warp ship / broadcast tower) may be and still be taken over. Structures only (default 250). The non-structure range is the separate item below',
+        --    ⚠ 用户 2026-10-14 报「现在的都不知道在说谁的放手距离」⇒
+        --     上面那个开关撤出菜单后，光看"Release distance"看不出对象是谁。
+        --     ⇒ label 里**点名对象**（Titan approach），desc 里补全机制。
+        -- ★★★ 2026-10-14（用户最终方案）：接近标记的泰坦后放手 ★★★
+        ['titan_approach_dist.label'] = 'Titan approach: let-go distance (m)',
+        ['titan_approach_dist.desc'] =
+            'Only for a marked Titan / Titan variant / Dragonroach. The G-60 is first driven toward it like any other marked target; once it is this close we let go, so the engine selects the Titan and its own chain guides it (that is what keeps the blast point correct). 3 to 60 m, default 10',
+        -- ★★★ 2026-10-14（第二轮，用户要求：泰坦与其他敌人合并成一档）★★★
+        ['other_takeover_distance.label'] = 'Max takeover range: other targets (m)',
+        ['other_takeover_distance.desc'] =
+            'How far away a marked non-structure target (Titan / Titan variant / Dragonroach / ordinary enemy ...) may be and still be taken over. Titian family and other enemies share this one value. The structure range above is separate. Default 200',
+        -- ★★★ 2026-10-14（用户要求「安全区以引爆点为中心」）★★★
+        ['safe_zone_target_radius.label'] = 'Safe zone (around blast point)',
+        ['safe_zone_target_radius.desc'] =
+            'No detonation while a player is within this radius (metres) of the EXPECTED BLAST POINT; this is the main check. 0 = off',
+        ['blast_safe_radius.label'] = 'Safe zone (around grenade)',
         ['blast_safe_radius.desc'] =
-            'While a player is within this radius (metres) the G-60 will not detonate and keeps tracking its target. 0 = off',
+            'Optional extra check: no detonation while a player is within this radius (metres) of the G-60 itself. 0 = off (default)',
         ['blast_safe_orbit.label'] = 'Safe zone orbit radius',
         ['blast_safe_orbit.desc'] =
             'While the safe zone holds the grenade it orbits the target at this radius (metres); larger keeps it further away',
@@ -108,20 +131,47 @@ M.TEXT = {
         ['friendly_veto_enabled.label'] = 'Clear friendly locks',
         ['friendly_veto_enabled.desc'] =
             'When the engine is locked onto a friendly or neutral unit, clear it so the grenade can be taken over. The ping marker itself cannot be removed',
-        ['force_lock_enabled.label'] = 'Force takeover with no enemies',
-        ['force_lock_enabled.desc'] =
-            'Promote the G-60 to a guidable state when no enemy is around (the only memory-write path in this mod)',
         ['allow_state3.label'] = 'Early takeover',
         ['allow_state3.desc'] = 'Allow taking over the G-60 early, while it is still in state 2/3',
-        ['self_probe_enabled.label'] = 'Self probe',
-        ['self_probe_enabled.desc'] = 'Read-only: log the local player entity and position (diagnostics)',
-        ['enemy_veto_enabled.label'] = 'Vehicle veto',
-        ['enemy_veto_enabled.desc'] = 'Do not let the G-60 chase the dropship or the Illuminate reinforcement ship',
+        -- ★★★ 2026-10-14（用户要求）：自机探针**并进**诊断日志开关 ★★★
+        ['diagnostics_enabled.label'] = 'Diagnostic logging (incl. self probe)',
+        ['diagnostics_enabled.desc'] =
+            'Write high-volume diagnostics to the mod log (perf, sel_probe, link, mark_queue, takeover_probe, selfprobe, ...). Off = quiet log. Evidence lines needed to judge success/failure are ALWAYS kept',
+        -- ★★★ 2026-10-14（用户要求）：分配机制的两个上限 ★★★
+        ['max_grenades_per_target.label'] = 'Grenades per target (one mark)',
+        ['max_grenades_per_target.desc'] =
+            'With a single mark on the field, how many G-60s may track that one target at the same time (1 = old behaviour)',
+        ['multi_mark_grenades_per_target.label'] = 'Grenades per target (many marks)',
+        ['multi_mark_grenades_per_target.desc'] =
+            'With two or more marks, how many G-60s each target may take (1 = one grenade each). Marks are assigned in the order they were pinged',
     },
     ['zh-Hans'] = {
         ['mod'] = 'G-60 定向打击',
-        ['blast_safe_radius.label'] = '爆炸安全区半径',
-        ['blast_safe_radius.desc'] = '玩家在这个半径（米）内时 G-60 不引爆，继续追踪目标；0=关闭',
+        -- ★★★ 2026-10-14（用户要求）：远距离追踪的接管距离上限 ★★★
+        --   ⚠ 2026-10-14 用户实机修正：**只保留结构目标的说明**（泰坦等不由本项控制）。
+        --   ⚠ 同日第二轮：距离**合并成两档**后，两个滑块名字太像 ⇒
+        --     这条**点名"结构目标"**，与下面那条"其他目标"对称（否则看不出在说谁）。
+        ['max_takeover_distance.label'] = '接管距离上限：结构目标（米）',
+        ['max_takeover_distance.desc'] =
+            '标记的**结构目标**（虫洞/构筑/尖啸巢/孢子喷涌虫/落地穿梭舰/广播台）离多远之内才接管。**只影响这些结构目标**（默认 250）。非结构目标见**下面那一项**',
+        -- ★★★ 2026-10-14（用户最终方案）：接近标记的泰坦后放手 ★★★
+        --   ⚠ 用户同日报「现在的都不知道在说**谁的**放手距离」⇒
+        --     上一个开关撤出菜单后，光看"放手距离"看不出对象 ⇒ label 点名对象、
+        --     desc 补全"先驱动过去、再放手让链接管"这条机制。
+        ['titan_approach_dist.label'] = '接近泰坦的放手距离（米）',
+        ['titan_approach_dist.desc'] =
+            '**只对**标记的 泰坦 / 泰坦变体 / 蟑龙 生效。G-60 先像普通标记目标一样被驱动过去，靠到这个距离就**放开接管**，让引擎自己选中它、由它自己的链引导（这样爆点才准）。3~60 米，默认 10',
+        -- ★★★ 2026-10-14（第二轮，用户要求：泰坦与其他敌人合并成一档）★★★
+        ['other_takeover_distance.label'] = '接管距离上限：其他目标（米）',
+        ['other_takeover_distance.desc'] =
+            '标记的**非结构**目标（泰坦 / 泰坦变体 / 蟑龙 / 普通敌人…）离多远之内才接管。**泰坦家族与其他敌人共用这一个值**。上面那个结构距离是**另一档**。默认 200',
+        -- ★★★ 2026-10-14（用户要求「安全区以引爆点为中心」）★★★
+        ['safe_zone_target_radius.label'] = '安全区半径（以引爆点为中心）',
+        ['safe_zone_target_radius.desc'] =
+            '玩家离**预期引爆点**在这个半径（米）内时不引爆 —— 这是主判据；0=关闭',
+        ['blast_safe_radius.label'] = '安全区半径（以手雷为中心）',
+        ['blast_safe_radius.desc'] =
+            '可选的附加判据：玩家离**手雷本体**在这个半径（米）内时不引爆；0=关闭（默认）',
         ['blast_safe_orbit.label'] = '安全区绕行半径',
         ['blast_safe_orbit.desc'] = '安全区生效时手雷绕目标盘旋的半径（米）；越大离目标越远',
         ['safe_zone_engine_hold.label'] = '安全区管引擎自瞄的雷',
@@ -130,14 +180,19 @@ M.TEXT = {
         ['safe_zone_veto_selection.desc'] = '实验：玩家在圈内且手雷已贴到取消线以内时，清掉引擎选中的目标（引信就没有可撞的对象）。看 safe_veto_* 日志判读',
         ['friendly_veto_enabled.label'] = '清除友方锁定',
         ['friendly_veto_enabled.desc'] = '引擎锁着友方/中性单位时把它清掉（手雷才能被接管）—— 无法抹掉游戏里那个 ping 标记本身',
-        ['force_lock_enabled.label'] = '无敌人强制接管',
-        ['force_lock_enabled.desc'] = '无敌人时把 G-60 提升为可引导状态（本工程唯一的写内存路径）',
         ['allow_state3.label'] = '早期接管',
         ['allow_state3.desc'] = '允许在 state 2/3 早期接管 G-60',
-        ['self_probe_enabled.label'] = '自机探针',
-        ['self_probe_enabled.desc'] = '只读输出玩家实体与坐标（诊断用）',
-        ['enemy_veto_enabled.label'] = '载具否决',
-        ['enemy_veto_enabled.desc'] = '不让 G-60 追运输船 / 光能族增援飞船',
+        -- ★★★ 2026-10-14（用户要求）：自机探针**并进**诊断日志开关 ★★★
+        ['diagnostics_enabled.label'] = '诊断日志（含自机探针）',
+        ['diagnostics_enabled.desc'] =
+            '把高频诊断写进 mod 日志（perf、sel_probe、link、mark_queue、takeover_probe、自机探针 等）。关掉 = 日志安静。⚠ 判断成败所需的证据行**永远保留**',
+        -- ★★★ 2026-10-14（用户要求）：分配机制的两个上限 ★★★
+        ['max_grenades_per_target.label'] = '单标记：每目标手雷数',
+        ['max_grenades_per_target.desc'] =
+            '场上只有 1 个标记时，允许几颗 G-60 同时追它（1 = 维持原行为）',
+        ['multi_mark_grenades_per_target.label'] = '多标记：每目标手雷数',
+        ['multi_mark_grenades_per_target.desc'] =
+            '场上有 2 个及以上标记时，每个目标各接受几颗（1 = 每个目标一颗）。手雷按标记的先后顺序分配',
     },
 }
 

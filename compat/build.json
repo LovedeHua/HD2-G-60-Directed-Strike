@@ -25,6 +25,7 @@
     "structure_route": "StructureRoute",
     "native_titan_aim": "Titan",
     "native_target_data": "TargetData",
+    "titan_approach": "TitanApproach",
     "native_candidates": "Candidates",
     "target_policy": "TargetPolicy",
     "ping_memory": "PingMemory",

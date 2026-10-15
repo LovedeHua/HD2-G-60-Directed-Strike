@@ -7,6 +7,11 @@ local Allowlist=require('g60.target_allowlist')
 local Reservations=require('g60.target_reservations')
 local Minimal=require('g60.native_minimal')
 local Titan=require('g60.native_titan_aim')
+-- ★★★ 2026-10-14（用户最终方案）：接近标记的泰坦、到距离后放手 ★★★
+--   ⚠ 这是 tick 闭包的 upvalue ⇒ **只能是这一个 require**，不许在这里多做别的事：
+--     tick 闭包恰好 60 upvalue，多一个被它捕获的 local 会让整份 chunk 编译失败
+--     （2026-10-10 实机事故）。转发一律走 `env.*` 包装（见 claim_profile 之后）。
+local TitanApproach=require('g60.titan_approach')
 local Priority=require('g60.native_priority')
 -- 竞争态熔断阈值（见 g60.priority_faults）。不写 `local Faults=require(...)`：
 -- build.py 会把 require 替换成同一个 chunk 别名，同名 local 会变成 `local Faults=Faults`。
@@ -145,6 +150,37 @@ function M.new(env)
         --                    普通虫洞/结构锁拿不到 ⇒ 单独一张表。
         --   ⚠ 一律进 P：tick 闭包 upvalue 已近 Lua 5.1 的 60 上限（见上面 pmark 的说明）。
         dg={},dg_nopos={},tpos={},
+        -- ★★★ 2026-10-14（用户要求「安全区以**引爆点**为中心」）★★★
+        --   `tpos_frame` = 该手雷上次刷新 `P.tpos`（圆心/引爆点缓存）的帧。
+        --   为什么需要节流：`target_position` 走 `TargetContext.capture`，不便宜
+        --   ⇒ 不能每帧每颗雷都付（perf 门盯着 layout_reads）。
+        --   ⚠ 只占 P 的字段（tick 的 xpcall 闭包已近 60 upvalue 上限，不能新增 local）。
+        tpos_frame={},
+        -- ★★★ 2026-10-14（修"其他标记目标偶尔行偶尔不行"）★★★
+        --   `lastpt` = 该手雷**上一次真正算出来的绕行点**（原样复用，不重新偏移）。
+        --
+        --   为什么必须有它（实机证据，2026-10-15 那一局）：
+        --     绕行圆心 `c = blast_point or point or P.tpos[id]`。对**实体**目标
+        --     （标记的普通敌人 —— 用户报的就是这类）前两个恒为 nil ⇒ 圆心**只能**来自
+        --     `P.tpos`，而它每 30 帧才刷新一次、**读失败就置 nil**（刻意的"不假装成功"）。
+        --     圆心为 nil ⇒ `arr_opts` 为 nil ⇒ arrival 退回**实体 aim** 路径 ⇒
+        --     而绕行期间我们写的是**点**，priority 据此判定"已拥有航点"、**跳过写回实体选择**
+        --     ⇒ 实体 aim 的前置条件 `c.selection.id==target.id` 必然不成立 ⇒
+        --     **每帧** `arrival selected target mismatch`。
+        --     后果不是"慢一点"：那 30 帧里每帧都记一次**引导失败**，
+        --     连 30 次就 `guide_give_up` 把这颗雷**退休 = 白扔**。
+        --     实机计数：entity=954 已经到 **28/30**（差两次就报废）。
+        --   ⇒ 修法：圆心解不出来时，**原样复用上一次的绕行点**（不重算、不偏移），
+        --     保证"绕行期间永远有点注入" ⇒ 永不退回实体 aim ⇒ 熔断不再被喂。
+        --   ⚠ 复用值必须是**算好的整点**（含 +1.0 抬升），再算一次会每帧累加漂移。
+        lastpt={},
+        -- ★ 2026-10-14：`guide_mismatch` 的节流表（每颗雷 1 条/秒）——
+        --   与其它诊断表一样**放进 P**（tick 的 xpcall 闭包已近 60 upvalue 上限）。
+        gm={},
+        -- ★ 安全区拦截日志的去重表（键 = 手雷:拦截依据）——
+        --   主支记录它自己一局能打 1000~1900 条 `blast_hold;`，会把别的诊断挤过
+        --   emit 的 60 行节流阈值 ⇒ 必须每 60 帧才打一条（见 blast_safe_hold_at）。
+        bh={},
         -- ★★ 2026-10-10 安全区要管"**引擎自己瞄的雷**"（用户报「没标记时不生效」）★★
         --   这类雷我们**不接管**（不建 tracked、不设 lock/titan），所以状态只能挂这里：
         --     · `ehp` = 该手雷"已打过一条 `safe_engine;`"的去重表
@@ -251,7 +287,16 @@ function M.new(env)
         contention_count=contention_count+1
         return contention_count>=CONTENTION_LIMIT
     end
-    local reservations=env.exclusive_targets and Reservations.new()
+    -- ★★★ 2026-10-14（用户要求）：**每目标最多几颗 G-60 预约，可配置** ★★★
+    --   移自主支 `g60-bughole-lock`。用户要的三条：单个标记可自定义手雷数量、
+    --   多个标记也可自定义、按**时间顺序**分配（时间序在挑选处用 `marked_at` 实现）。
+    --   · `exclusive_targets==false` ⇒ 不建 reservations（历史上就是"完全不做预约"）
+    --   · 否则每目标最多 `env.max_grenades_per_target` 颗（默认 1 = 维持既有行为）
+    --   ⚠ 两个开关是两回事，不要混：前者 = "要不要预约"，后者 = "预约几个名额"。
+    --   ⚠ 这里的 cap 只是**初值**；运行期每帧由 `set_cap` 按"场上有几个标记"重设
+    --     （见挑选处的说明）⇒ 传什么都不会让"单标记/多标记"两个设置互相干扰。
+    local reservations=env.exclusive_targets
+        and Reservations.new(tonumber(env.max_grenades_per_target) or 1)
     assert(not reservations or (env.priority_catalog and env.fuse_profile),'exclusive allocation requires priority and search cleanup')
     local current,runner
     -- ★★ 2026-10-10 爆炸安全区：统一门函数（**两条引爆路径都必须过这道门**）★★
@@ -365,9 +410,41 @@ function M.new(env)
         end
         return best,bd
     end
-    local function blast_safe_hold_at(ident,own)
-        local safe=tonumber(env.blast_safe_radius) or 0
-        if safe<=0 then return true end
+    -- ★★★ 2026-10-14（用户要求）：安全区**以引爆点为中心** + 跟主支（上游）口径 ★★★
+    --   用户原话：「安全区机制也改成跟主支类似的获取到玩家的坐标不在安全区内才能引爆，
+    --   而不是现在的机制，然后安全区是以引爆点为中心，而不是手雷为中心」。
+    --
+    --   重构后**两个**半径、判定顺序与上游一致（先手雷、后目标）：
+    --     ① `safe_zone_target_radius`（上游的 `target_safety_radius`，默认 **12**）
+    --        玩家离**预期引爆点**在这个半径内 ⇒ 不引爆 —— **这是本 mod 的主判据**
+    --     ② `blast_safe_radius`（上游已移除的 `player_safety_radius`，默认 **0 = 关**）
+    --        玩家离**手雷本体**在这个半径内 ⇒ 不引爆（保留为可选项）
+    --   ⚠ 上游算式（README 1.3.17）：`半径 − 爆点最大偏离 2.5 = 离玩家最小距离`。
+    --     上游发布值 15 是为了 ≥12.5 m（刚好在 12 m 外圈伤害半径之外）；
+    --     本工程取 12 ⇒ 该下界 9.5 m ⇒ **会吃到 12 m 外圈内的减伤**。
+    --     这是知情选择（用户 2026-10-13 在主支拍板 12），不是笔误。
+    --
+    --   ★★ fail-safe（**跟上游**，`env.safe_zone_failsafe`）★★
+    --   上游 1.3.13 原话：`If player positions cannot be read, no grenade detonates
+    --   until they can (fail-safe).`
+    --     判据 = "**一个玩家坐标都读不到**"（手雷距离与目标距离**同时**为 nil），
+    --     **不是**"读不到自己" —— 旧代码是后者，那是个真 bug：
+    --     `self()` 失败但队友扫描成功时，旧代码 fail-open 放行，而手里明明有队友坐标。
+    --   ⚠ 与上游的一处**刻意差异**：上游把"玩家读不到"和"手雷读不到"当成同一件事；
+    --     本工程分开 —— 手雷坐标读不到时，只要**目标半径**还有效就仍然按爆点判，
+    --     两边都判不了才走 fail-safe。
+    --   ⚠ 工程史警告：fail-open 是"静默失效"的温床 —— 实机出现过 `blast_hold` 从
+    --     1062 条变 **0 条**而日志里看不出原因。所以**无论走哪一支，失败都必须打诊断**。
+    --
+    --   参数 `tgt` = **预期引爆点**（可空）：
+    --     · 已接管路径传 `blast_point`（体内爆点，最准）/ 泰坦的 `route.arrival_point`
+    --       / `P.tpos`（圆心缓存）
+    --     · 非自有路径传目标实体位置（便宜近似，见 blast_safe_hold_td 的说明）
+    --     · 为空 ⇒ 目标那一条**不适用**（"判不了"，不是"没拦"）⇒ 日志 `target_dist=nil`
+    local function blast_safe_hold_at(ident,own,tgt)
+        local safe_target=tonumber(env.safe_zone_target_radius) or 0
+        local safe_grenade=tonumber(env.blast_safe_radius) or 0
+        if safe_target<=0 and safe_grenade<=0 then return true end
         -- ⚠ 走 `host.structure_ping`（由 M.new 末尾暴露）而**不是**本模块的
         --   `structure_ping` 局部 —— 后者在本函数**定义时**尚未构造（L321 在 L160 之后）
         --   ⇒ 直接引用会 `attempt to index global 'structure_ping' (a nil value)`。
@@ -398,12 +475,41 @@ function M.new(env)
         local okp,selfres=P.self_ok,P.self_value
         local me=okp and selfres and selfres.by_owner
         local mysp=me and me.position
-        -- ★★ fail-open 必须**可见**（2026-10-10 实机教训）★★
-        --   拿不到坐标就放行是**对的**（宁可照常炸，也不让雷静默失效），
-        --   但它**静默** ⇒ 三条路径全不拦时，日志里一条都看不到
-        --   （实机：blast_hold 从 1062 变 0，却完全不知道为什么）。
-        --   ⇒ 每颗手雷只打一次"我因为读不到玩家坐标而放行了"。
-        if not mysp then
+        -- ★★ 判据改成"**最近的玩家**"（2026-10-10 用户报「安全区对队友不生效」）★★
+        --   原来只比自己的坐标 ⇒ 玩家离得远、队友站在雷边上时判"不在圈内" ⇒ 照常引爆。
+        --   现在 `nearest_player` 取 min(自己, avatars 列表里的每个玩家) ——
+        --   **读不到 avatars 就退回只有自己**，且失败会打 `safe_players;n=0;reason=…`。
+        -- ★ 诊断通道 3（续）：队友坐标扫描也计入安全区门
+        local prev3b=env.counters and env.counters.ch
+        if env.counters then env.counters.ch=3 end
+        -- ★★★ 两个距离**都走同一个 `nearest_player`** ★★★
+        --   `gd2` = |手雷 − 最近玩家|²；`td2` = |**预期引爆点** − 最近玩家|²
+        --   ⚠ 共用一个口径 ⇒ 不会出现"按手雷算是一人、按爆点算是另一人"的分裂。
+        local best,gd2=nil,nil
+        if own then best,gd2=nearest_player(own,mysp) end
+        local tbest,td2=nil,nil
+        if tgt and safe_target>0 then tbest,td2=nearest_player(tgt,mysp) end
+        if env.counters then env.counters.ch=prev3b end
+        -- ★★ fail-safe：**一个玩家坐标都读不到**才走这里（gd2 与 td2 同时为 nil）★★
+        if gd2==nil and td2==nil then
+            if env.safe_zone_failsafe~=false then
+                -- 按上游：不引爆。⚠ 必须登记 `P.safehold`，否则 arrival 段会把
+                -- "故意等着"判成 stalled 并清锁（同绕行那一处豁免）。
+                P.safehold[ident]=frame
+                local key='fs:'..tostring(ident)
+                if not P.safe_nopos[key] then
+                    P.safe_nopos[key]=true
+                    env.emit('blast_safe_failsafe;entity='..tostring(ident)
+                        ..';okp='..tostring(okp)
+                        ..';by_owner='..tostring(selfres and (selfres.by_owner and 'yes' or 'no') or '-')
+                        ..';players='..tostring(P.av.list and #P.av.list or 0)
+                        ..';own='..tostring(own and 'yes' or 'no')
+                        ..';tgt='..tostring(tgt and 'yes' or 'no')
+                        ..';frame='..frame)
+                end
+                return false,best,gd2,td2
+            end
+            -- fail-open（旧行为，可在菜单关掉 fail-safe 退回这里）
             local key='npos:'..tostring(ident)
             if not P.safe_nopos[key] then
                 P.safe_nopos[key]=true
@@ -419,7 +525,9 @@ function M.new(env)
         -- ★★ 拿不到"**这颗雷**在哪"也必须可见（2026-10-10 补）★★
         --   原来这里是静默 `return true` —— 与 blast_safe_nopos 同族的坑：
         --   安全区整段不生效，日志里却一个字都看不到（诊断被节流掉 = 诊断不存在）。
-        if not own then
+        --   ⚠ 只有在**两个距离都判不了**时才走 fail-safe（上面已被吃掉）⇒
+        --     这里只可能是"手雷读不到但**爆点可判**" ⇒ 照常按**目标半径**判，不直接放行。
+        if not own and not td2 then
             local key='noown:'..tostring(ident)
             if not P.safe_nopos[key] then
                 P.safe_nopos[key]=true
@@ -427,50 +535,77 @@ function M.new(env)
             end
             return true
         end
-        -- ★★ 判据改成"**最近的玩家**"（2026-10-10 用户报「安全区对队友不生效」）★★
-        --   原来只比自己的坐标 ⇒ 玩家离得远、队友站在雷边上时判"不在圈内" ⇒ 照常引爆。
-        --   现在 `nearest_player` 取 min(自己, avatars 列表里的每个玩家) ——
-        --   **读不到 avatars 就退回只有自己**（与改动前逐字节一致），且失败会打
-        --   `safe_players;n=0;reason=…` 让它可见。
-        -- ★ 诊断通道 3（续）：队友坐标扫描也计入安全区门
-        local prev3b=env.counters and env.counters.ch
-        if env.counters then env.counters.ch=3 end
-        local best,d2=nearest_player(own,mysp)
-        if env.counters then env.counters.ch=prev3b end
-        if d2==nil then return true end          -- 一个玩家都读不到 ⇒ fail-open（同改动前）
-        if d2>safe*safe then return true end
+        -- ★★★ 判据顺序**照上游**：先手雷，后目标 ★★★
+        --   上游 `PlayerProximity.hold`：`if radius and g…then 'grenade' end`
+        --   然后才 `if t and t.distance<=target_radius then 'target' end`。
+        --   保持这个顺序 ⇒ 日志 `about=` 与上游语义逐字对得上。
+        local about,dist
+        if safe_grenade>0 and gd2 and gd2<=safe_grenade*safe_grenade then
+            about,dist='grenade',gd2
+        end
+        if not about and safe_target>0 and td2 and td2<=safe_target*safe_target then
+            about,dist='target',td2
+        end
+        if not about then return true end
         P.safehold[ident]=frame
-        env.emit('blast_hold;entity='..tostring(ident)
-            ..';player_dist='..string.format('%.2f',math.sqrt(d2))
-            ..';radius='..safe
-            ..';players='..tostring(P.av.list and #P.av.list or 0)
-            ..';frame='..frame)
-        -- ★ 把**最近那个玩家**的坐标交出去（贴脸取消要算"目标离那个玩家多远"）——
-        --   原来交的是自己；队友才是最近者时，交队友才对得上"谁有危险"。
-        -- ★★ 第三个返回值 = **玩家↔手雷**的距离（2026-10-10 用户纠正：「安全区是以
-        --   手雷为中心，不是以玩家为中心」）★★
-        --   这正是本函数的判据本身（`d2` 就是 |手雷−玩家|²）⇒ 直接交出去，
-        --   让贴脸取消用**同一个口径**，而不是再去算"玩家离目标多远"（那是以目标为中心）。
-        return false,best,math.sqrt(d2)
+        -- ★★★ `blast_hold;` 必须**去重**（主支实测一局 1062~1863 条）★★★
+        --   它每帧每颗都打 ⇒ 自己就能把**其他**诊断挤过 `emit` 的 60 行节流阈值
+        --   ⇒ 真正需要的行被丢掉（"诊断被节流掉 = 诊断不存在"）。
+        --   ⇒ 按 (雷, 拦截依据) 去重：同一颗雷的同一种拦截每 60 帧一条。
+        local _hk=tostring(ident)..':'..about
+        if frame-(P.bh[_hk] or -100000)>=60 then
+            P.bh[_hk]=frame
+            env.emit('blast_hold;entity='..tostring(ident)
+                ..';about='..about
+                ..';player_dist='..string.format('%.2f',math.sqrt(dist))
+                ..';radius='..(about=='target' and safe_target or safe_grenade)
+                ..';target_radius='..safe_target..';grenade_radius='..safe_grenade
+                ..';grenade_dist='..(gd2 and string.format('%.2f',math.sqrt(gd2)) or 'nil')
+                ..';target_dist='..(td2 and string.format('%.2f',math.sqrt(td2)) or 'nil')
+                ..';players='..tostring(P.av.list and #P.av.list or 0)
+                ..';frame='..frame)
+        end
+        -- ★ 返回值口径（**两个都交给调用方**）：
+        --   ③ `gd2` = 玩家↔**手雷**的平方距离（贴脸取消用它 —— 爆炸发生在手雷那里）
+        --   ④ `td2` = 玩家↔**引爆点**的平方距离（主判据；诊断/后续使用）
+        return false,best,gd2,td2
     end
-    local function blast_safe_hold(m,scope)
+    local function blast_safe_hold(m,scope,tgt)
         -- ⚠ `m` 可能是 G-60 的 match（含 .id），也可能来自 priority 的 `c`（identity 记录）。
         local ident=m and (m.id or (m.entity and m.entity.id)) or '?'
         local okv,v=pcall(TargetData.vector,scope.prepared.own_position_bytes,0)
-        return blast_safe_hold_at(ident,okv and v or nil)
+        return blast_safe_hold_at(ident,okv and v or nil,tgt)
     end
     -- ★ 非自有 G-60 的坐标来源：TargetData 单读（两次哈希查找 + 12 字节）。
     --   ⚠ 这里**不做 `Search.capture`** —— 那套是 ≤65536 B/2048 次调用的量级，
     --     不能对每颗"引擎自己瞄的雷"每帧付一次（perf 门盯着 layout_reads）。
     --     只有玩家真在圈内、要写绕行点时才会付 capture（见 run_safe_hold）。
-    local function blast_safe_hold_td(m)
+    -- ★★★ 2026-10-14：这条路也要有**引爆点**（安全区主判据是"玩家离爆点多远"）★★★
+    --   为什么加 `tid`：主判据改成目标半径之后，这条路若没有引爆点，打开
+    --   `safe_zone_engine_hold` 时是**静默 no-op**（默认手雷半径 0、目标那条判不了
+    --   ⇒ 门永远放行）。
+    --   ⚠ 口径（知情取舍）：这里用 `d.position(te)`（**实体原点**，便宜）而**不是**
+    --     `target_position(te)`（走 `TargetContext.capture`，贵）。原因：这条路每帧
+    --     每颗非自有雷都要判，capture 不能进常规路径（perf 门盯着 layout_reads）。
+    --     代价 = 这条路上的"引爆点"是**目标原点**而非捕获点；对"玩家离目标多远"
+    --     这个用途，两者差在目标自身尺寸量级，而半径是 12 m 量级。
+    --     ⚠ **我们自己驾驶**的雷（arrival / titan 两条路）用的是**精确**引爆点，
+    --       不受这条近似影响。
+    local function blast_safe_hold_td(m,tid)
         local ident=m and m.id or '?'
-        local okv,v=pcall(function()
+        local okv,v,tv=pcall(function()
             local d=TargetData.new(read,base,env.exe)
             local e=d.entity(ident)
-            return e and d.position(e)
+            local own=e and d.position(e)
+            local tp=nil
+            if tid and tid~=0 then
+                local te=d.entity(tid)
+                tp=te and d.position(te) or nil
+            end
+            return own,tp
         end)
-        return blast_safe_hold_at(ident,okv and v or nil)
+        if not okv then return blast_safe_hold_at(ident,nil,nil) end
+        return blast_safe_hold_at(ident,v,tv)
     end
     -- ★ 把门**注入 env**：`native_priority` 那条早期引爆路径要用（它拿不到本闭包）。
     --   返回 false ⇒ 玩家在安全区内 ⇒ 不引爆。
@@ -498,7 +633,7 @@ function M.new(env)
         -- ★ 2026-10-10：绕行状态也必须跟着持有一起清 —— 手雷 id 会被引擎复用，
         --   残留的圆心/节流表会让**下一颗**手雷的诊断与圆心张冠李戴
         --   （与上面 retired 的教训同源："只清一半 ⇒ 下一个实体被误伤"）。
-        P.tpos[id]=nil;P.dg[id]=nil;P.dg_nopos[id]=nil
+        P.tpos[id]=nil;P.dg[id]=nil;P.dg_nopos[id]=nil;P.lastpt[id]=nil
         P.ehp[id]=nil;P.ehq[id]=nil;P.ehk[id]=nil;P.ehx[id]=nil;P.ehc[id]=nil
     end
     local titan=env.titan_profile and Titan.new(env)
@@ -577,6 +712,43 @@ function M.new(env)
         return nil
     end
     local function has_weakpoint(resource) return claim_profile(resource)~=nil end
+    -- ★★★ 2026-10-14（用户最终方案）：接近标记的泰坦、到距离后放手 —— env 包装 ★★★
+    --   为什么必须做成 **env 字段**而不是 runtime 的 local：
+    --     tick 的 `xpcall` 闭包恰好 60 upvalue，多一个被它捕获的 local 就会让
+    --     整份 chunk 编译失败（2026-10-10 实机事故，本工程记过）。
+    --   ⚠ 三个包装各自**只转发**，判据/状态全在 `g60.titan_approach` 里
+    --     （"同一个判断不许出现两处"）。
+    --   ▸ `is_released`：runtime 用它让 `marked_lock_held` 对**已放手**的雷失效 ——
+    --     这是"不让 priority 重新接管"的唯一手段（只清一次 `old.lock` 不够，
+    --     priority 每帧重建它；实机 31~83 次 `priority_locked`）。
+    env.titan_approach_released=function(gid) return TitanApproach.is_released(gid) end
+    --   ▸ `pt`：接近阶段的**航点**（= 目标实体原点），供 arrival 的点目标写路径用。
+    --     放手后返回 nil ⇒ 调用侧保持"没有点" ⇒ 由引擎选中、泰坦链接棒。
+    --     ⚠ 拒绝原因必须可诊断（`why=`），只在**状态变化**时报 ——
+    --       主支实机曾一次打 113 行同一个原因（刷屏）。
+    env.titan_approach_pt=function(gid,tid,frame,resource)
+        local p=TitanApproach.point(read,base,env.exe,env,gid,tid,frame,resource)
+        if env.emit and TitanApproach.changed and TitanApproach.last_why then
+            env.emit('titan_pt;entity='..tostring(gid)..';target='..tostring(tid)
+                ..';resource='..tostring(resource)
+                ..';why='..tostring(TitanApproach.last_why)
+                ..';frame='..tostring(frame))
+        end
+        return p
+    end
+    --   ▸ `decide`：每 N 帧问一次"到了放手距离没有"。返回真 ⇒ 调用侧清锁。
+    --     ⚠ 必须**先取 before 再调 decide**：`decide` 内部会写 `M.released`，
+    --       调完再取就恒为"已经放过手"⇒ 放手那一帧的日志会恒写 `released=0`
+    --       （主支就是这个形状 ⇒ 从日志看不出"到底哪一帧放的手"）。
+    env.titan_approach=function(gid,tid,frame)
+        local before=TitanApproach.is_released(gid)
+        local res=TitanApproach.decide(read,base,env.exe,env,gid,tid,frame)
+        if not res then return before end
+        local now=TitanApproach.is_released(gid) and not before
+        local line=TitanApproach.line(res,gid,tid,frame,now)
+        if line and env.emit then env.emit(line) end
+        return TitanApproach.is_released(gid)
+    end
     -- ★★ 2026-10-10：目标位置（安全区**绕行圆心**用）★★
     --   为什么必须有：绕行要"绕目标"，就必须先知道目标在哪；而普通虫洞/结构锁
     --   拿不到 `P.orig`（那个只在**体内爆点**路径里写进去）。
@@ -590,7 +762,13 @@ function M.new(env)
     --     layout_reads，`TargetContext.capture` 不便宜）。
     local function target_position(e)
         local profile=claim_profile(e.resource)
-        if profile then
+        -- ★★★ 2026-10-14（用户要求远距离追踪）：**免几何 profile** 走 motion 位置 ★★★
+        --   `motion_point=true` 的 profile（构筑 / 巨型构筑 / 飞船）**没有锚点几何**
+        --   ⇒ `TargetContext.capture` 会 assert 抛错（`Titan bones unavailable`）。
+        --   这里显式分流，别让它抛。
+        --   ⚠ 判据用**显式标志**，不用"有没有 boss_hash"这种隐式推断：
+        --     隐式推断会让"写错哈希"与"故意免几何"看起来一样。
+        if profile and not profile.motion_point then
             local pose=TargetContext.capture(read,base,env.exe,e.id,profile)
             assert(pose.validate(),'target pose changed');return pose.point
         end
@@ -632,13 +810,59 @@ function M.new(env)
         end
         return true
     end
+    -- ★★★ 2026-10-14（用户要求）：**分配机制** —— 标记可用性判据（**唯一实现**）★★★
+    --   移自主支 `g60-bughole-lock`。两个消费者**共用**它：
+    --     ① `remembered_intent`（喂给 ping 记忆：哪些标记可以脱离 UI 存活）
+    --     ② 挑选循环（分配时：这个标记**现在**还算不算数）
+    --   ⚠ 工程纪律：同一个判断不许出现两处（`enemy_faction` / `mark_tier` 都是这条
+    --     纪律的产物）。第一版主支就是"挑选循环没问它"⇒ 已取消的标记照样被选中。
+    --
+    --   ⚠⚠ **必须定义在 `claim_profile` 之后**（它要调 claim_profile）：
+    --     Lua 的 local 是**编译期**绑定，写在前面会让这里引用到全局 nil
+    --     ⇒ 整条分配链静默失效（本项目已因此两次实机踩坑，见 check_local_order.py）。
+    --   ⚠ 挂在 **P 上**而不是新开 local：tick 的 `xpcall` 闭包已逼近 60 upvalue
+    --     上限，多一个被它捕获的 local 就会让整份 chunk 编译失败（实机事故）。
+    --
+    --   参数：
+    --     · `live`      = 本帧 ping 环里还看得到它（UI 窗口内）
+    --     · `assigning` = "这是**新分配**"（true）⇒ **不继承**别人的在飞锁；
+    --                     `remembered_intent` 不传（nil）⇒ 保持既有语义。
+    P.usable=function(mark,live,assigning)
+        if live or (mark and mark.current) then return true end
+        if not mark then return false end
+        -- ★★ 2026-10-10：**已在飞的锁 = 玩家意图**（用户报"标记泰坦后手雷飞向附近敌人"）★★
+        --   判据：该标记的目标 id 正被某颗在飞的 G-60 锁着（`P.locked_ids`）。
+        --   为什么必须有这条：标记离开 UI 窗口后，若把它从队列丢掉，就**没有任何路径
+        --   再每帧重申目标** ⇒ 引擎会中途改选旁边的敌人 ⇒ 雷在旁侧敌人身上引爆。
+        --   ⚠ **新分配（assigning）不得继承它** —— 否则"没分到标记"的雷会被别人
+        --     正在追的旧标记拉过去，而那正是分配机制要避免的事。
+        if not assigning and P.locked_ids[mark.id] then return true end
+        -- ★★ 2026-10-02（用户要求"取消标记后不要再用它"）★★
+        --   用户原话：「标记虫洞再取消标记丢出手雷，手雷还是会向虫洞飞过去爆炸」。
+        --   ⇒ 按"活标记"判：开关 `env.structure_mark_live_only`（默认 **true**）。
+        --     置 false ⇒ 回到旧的"长期记忆"行为。
+        --   ⚠ **已在飞向它的那颗不受影响**：它持有 `old.lock`，下一帧走
+        --     native_priority 的 sticky 复核（按实体 id 重读），不依赖这条记忆。
+        if claim_profile(mark.resource) then
+            return env.structure_mark_live_only==false
+        end
+        return env.unit_mark_live_only==false
+    end
     -- ★★ 2026-10-10：**五档档位的唯一实现**（`env.mark_tier`）★★
     --   两处要用它：① `structure_ping` 的队内次序（`options.priority`）
     --              ② `native_priority` 的让位判据（(c) 的候选取证）
     --   ⚠ 必须是 **env 的字段**而不是 runtime 的 local：tick 的 `xpcall` 正好 60 upvalue，
     --     多一个被它捕获的 local 就会让整份 chunk 编译失败（2026-10-10 实机事故）。
-    --   ⚠ 判据与原先**逐字一致**（虫洞/构筑 0、蟑龙 500、泰坦+变体 1000、名册 1000+rank、
-    --     其它 1500、无 resource 2000）⇒ 本步**零行为改动**。
+    --   ⚠ 判据与原先一致（虫洞/构筑 0、蟑龙 500、泰坦+变体 **750**、名册 1000+rank、
+    --     其它 1500、无 resource 2000）⇒ 本步零行为改动。
+    --   ★★ 2026-10-14：泰坦档 **1000 → 750**（用户提议，理由不是排序而是**余量**）★★
+    --     泰坦在**相对次序**上没变（仍夹在蟑龙 500 与名册 1000+rank 之间），
+    --     但 1000 正好等于"名册带的基数"⇒ 一个 rank=0 的名册条目会与泰坦**打平**
+    --     （打平按"最新 ping 优先"，等于泰坦的优先权被抹掉）。
+    --     现在名册最小 rank 是 10（⇒1010），所以**今天行为完全一样**；
+    --     750 是把这个"任何泰坦都压过任何名册敌人"的意图变成**不依赖 rank 取值**。
+    --     ⚠ 唯一一处"与固定数字比较"的地方是 `tier < point_mark_rank`（entry 常量 1600）
+    --       —— 750 与 1000 都在 1600 之下 ⇒ 那里也不变（守门 `titan_tier_below_point_rank` 钉着）。
     env.mark_tier=function(r)
         if not r then return 2000 end
         if env.structure_profiles and env.structure_profiles[r]~=nil then return 0 end
@@ -646,8 +870,8 @@ function M.new(env)
             and r==env.dragonroach_resource then
             return 500
         end
-        if env.titan_profile and env.titan_profile.resource==r then return 1000 end
-        if env.titan_variant_profiles and env.titan_variant_profiles[r]~=nil then return 1000 end
+        if env.titan_profile and env.titan_profile.resource==r then return 750 end
+        if env.titan_variant_profiles and env.titan_variant_profiles[r]~=nil then return 750 end
         local spec=env.priority_catalog and env.priority_catalog[r]
         if spec and spec.rank then return 1000+spec.rank end
         return 1500
@@ -670,7 +894,8 @@ function M.new(env)
         --   ⇒ 用 `options.priority` 给队内次序（**数值小的先**），分五段：
         --     ① 虫洞 / 构筑            → **0**      （用户定的最高档；不能被下面的 rank 顶掉）
         --     ② 蟑龙（Dragonroach）     → **500**    （2026-10-03 用户指定：排在虫洞之后、泰坦之前）
-        --     ③ 泰坦（含变体）          → **1000**   （任何泰坦都排在任何"其它"单位之前）
+        --     ③ 泰坦（含变体）          → **750**    （任何泰坦都排在任何"其它"单位之前；
+        --                                             2026-10-14 由 1000 降到 750，见上）
         --     ④ 名册里的其它敌人        → 1000+rank（冲锋者 50 ⇒ 1050；rank 越小越优先）
         --     ⑤ 名册外的其它单位        → 1500      （排在有名册的敌人之后；彼此仍按"最新"）
         --   ⚠ 相等优先级**保持原顺序**（= "最新 ping 优先"），见 native_ping 的说明。
@@ -691,7 +916,11 @@ function M.new(env)
         end or nil,
         position=function(e)
             local profile=claim_profile(e.resource)
-            if profile then
+            -- ★★★ 2026-10-14：免几何 profile（构筑 / 巨型构筑 / 飞船）走 motion 位置 ★★★
+            --   与 `target_position` 同一条判据（**显式 `motion_point` 标志**）。
+            --   ⚠ 两条路径必须同判据 —— 否则"认领时能取到点、安全区绕行时却抛"
+            --     这种半残状态（本项目踩过"同一判据两处副本"的坑）。
+            if profile and not profile.motion_point then
                 local pose=TargetContext.capture(read,base,env.exe,e.id,profile)
                 assert(pose.validate(),'structure Ping pose changed');return pose.point
             end
@@ -724,36 +953,13 @@ function M.new(env)
         --       关掉即回到旧行为：记忆里的旧单位标记继续被新 G-60 接管）
         --   ⚠ 已在飞向该单位的那颗**不受影响**：它持有 old.lock，下一帧走
         --     native_priority 的 sticky 复核（按实体 id 重读），不依赖这条记忆。
-        remembered_intent=function(mark,live)
-            if live then return true end
-            -- ★★ 2026-10-10：**已在飞的锁 = 玩家意图**（用户报"标记泰坦后手雷飞向附近敌人"）★★
-            --   判据：该标记的目标 id 正被某颗在飞的 G-60 锁着（`P.locked_ids`，见其定义处）。
-            --   为什么必须有这条：标记离开 UI 窗口后，若把它从队列丢掉，就**没有任何路径
-            --   再每帧重申目标** ⇒ 引擎会中途改选旁边的敌人 ⇒ 雷在旁侧敌人身上引爆
-            --   （v0.1.20 日志的两条失败样本 `mark=-` + `engine_sel≠intended` 就是这个）。
-            --   ⚠ 只对**已锁定的那颗**延长意图，不影响"取消标记后不再用"的既有语义：
-            --     没被锁的标记照旧按 `*_live_only` 判。
-            if P.locked_ids[mark.id] then return true end
-            -- ★★ 2026-10-02（用户要求"取消标记后不要再用它"）★★
-            --   用户原话：「标记虫洞再取消标记丢出手雷，手雷还是会向虫洞飞过去爆炸」。
-            --
-            --   原来这里对**结构 / 泰坦 / 变体**一律 `return true`（脱离 UI 长期存活）——
-            --   当时的理由是"ping 一次虫洞、过一会儿才扔是常规操作"。但同一个机制让
-            --   **玩家取消标记之后**它依然生效（记忆里那条还在）⇒ 看起来就是"取消不掉"。
-            --   ⇒ 现在同样按"活标记"判（`live` = 本帧 ping 环里还看得到它）：
-            --     开关 `env.structure_mark_live_only`（默认 **true** = 只认活标记）。
-            --     置 false ⇒ 回到旧的"长期记忆"行为。
-            --
-            --   ⚠ 权衡（知情）：ping 之后**超过标记存活时长**（UI 约 8 秒）才扔，
-            --     结构标记已过期 ⇒ 不再接管。要保留"慢慢扔"的习惯就把该开关置 false。
-            --   ⚠ **已在飞向它的那颗不受影响**：它持有 `old.lock`，下一帧走
-            --     native_priority 的 sticky 复核（按实体 id 重读），不依赖这条记忆
-            --     ⇒ 不会"半路停手"。
-            if claim_profile(mark.resource) then
-                return env.structure_mark_live_only==false
-            end
-            return env.unit_mark_live_only==false
-        end})
+        -- ★★★ 2026-10-14（用户要求）：**分配机制** —— 判据必须只有**一份实现** ★★★
+        --   移自主支 `g60-bughole-lock`。挑选循环与 `remembered_intent` **共用** `P.usable`
+        --   （工程纪律：同一个判断不许出现两处 —— `enemy_faction` / `mark_tier`
+        --   都是这条纪律的产物；这里再多一处就是下一次静默失效）。
+        --   ⚠ 本处**只做转发**，判据本体在 `P.usable`（定义于 P 初始化处）。
+        --   ⚠ 不传 `assigning` ⇒ 保持既有语义（"在飞的锁 = 玩家意图"照旧生效）。
+        remembered_intent=function(mark,live) return P.usable(mark,live) end})
     if ping or structure_ping then env.forget_mark=function(identity)
         if ping then ping:forget(identity) end
         if structure_ping then structure_ping:forget(identity) end
@@ -1030,7 +1236,14 @@ function M.new(env)
             --   ⚠ 全程 pcall：探针绝不能影响主链路（历史教训：探针抛错会把
             --     整条 priority 打死 ⇒ `disabled;applied=0`）。
             --   ⚠ 只读：不写任何内存，不调引擎写函数。
-            if env.self_probe_enabled~=false and structure_ping and P.selfprobe.n<8 then
+            -- ★★★ 2026-10-14：闸门改读 `diagnostics_enabled` ★★★
+            --   用户要求把"自机探针"合并进"诊断日志"开关 ⇒ 探针跟着诊断开关走。
+            --   ⚠ 这里读 `env.*`、菜单写 `host.env.*` —— 两者是**同一个** env 表
+            --     （`host.env` 就是构造 runtime 时传进去的那张），所以探针一直有效。
+            --     ⚠⚠ 但 `entry` 的**日志过滤器**必须同样读 `host.env`：主支那里
+            --     写成了 `state.diagnostics_enabled`（另一张表）⇒ 过滤器永远看不到
+            --     开关改动 ⇒ 整个过滤是空的（探针关了、日志没安静）。
+            if env.diagnostics_enabled~=false and structure_ping and P.selfprobe.n<8 then
                 local sp=P.selfprobe
                 local pok,pres,perr=pcall(function() return structure_ping:self() end)
                 -- ★ 失败必须**至少打一条**（且只占 1 个名额）：
@@ -1184,12 +1397,39 @@ function M.new(env)
             --     上面注释写明"否决必须每帧重申"，而节流是**最容易顺手放宽**的东西
             --     ⇒ 单列一档，不跟着 `busy` 一起降到 2。代价可忽略（否决本身罕见）。
             --
+            -- ★★★ 2026-10-14（用户要求）：**性能开销优化**（空转 + G60 在场两档）★★★
+            --
+            -- 【实测基线】用户 2026-10-15 那局的 `perf;` 行（每 600 帧窗口）：
+            --     frames_seen=100        ⇒ tick 体只在 1/6 的帧执行
+            --     all_reads≈43,000 其中 **obs_reads≈34,000（79%）**
+            --     obs_slots≈300          ⇒ 每次 `Layout.capture` 扫约 300 个槽
+            --     ⇒ **每执行帧约 340 次读**，而它们几乎全是"再确认一次还是没有"。
+            --   这几项数字与老注释里"约 55 项 ≈ 100 读/执行帧"的差别正是
+            --   **关卡实体数变多**（55 → 300 槽）⇒ 同一份代码的代价涨了 3 倍多。
+            --
+            -- 【为什么只能调频率】`src/g60/native_observer.lua` 在 **SAFETY_LAYER**
+            --   里（只读、不许改）⇒ 我无法让它"只扫我们关心的那几个槽"。
+            --   外部唯一的杠杆就是**多久调它一次** —— 也就是这两档周期。
+            --
+            -- 【本次调整】busy 2 → **4**、idle 6 → **12**（各自减半扫描次数）：
+            --     空转窗口：34,000 → 约 17,000 读
+            --     在场窗口：约 300 次 capture → 约 150 次（102,000 → 约 51,000 读）
+            --   ⚠ 代价（知情、可调回）：引导/刷新最多晚 3 帧（≈50 ms，busy），
+            --     新雷被发现最多晚 11 帧（≈180 ms，idle）。
+            --     这两条都**远小于**从投掷到可接管 state-4 的时间
+            --     （`EARLY_MIN_AGE`≥15 帧）⇒ 不影响接管窗口；引擎在两次写入之间
+            --     一直按记录里存着的点飞（写入是"改目标"而不是"每帧给力"），
+            --     所以放宽周期不会让雷停住 —— 这正是不改行为、只省读量的依据。
+            --   ⚠ **否决那一路仍是每帧**（`veto_must and 1 or rb`）—— 不许跟着降。
+            --   ⚠ 两档都从 `env` 取（entry 的 state 透传）⇒ 觉得迟滞就把值调回 2/6，
+            --     **不用改逻辑**。
+            --
             --   防呆：非数 / 0 / 负数 ⇒ 回默认值。
             --     `0` 本身是安全的（闸门 `if P.idle_skip>0` 会短路），
             --     但**负数**会让 `frame%N` 恒为 0 ⇒ 每帧都 return ⇒ **mod 永远不跑**
             --     （静默整体失效，正是本项目最怕的那种）。
-            local rb=math.floor(tonumber(env.scan_every_busy) or 0);if rb<1 then rb=2 end
-            local ri=math.floor(tonumber(env.scan_every_idle) or 0);if ri<1 then ri=6 end
+            local rb=math.floor(tonumber(env.scan_every_busy) or 0);if rb<1 then rb=4 end
+            local ri=math.floor(tonumber(env.scan_every_idle) or 0);if ri<1 then ri=12 end
             P.idle_skip=busy and (veto_must and 1 or rb) or ri
             -- ★ perf 窗口打点（2026-09-30 性能优化）★
             --   放在 capture 之后、**任何早退之前**：游戏繁忙时 tick 会在下面
@@ -1301,7 +1541,14 @@ function M.new(env)
                 -- Keep claims through stalls, state changes, pending explosion /
                 -- removal and skipped guidance. Release only when the entity is
                 -- absent (or replaced) in this complete observation.
-                reservations:reconcile(observed.matches)
+                -- ★★★ 2026-10-14（用户报「标 2 个构筑、扔 2 颗，只有 1 颗飞」）★★★
+                --   **缺席宽限**：一次完整观测里"没看到"某颗雷，**不足以**判定它已经不在场 ——
+                --   状态切换（3→4）、观测窗口边界、刚生成都可能让它短暂缺席。
+                --   ⚠⚠ 旧实现**立刻回收** ⇒ 名额被释放 ⇒ 另一颗雷看到"空闲"就挑了**同一个**标记。
+                --   ⇒ 传 `env.allocation_missing_grace`（默认 30 次完整观测 ≈ 0.5 秒）。
+                --     真离场的照样会被回收（连续缺席必然累计到 grace）⇒ 不会永久占位。
+                --   ⚠ 仍然只在**完整观测**之后调用（本处上下文已保证）。
+                reservations:reconcile(observed.matches,env.allocation_missing_grace)
                 table.sort(observed.matches,function(a,b)
                     if a.flight_start~=b.flight_start then return a.flight_start<b.flight_start end
                     return a.id<b.id
@@ -1745,7 +1992,17 @@ function M.new(env)
                 -- ★ 取消线距离（菜单可调，默认 3.5 = 实测标定值）
                 local cthr=tonumber(env.blast_safe_cancel_dist) or 3.5
                 if cthr<1 then cthr=1 elseif cthr>20 then cthr=20 end
-                local allow,mysp,pdist=blast_safe_hold_td(match)
+                -- ★★★ 2026-10-14（用户要求「安全区以引爆点为中心」）：把 `tid` 提到门**之前** ★★★
+                --   为什么：安全区主判据是"玩家离**预期引爆点**多远"，而这条路
+                --   （非自有雷）唯一能拿到的引爆点就是"引擎选中的那个实体的位置"。
+                --   门在 `tid` 之前调用就只能传 nil ⇒ 目标半径**永远不生效** ⇒
+                --   用户打开 `safe_zone_engine_hold` 后看到的是**静默 no-op**
+                --   （默认手雷半径是 0）—— 正是本项目反复栽的那一类坑。
+                --   ⚠ `tid` 本来就是本函数的 local（下面 `if tid then` 还在用）
+                --     ⇒ 只是**搬家**，没有新增 local（tick 闭包的 upvalue 预算已到 60）。
+                local tid=(match.selection_id~=0 and match.selection_id)
+                    or (rec and rec.tid) or nil
+                local allow,mysp,pdist=blast_safe_hold_td(match,tid)
                 if allow then
                     -- 玩家离开安全区 ⇒ 不再压制，清状态（引擎自己接管回去）
                     P.ehq[match.id]=nil
@@ -1803,8 +2060,8 @@ function M.new(env)
                 --       原来只在"点被抢回"时才更新（最长 90 帧不刷新）⇒ 敌人正好走进圈里。
                 --   ⇒ 圆心每帧现算 + 距离太近就**命令它往外飞**（见下面的 push）。
                 --   ⚠ 两次 TargetData 读，**不付 capture**（capture 只在真要写的时候付）。
-                local tid=(match.selection_id~=0 and match.selection_id)
-                    or (rec and rec.tid) or nil
+                --   ⚠ `tid` 已在上面（安全区门之前）算好 —— 那里是它的**唯一**声明点，
+                --     不要在这里再 `local tid=…`（重复声明会把上面的值遮蔽掉）。
                 -- ★★★ 圆心三源冗余（2026-10-10，用户要求"增加冗余"）★★★
                 --   实机事故（2026-10-10 15:31 那局，2981 行日志）：7 例
                 --   `arrival_already_exploded` 的雷**一条 `safe_engine;` 都没有** ——
@@ -2422,18 +2679,38 @@ function M.new(env)
                     local old=tracked[m.id]
                     local fingerprint=m.identity_bytes..m.flight_start
                     if old and old.fingerprint~=fingerprint then runner:release(old.ref);old=nil;tracked[m.id]=nil end
-                    -- ★★ 点目标失效 ⇒ 释放持有（2026-10-01）★★
-                    --   标记被引擎淘汰 / TTL 到期 / 玩家改标记 / 玩家标记了虫洞
-                    --   （`point_marker` 为 nil）时，本帧就交回引擎，不再往下写。
-                    --   放在门控**之前**：否则这一帧 TakeGate 仍会因 old.point 而放行。
-                    --   ⚠ 这里用 `held` 而不是直接写 `old.point=…`：本文件有一条静态检查
+                    -- ★★★ 2026-10-14（用户要求）：**已承诺的点目标不再因 ping 标记消失而释放** ★★★
+                    --   用户原话：「空 ping 没有跟虫洞一样能远距离追踪」。
+                    --
+                    --   【根因】`point_marker` 是**每帧**从 ping 槽重读的（见上面
+                    --     `local point_marker`），而 ping 标记在引擎里会过期/轮转 ⇒
+                    --     只要**某一帧**读不到，这里就把 `held.point` 清掉
+                    --     （原实现是 `held.point=nil` + `point_released`）
+                    --     ⇒ **飞行中途丢目标**。飞得越远/越久，撞上的概率越高
+                    --     ⇒ 空 ping 实际上"跑不远"。而虫洞是**实体**标记
+                    --     （有 `mark_retain_seconds` 保留时长）⇒ 完全不受影响。
+                    --   实机佐证（用户日志）：6 次 `point_taken` **全部**在 3~25 m；
+                    --     129/127/205/438 m 的 ping 一次都没接管成；
+                    --     另有 2 条 `point_released`（接管后 184 / 250 帧被释放）。
+                    --
+                    --   ⇒ 改成与虫洞锁**同口径**：**承诺后就飞到底**。
+                    --   ⚠ **只影响已经接管了这个点的那颗雷**（`held.point` 已存在）：
+                    --     新扔的雷仍要求当场有 live ping（`point_armed` / `ping_take`）
+                    --     ⇒ "顺手 ping 一下长期劫持 G-60"那条顾虑**仍然成立**。
+                    --   ⚠ 中途重新 ping **仍会改用新点**：那时 `point_marker` 非 nil，
+                    --     下面 point 分支会**覆盖** `old.point`（不是沿用旧的）。
+                    --   ⚠ 这里仍然用 `held` 而不是直接写 `old.point=…`：本文件有一条静态检查
                     --     （no_unguarded_old_index）要求**每处 `old.` 引用同行带 nil 守卫**，
-                    --     而 `old` 在上面可能是 nil（首次遇到这颗 G-60）。语义完全相同。
+                    --     而 `old` 在上面可能是 nil（首次遇到这颗 G-60）。
+                    --   ★ 但仍要**可见**：ping 标记消失却继续飞，是这次改动的核心行为，
+                    --     没有一行日志就无法在实机上确认它生效（"诊断被节流掉 = 诊断不存在"）。
+                    --     按雷只打一次（`point_sticky` 标志），避免每帧刷屏被节流掉。
                     local held=old
-                    if held and held.point and not point_marker then
-                        held.point=nil
+                    if held and held.point and not point_marker and not held.point_sticky then
+                        held.point_sticky=true
                         if env.emit then
-                            env.emit('point_released;entity='..m.id..';frame='..frame)
+                            env.emit('point_held;entity='..m.id..';frame='..frame
+                                ..';note=ping_gone_keep_flying')
                         end
                     end
                     -- ★ 门控判定已抽到 g60.take_gate（纯函数，可真跑测试）★
@@ -2611,29 +2888,117 @@ function M.new(env)
                         --     · 全都被占了（例如场上只有 1 个标记）⇒ 退回档位最高者
                         --       ⇒ **允许共享**（不强行拒绝，避免"一颗都不打"）
                         --   ⚠ 只挑标记（`my_mark`），不改队列顺序、不改档位 —— 你之前的
-                        --     五档决定（虫洞 0 / 蟑龙 500 / 泰坦 1000 / 名册 1000+rank / 其它 1500）
+                        --     五档决定（虫洞 0 / 蟑龙 500 / 泰坦 750 / 名册 1000+rank / 其它 1500）
                         --     一条都没动。
                         local spread=structure_mark or mark
                         local my_mark=spread
+                        -- ★★★ 2026-10-14（用户要求）：**手雷分配机制**（移自主支）★★★
+                        --   用户要的三条：
+                        --     ① 单个标记可自定义分配手雷数量
+                        --     ② 多个标记也可自定义分配手雷数量
+                        --     ③ 标记按照**时间顺序**分配手雷
+                        --
+                        --   规则（两个上限分工）：
+                        --     · 队列只有 **1** 个标记 → 上限 = `env.max_grenades_per_target`
+                        --       ⇒ 那个目标能被"自定义数量"的雷一起追
+                        --     · 队列有 **2+** 个标记 → 上限 = `env.multi_mark_grenades_per_target`
+                        --       （缺省 1 = 每个目标各一颗）
+                        --   ⚠ 每帧按 `#spread.queue` 调一次 `set_cap`；`available` 与 `claim`
+                        --     读的是**同一份** cap ⇒ 判定与登记永远一致
+                        --     （不会出现"判可用却 claim 断言失败"）。
+                        --
+                        --   ★ 时间顺序：挑 `marked_at` **最小**（= 最早标记）的可用目标。
+                        --     `marked_at` 由 `ping_memory` 算出（`now-mark.age`，秒）；
+                        --     `order` 是同一时刻的序号（小 = 早）⇒ 两者一起构成稳定时序。
+                        --     ⇒ 表现为「**先填最早标记的那个**，填满再到下一个」。
+                        --     ⚠ 与"档位优先"不冲突：队列**已经是档位序**，这里只在
+                        --       "谁能吃这颗雷"的层面按时序挑 —— 五档一条都没动。
+                        --
+                        --   ⚠ 必须问 `P.usable`：队列是 ping 记忆的**历史**，已取消的标记
+                        --     仍留在里面。只看名额会让新扔的雷飞向一个**已被取消**的目标。
                         if reservations and spread and spread.queue then
-                            for i=1,#spread.queue do
-                                if reservations:available(owner,spread.queue[i].identity) then
-                                    my_mark=spread.queue[i];break
+                            local marks=#spread.queue
+                            reservations:set_cap(marks>1
+                                and (tonumber(env.multi_mark_grenades_per_target) or 1)
+                                or (tonumber(env.max_grenades_per_target) or 1))
+                            local multi=marks>1
+                            local best,best_at,best_order
+                            for i=1,marks do
+                                local q=spread.queue[i]
+                                -- ★ 可交战判据与通用路的敌我门**同源**（不另写一套）：
+                                --   结构 profile / 敌阵营 / `marked_allowed` 三者之一。
+                                --   ⚠ 结构走自己的分支（它不是敌人）⇒ 必须显式放行 profile。
+                                --   ⚠ 敌阵营判据走 `env.is_enemy`（**唯一实现的转发**）：
+                                --     `EnemyFaction` 不是本模块的 local，而在这里新开一个
+                                --     顶层 local 会让 build.py 的别名替换出问题
+                                --     （同 `priority_faults` 的注释：`local X=X` 自引用）。
+                                --     经 env 取还顺带保证"判据只有一份"（native_priority
+                                --     的敌阵营门用的是同一个模块）。
+                                local eng=(env.structure_profiles and env.structure_profiles[q.resource])
+                                    or (env.is_enemy and env.is_enemy(q.resource))
+                                    or Filter.marked_allowed(q.resource)
+                                if eng and P.usable(q,q.current,true)
+                                    and reservations:available(owner,q.identity) then
+                                    local at=tonumber(q.marked_at) or 0
+                                    local ord=tonumber(q.order) or 0
+                                    if not best or at<best_at
+                                        or (at==best_at and ord<best_order) then
+                                        best,best_at,best_order=q,at,ord
+                                    end
                                 end
                             end
+                            if best then
+                                my_mark=best
+                                -- ★ 选中即登记（预约 = "分配"，不是"锁定成功"）。
+                                reservations:claim(owner,best.identity)
+                                -- ★ 一颗雷只持有**当前分到的**这一个标记：
+                                --   否则它会**囤积预约**（见 target_reservations:keep_only 的说明）。
+                                reservations:keep_only(owner,best.identity)
+                            elseif multi then
+                                -- ★ 多标记时**取消兜底** —— 没分到就不派。
+                                --   ⚠ `my_mark` 的初值是 `spread`（**帧级**标记）⇒ 没有候选
+                                --     通过筛选时会**退回帧级标记**，那颗雷照样去打一个
+                                --     **已被别人占**的目标 ⇒ 1:1 被绕过（主支实机铁证）。
+                                --   ⚠ 单标记（`multi=false`）**保留兜底**：那时 `spread` 就是
+                                --     唯一的标记，退回它正是"单标记多颗一起追"要的行为。
+                                my_mark=nil
+                            end
+                        end
+                        -- ★★ 最后一道硬闸：**让预约成为唯一裁判** ★★
+                        --   ⚠ 上面无论怎么决定（挑中了 / 取消兜底 / 单标记保留兜底），
+                        --     这里都必须再问一次"**本人现在能不能持有它**"：
+                        --       `available(owner,identity)` = `本人已持有 或 count<cap`
+                        --     若不能 ⇒ `my_mark=nil` ⇒ **当作没有标记**（不接管）。
+                        --   ⚠ 为什么不能只靠上面那道 `elseif multi`：`multi` 是**当时**的
+                        --     队列长度，而队列可能在同帧内增长 ⇒ 那一刻 `multi=false`
+                        --     ⇒ 兜底生效 ⇒ 仍然挤上去。这一道不看队列长度，只看**名额**。
+                        --   ⚠ 单标记 + cap≥1 时 `available` 对本人恒真
+                        --     ⇒ "单标记多颗一起追"不受影响。
+                        if reservations and my_mark
+                            and not reservations:available(owner,my_mark.identity) then
+                            my_mark=nil
                         end
                         -- 结构路径的入口参数：挑中的若是**结构**就用它（否则保持帧级
                         -- `structure_mark`）⇒ 2 个虫洞 + 2 颗雷也能各打一个。
+                        --
+                        -- ★★★ 2026-10-14：**分配结果必须真正决定打谁** ★★★
+                        --   ⚠⚠ 旧写法只在 `my_mark` **本身是结构**时才替换 `my_structure`；
+                        --     当 `my_mark` 是**通用目标**（标记的敌人）时，`my_structure` 仍是
+                        --     **帧级** `structure_mark` ⇒ **结构分支去抢那个结构，覆盖分配结果**。
+                        --   主支实机铁证（0.1.43）：
+                        --     `mark_queue;entity=951;…;picked=933`  ← 分到 933（敌人）
+                        --     `takeover_probe;entity=951;target=588` ← 却接管 588（结构）
+                        --   ⇒ 有预约分配时，`my_structure` **必须等于 `my_mark`（包括 nil）**：
+                        --     没分到 ⇒ `my_structure=nil` ⇒ 两个分支都不接管 ⇒ 交还引擎。
+                        --   ⚠ 无预约（`exclusive_targets=false`）时**保持旧行为**
+                        --     （`my_structure=structure_mark`）—— 那条路没有分配，不该动。
                         local my_structure=structure_mark
-                        if my_mark and env.structure_profiles
-                            and env.structure_profiles[my_mark.resource]~=nil then
-                            my_structure=my_mark
-                        end
+                        if reservations then my_structure=my_mark end
                         -- ★★ 2026-10-10 队列审计（用户报「标的是泰坦却打了别的目标」）★★
                         --   要一次分清两种可能：
                         --     (a) 标记的确实是名册重甲（不是泰坦）⇒ 行为按设计走
                         --     (b) 标了泰坦 `9e2e17f2ccccafdd` 却没被选中 ⇒ **标记选择 bug**
-                        --         （泰坦档位 1000 本该压过名册的 1000+rank）
+                        --         （泰坦档位 750 本该压过名册的 1000+rank）
                         --   一行给出**投掷那一刻**的队列全貌 + 我们实际挑了谁 + 引擎选了谁。
                         --   `tiers` 用 `env.mark_tier`（唯一实现）⇒ 与选择逻辑同一把尺子。
                         --   ⚠ 只读、不改选择；按 (手雷, 队列签名) 去重，避免逐帧刷屏。
@@ -2646,6 +3011,12 @@ function M.new(env)
                             if P.mq_logged[m.id]~=sig then
                                 P.mq_logged[m.id]=sig
                                 local ids,res,tiers,cur={},{},{},{}
+                                -- ★★★ 2026-10-14（用户要求）：**分配的取证行** ★★★
+                                --   `loads=` 每个标记当前被几颗雷占着、`cap=` 本帧生效的上限。
+                                --   这两项是判读「分配机制到底生效了没」的**唯一依据** ——
+                                --   没有它们，用户报"多标记还是只飞一颗"时只能靠猜
+                                --   （主支正是靠 `loads=1,0,0,0` 这种行定位的）。
+                                local loads={}
                                 for i=1,#spread.queue do
                                     local q=spread.queue[i]
                                     ids[#ids+1]=tostring(q.id)
@@ -2653,12 +3024,18 @@ function M.new(env)
                                     tiers[#tiers+1]=tostring(env.mark_tier
                                         and env.mark_tier(q.resource) or '?')
                                     cur[#cur+1]=q.current and '1' or '0'
+                                    loads[#loads+1]=tostring(reservations
+                                        and reservations:load(q.identity) or 0)
                                 end
                                 env.emit('mark_queue;entity='..m.id..';n='..#spread.queue
                                     ..';ids='..table.concat(ids,',')
                                     ..';resources='..table.concat(res,',')
                                     ..';tiers='..table.concat(tiers,',')
                                     ..';current='..table.concat(cur,',')
+                                    ..';loads='..table.concat(loads,',')
+                                    ..';cap='..tostring(#spread.queue>1
+                                        and (tonumber(env.multi_mark_grenades_per_target) or 1)
+                                        or (tonumber(env.max_grenades_per_target) or 1))
                                     ..';picked='..tostring(my_mark and my_mark.id or '-')
                                     ..';engine_sel='..tostring(m.selection_id or '-')
                                     ..';frame='..frame)
@@ -2783,6 +3160,11 @@ function M.new(env)
                                 diag.locked=diag.locked+1
                                 if reservations then reservations:claim(owner,result.track.identity) end
                                 if not old.lock or old.lock.identity~=result.track.identity then
+                                    -- ★ 2026-10-14：**换了目标** ⇒ 丢弃上一只目标的绕行点缓存。
+                                    --   否则安全区绕行时会拿旧目标的点，把雷引向错误位置
+                                    --   （手雷/目标 id 都会被引擎复用，这就是 P.tpos 那张表
+                                    --     在离开安全区时必须清干净的同款理由）。
+                                    P.lastpt[m.id]=nil
                                     env.emit('priority_locked;entity='..m.id..';target='..result.track.id..';reason='..result.reason
                                         ..';resource='..tostring(result.resource)..';mark='..tostring(result.mark_id)
                                         ..';mark_current='..tostring(result.mark_current)
@@ -2793,6 +3175,12 @@ function M.new(env)
                                     old.titan=nil
                                 end
                                 old.lock=result.track
+                                -- ★ 2026-10-14 所有权互斥（配合"点目标承诺后飞到底"）★
+                                --   点目标现在不会再自动释放 ⇒ 必须在这里显式丢弃它，
+                                --   否则结构锁以后被清掉时（`old.lock=nil`）那个陈旧的点会
+                                --   "复活"、把雷拉回早已作废的落点。三处所有权天然互斥：
+                                --   结构（本行）· 泰坦（下面 old.titan）· ping 点（point 分支）。
+                                old.point=nil
                                 old.force_search=nil
                                 m.record_bytes=result.record
                                 m.selection_id=Layout.u32(result.record,0x18)
@@ -2922,9 +3310,17 @@ function M.new(env)
                     --   G-60 选中了吐酸泰坦，泰坦段就会覆盖那把锁（标记形同没生效）。
                     --   现在：本 mod 已为它锁定**玩家点名的目标**（old.lock，结构或单位
                     --   都算）⇒ 泰坦让位，由标记目标继续驱动。
-                    --   `old.lock` 被释放的条件不变（目标不可用 / 被 quarantine），
-                    --   所以这不会让泰坦"永远打不了"。
+                    --   ⚠ 本仓注释（历史）：`old.lock` 被释放的条件不变
+                    --     （目标不可用 / 被 quarantine），所以这不会让泰坦"永远打不了"。
+                    -- ★★★ 2026-10-14（用户最终方案）：**已放手的那颗雷不算"持有标记锁"** ★★★
+                    --   这是"到 10 m 放手"方案的最后一块：我们**刻意**用标记锁压住泰坦链
+                    --   （上面那段），而放手之后必须让这道门对**这一颗**失效，
+                    --   否则引擎选中了泰坦、链也起不来。
+                    --   ⚠ 只清一次 `old.lock` **不够**：priority 每帧会重建它
+                    --     （实机 31~83 次 `priority_locked`）⇒ 必须按**手雷**记住"已放手"。
+                    --   ⚠ 这正是 A/C/D 路一直缺的那一环（它们接管到底、从不放手）。
                     local marked_lock_held=old~=nil and old.lock~=nil
+                        and not (env.titan_approach_released and env.titan_approach_released(m.id))
                     -- ★★★ 明确的"ping 地面点"压过**引擎自选**的泰坦（2026-10-05 用户报）★★★
                     --
                     -- 现象（用户原话）：「如果我没标记泰坦，标记了泰坦附近的空地，
@@ -3026,7 +3422,14 @@ function M.new(env)
                     --   ⇒ 对 ping 路放宽成**与结构路同一口径**：TTL 内的 `ping_take`
                     --     就够（不再要求 selected、也不再限定 state 2/3 —— 提升之后
                     --     state 变 4，若还限定 2/3 会让下一帧的驱动分支又选错）。
-                    local point_drive=not abandoned and point_marker~=nil
+                    -- ★★ 2026-10-14：`point_marker` 缺失时**不再**直接判 false ★★
+                    --   原实现第一项就是 `point_marker~=nil`，与上面 3255 行区那段
+                    --   「已在引导中的那颗（`old.point`）：**不受 TTL 影响**，继续飞到引爆」
+                    --   的**意图直接矛盾** —— ping 标记一消失就丢目标。
+                    --   ⇒ 改成"live ping **或** 已承诺的点"二者之一即可（用户要求：
+                    --     跟虫洞一样承诺后飞到底）。新接管那一支仍由下面的
+                    --     `selected and point_armed` / `ping_take` 把关（TTL 仍然生效）。
+                    local point_drive=not abandoned and (point_marker~=nil or (old and old.point))
                         and P.szw[m.id]~=frame
                         and not titan_selected and not (old and old.lock)
                         and ((selected and point_armed) or (old and old.point) or ping_take)
@@ -3104,7 +3507,16 @@ function M.new(env)
                             --   它内部会 `calls.explode`，事后拦不住（同 arrival 那条路）。
                             --   玩家在半径内 ⇒ 本帧**不调用** ⇒ 不授权引爆 ⇒ 引擎继续飞。
                             result,status=with_observation(old.ref,function(scope)
-                                if not blast_safe_hold(m,scope) then return {kind='safe_hold'} end
+                                -- ★★★ 2026-10-14：把**泰坦的预期引爆点**交给安全区 ★★★
+                                --   安全区主判据量的是"玩家离**引爆点**多远"，而泰坦链的引爆点
+                                --   正是 `Adaptive.refine` 写进 `route.arrival_point` 的
+                                --   `c = 腹点 + 腹法线×2.5`。
+                                --   ⚠ 关键：它**上一帧就已经算好**（`old.titan` 是上帧的 track）
+                                --     ⇒ 不需要为了判定多付一次 `TargetContext.capture`。
+                                --   ⚠ `old.titan.cancelled` 时不算数（那是已作废的航路）。
+                                local tgt_pt=old.titan and not old.titan.cancelled and old.titan.route
+                                    and (old.titan.route.arrival_point or old.titan.route.point) or nil
+                                if not blast_safe_hold(m,scope,tgt_pt) then return {kind='safe_hold'} end
                                 return titan:step(scope,old.titan)
                             end)
                             if result then
@@ -3117,6 +3529,9 @@ function M.new(env)
                                     self.safe_held=(self.safe_held or 0)+1
                                 else
                                 old.titan=result.track
+                                -- ★ 2026-10-14 所有权互斥：泰坦链接管 ⇒ 丢弃已承诺的点
+                                --   （理由同上面结构那一处：防陈旧点目标在锁失效后复活）。
+                                old.point=nil
                                 -- ★★ 2026-10-10 多标记分流：泰坦链**接管成功要 claim** ★★
                                 --   这是根因修复的另一半 —— 只有 claim 了，别的 G-60 的
                                 --   `available()` 才会返回 false，上面那个让位判定才生效。
@@ -3175,14 +3590,23 @@ function M.new(env)
                             result={kind='point'}
                             old.titan=nil;old.lock=nil
                             local starting=old.point==nil
-                            old.point={x=point_marker.x,y=point_marker.y,z=point_marker.z,
-                                token=point_marker.token,frame=frame}
+                            -- ★★ 2026-10-14：`point_marker` **可能为 nil** ★★
+                            --   （ping 标记已过期 / 本帧读不到）—— 此时**沿用 `old.point`**，
+                            --   即"已承诺的那颗雷继续飞到引爆"（用户要求，见上面 point_drive）。
+                            --   ⚠ 必须用 `src` 取值：直接写 `point_marker.x` 会在 nil 上
+                            --     索引 ⇒ 抛错被上层 pcall 吞掉 ⇒ 表现为"远距离空 ping 没反应"
+                            --     （正是本次要修的症状，改错方向会把 bug 埋得更深）。
+                            --   ⚠ `slot` 只存在于 live ping 上；沿用旧点时没有 slot ⇒
+                            --     `point_taken` 用 `src.slot`（可能 nil），仅诊断用途。
+                            local src=point_marker or old.point
+                            old.point={x=src.x,y=src.y,z=src.z,
+                                token=src.token,frame=frame}
                             runner:release(old.ref)
                             if starting and env.emit then
                                 env.emit(string.format(
                                     'point_taken;entity=%s;pos=%.2f,%.2f,%.2f;slot=%s;frame=%d',
-                                    tostring(m.id),point_marker.x,point_marker.y,point_marker.z,
-                                    tostring(point_marker.slot),frame))
+                                    tostring(m.id),src.x,src.y,src.z,
+                                    tostring(src.slot),frame))
                             end
                         else
                             old.titan=nil
@@ -3322,11 +3746,15 @@ function M.new(env)
                         current={ref=old.ref,match=m}
                         local ok_arr,result,reason=pcall(with_observation,old.ref,function(scope)
                             local target,blast_point,blast_site
-                            -- ★★ 2026-10-10 安全区：这道门**每帧只调一次**（结果下面复用）★★
-                            --   ⚠ 门每成立一次就打一条 `blast_hold;` ⇒ 调两次日志翻倍
+                            -- ★★★ 2026-10-14：安全区门**挪到引爆点算出来之后** ★★★
+                            --   用户要求「安全区以**引爆点**为中心」⇒ 判定必须拿到引爆点，
+                            --   而 `blast_point` 是在下面 `old.lock` 块里才算出来的。
+                            --   ⚠ 以前这道门在最上面（那时只有"手雷在哪"）⇒ 只能以手雷为中心。
+                            --   ⚠ **只能有一道门**（下面复用 `held`）：
+                            --     门每成立一次打一条 `blast_hold;`，调两次日志翻倍
                             --     （去重表按手雷去重，防不住同一帧的两次调用）。
                             --   返回 true = 允许引爆；false = 玩家在圈内（held）。
-                            local held=not blast_safe_hold(m,scope)
+                            local held
                             if old.lock then
                                 local d=TargetData.new(read,base,env.exe)
                                 local e=d.entity(old.lock.id)
@@ -3392,17 +3820,22 @@ function M.new(env)
                                             end
                                         end
                                     end
-                                    -- ★★ 2026-10-10 安全区绕行的**圆心**（只在生效期间取）★★
-                                    --   · 体内爆点自带圆心（`blast_point` 就是），不重复取；
-                                    --   · 普通虫洞/结构锁没有 ⇒ 在这里取一次，供下面注入绕行点。
-                                    --   ⚠ 只在 `held` 时取：`target_position` 走
-                                    --     `TargetContext.capture`，不便宜，不能进常规每帧路径
-                                    --     （perf 门盯着 layout_reads）。
+                                    -- ★★★ 2026-10-14：安全区**圆心/引爆点**缓存（**与 held 无关**）★★★
+                                    --   旧代码只在 `held` 时填 `P.tpos` ⇒ 死锁：
+                                    --   "第一次拦不住 ⇒ tpos 永远 nil ⇒ 引爆点判不了 ⇒ 永远拦不住"。
+                                    --   ⇒ 改成**无条件**填（按手雷节流 30 帧 —— `target_position`
+                                    --     走 `TargetContext.capture`，不便宜，不能每帧每颗都付；
+                                    --     perf 门盯着 layout_reads）。
+                                    --   ⚠ 有 `blast_point`（体内爆点，最准）时不取。
                                     --   ⚠ 取不到就**不假装成功** ⇒ 置 nil，下面会打
                                     --     `blast_detour_nopos;` 并退回"只拦我们自己的引爆"。
-                                    if held and not blast_point then
-                                        local okc,pc=pcall(target_position,e)
-                                        P.tpos[m.id]=(okc and pc) or nil
+                                    if not blast_point then
+                                        local tf=P.tpos_frame[m.id]
+                                        if not tf or frame-tf>=30 then
+                                            P.tpos_frame[m.id]=frame
+                                            local okc,pc=pcall(target_position,e)
+                                            P.tpos[m.id]=(okc and pc) or nil
+                                        end
                                     end
                                 end
                             end
@@ -3422,10 +3855,65 @@ function M.new(env)
                             local point=old.point
                             if point and old.lock then point=nil end
                             if point and has_weakpoint(m.selection_resource) then point=nil end
+                            -- ★★★ 安全区门（**每帧只调一次**）★★★
+                            --   位置说明：必须在 `blast_point` 定下来之后 —— 以**引爆点**为中心。
+                            --   ★★★ 2026-10-14 修复（用户报「空 ping 功能貌似出问题了」）★★★
+                            --   ⚠⚠ 这里**只许**传 `blast_point`（体内爆点）或 `P.tpos`
+                            --     （圆心缓存）—— **绝不许传 ping 点 `point`**。
+                            --   为什么（这是我上一轮引入的真 bug，根因已定位）：
+                            --     ping 空地时**玩家就站在落点附近**（你 ping 哪就站哪扔）。
+                            --     把 ping 点当"预期引爆点"⇒ 玩家几乎恒在 `safe_zone_target_radius`
+                            --     （默认 12 m）内 ⇒ 门恒判"圈内" ⇒ `held=true` ⇒ 下面的
+                            --     **绕行块把 ping 点整个覆盖**成一个 5 m 外的环绕点
+                            --     ⇒ 手雷绕着落点转圈、**永远不落点** = 空 ping 废掉。
+                            --   而 0.1.22 之所以没这个问题：那时 `blast_safe_radius=0`
+                            --     且**没有** `safe_zone_target_radius` ⇒ 门第一行就
+                            --     `return true`（`safe_target<=0 and safe_grenade<=0`）
+                            --     ⇒ 绕行块从不执行。我把它改成默认开启后就暴露了。
+                            --   ⇒ **与主支逐字一致**（主支原文：
+                            --     `held=not blast_safe_hold(m,scope,blast_point or P.tpos[m.id])`）
+                            --     —— 用户最初的要求就是「安全区机制跟主支类似」。
+                            --   ⚠ 两者都可能为 nil（第一帧 / 拿不到圆心）⇒ 目标那一条
+                            --     "判不了"（不是"没拦"），只按手雷半径判；`target_dist=nil` 可区分。
+                            --   ⚠ **只有这一处**调门 ⇒ 下面 `terminal=not held` 直接复用
+                            --     （门每成立一次打一条 `blast_hold;`，调两次日志翻倍）。
+                            if held==nil then
+                                held=not blast_safe_hold(m,scope,blast_point or P.tpos[m.id])
+                            end
                             -- 早期驱动：传 titan 同款到达区域 + early 标记
                             -- （early 让 arrival 内部失败不永久禁用，熔断由 state3_danger 管）
                             local arr_opts
-                            if blast_point then
+                            -- ★★★ 2026-10-14（用户最终方案）：**把雷送到泰坦附近** ★★★
+                            --   没有这一半就只剩"引擎自己碰巧选中泰坦"这一条路
+                            --   （本仓此前就是这样：priority 静默跳过泰坦 ⇒ 手雷跟着
+                            --   引擎的选中 = 最近的敌人）。
+                            --   ⇒ 这里只写**一个点**（`point_target` —— 与"ping 空地"
+                            --     完全同一条已验证过的写路径，**不新增写机制**）；
+                            --     到 `titan_approach_dist`（默认 10 m）时模块返回 nil
+                            --     ⇒ 放手 ⇒ 让引擎自己选中它。
+                            --   ⚠ 不认领泰坦、不碰引擎选中、不碰链的触发条件。
+                            --   ⚠ 传的是 `target.resource`（**资源字符串**）而不是 profile：
+                            --     模块两种都收，但字符串是这条路的"同源判据"
+                            --     （`claim_profile` 也吃字符串）。主支传的是
+                            --     `claim_profile(旧锁的实体 id)` ⇒ 那是 nil/表，点提供者因此
+                            --     **从未生效**（见模块文件头那段）。
+                            --   ⚠ `arr_opts` 必须在**进入这个 if 之前**就存在（它是上面的
+                            --     `local arr_opts`）—— 不能写成 `if not arr_opts then`
+                            --     再留空分支（主支 v0.2.43 就这么写，结果 `arr_opts` 为 nil
+                            --     时空分支成立、后面所有 `elseif` 全被跳过 ⇒ 空 ping 与
+                            --     结构爆点**全部失效**。他们 v0.2.44 才修）。
+                            if env.titan_approach_pt and target and target.resource then
+                                local tp=env.titan_approach_pt(m.id,target.id,frame,target.resource)
+                                if tp then
+                                    arr_opts={region=env.point_arrival_region,point=true,
+                                        point_target=tp}
+                                end
+                            end
+                            if arr_opts then
+                                -- 已经是泰坦接近航点 ⇒ 不再叠加别的点。
+                                -- ⚠ 这个**空分支是刻意的**：写成 `if not arr_opts then`
+                                --   会把下面的 `elseif` 全跳过（见上）。
+                            elseif blast_point then
                                 -- ★ 体内爆点（体内点优先）：与 ping 点目标同一套写法，
                                 --   但点是**从已锁定目标算出来的**（见上面的 blast_point），
                                 --   而且到达区域用**本目标专用**的紧区域 ——
@@ -3513,6 +4001,10 @@ function M.new(env)
                                     arr_opts={region=env.point_arrival_region,point=true,
                                         point_target={ox,oy,c[3]+1.0},
                                         early=(arr_opts and arr_opts.early) or nil}
+                                    -- ★★ 记住这个点：圆心下一帧可能就解不出来了（见 P.lastpt 定义处）。
+                                    --   ⚠ 存**算好的整点**（含 +1.0 抬升）：复用分支不再重算，
+                                    --     否则每帧 +1.0 会累积漂移。
+                                    P.lastpt[m.id]={ox,oy,c[3]+1.0}
                                     -- 绕行点必须**允许写入**（mask_all 分支会把点写整段跳过）
                                     mask_only=nil
                                     if frame-(P.dg[m.id] or -100000)>=60 then
@@ -3525,6 +4017,30 @@ function M.new(env)
                                                 or (point and 'point') or 'target')
                                             ..';frame='..frame)
                                     end
+                                elseif P.lastpt[m.id] then
+                                    -- ★★★ 2026-10-14（本轮修复）：圆心这一帧解不出来 ⇒
+                                    --   **原样复用上一次算好的绕行点**，绝不让 `arr_opts` 落空。
+                                    --   落空的后果不是"慢一帧"：arrival 会退回**实体 aim**，
+                                    --   而绕行期间我们写的是点、priority 已判定"拥有航点"并
+                                    --   **跳过写回引擎选择** ⇒ 实体 aim 的前置条件必然不成立 ⇒
+                                    --   **每帧** `arrival selected target mismatch` ⇒
+                                    --   每帧记一次引导失败，连 30 帧 `guide_give_up` 报废这颗雷。
+                                    --   实机：entity=954 到 28/30；整局 36 条 mismatch vs 4 次引爆。
+                                    --   ⚠ 复用点**不再重新偏移**（存的就是整点）⇒ 不会漂移。
+                                    --   ⚠ `early` 与上面那条一样**继承**：`arr_opts` 此刻可能
+                                    --     已由前面的链（泰坦航点/爆点/ping/early_drive）设过。
+                                    local lp=P.lastpt[m.id]
+                                    arr_opts={region=env.point_arrival_region,point=true,
+                                        point_target=lp,
+                                        early=(arr_opts and arr_opts.early) or nil}
+                                    mask_only=nil
+                                    if frame-(P.dg[m.id] or -100000)>=60 then
+                                        P.dg[m.id]=frame
+                                        env.emit('blast_detour;entity='..m.id
+                                            ..';center=-'
+                                            ..';point='..string.format('%.2f,%.2f,%.2f',lp[1],lp[2],lp[3])
+                                            ..';radius=-;src=reuse;frame='..frame)
+                                    end
                                 elseif not P.dg_nopos[m.id] then
                                     P.dg_nopos[m.id]=true
                                     env.emit('blast_detour_nopos;entity='..m.id
@@ -3534,7 +4050,7 @@ function M.new(env)
                             else
                                 -- 离开安全区 ⇒ 清掉绕行状态（**必须**：手雷 id 会被引擎复用，
                                 --   残留的 tpos/dg 会让下一颗手雷的圆心与诊断张冠李戴）。
-                                P.tpos[m.id]=nil;P.dg[m.id]=nil;P.dg_nopos[m.id]=nil
+                                P.tpos[m.id]=nil;P.dg[m.id]=nil;P.dg_nopos[m.id]=nil;P.lastpt[m.id]=nil
                                 -- ⚠⚠ 还必须清掉**锁上的 `point_bytes`**（自查发现的死锁）★
                                 --   绕行期间我们给锁写了 point_bytes ⇒ priority 下一帧
                                 --   `continued=true` ⇒ **跳过 setter** —— 这正是我们要的
@@ -3561,6 +4077,45 @@ function M.new(env)
                                 local okv,v=pcall(TargetData.vector,scope.prepared.own_position_bytes,0)
                                 if okv then P.hit[m.id]=v end
                             end
+                            -- ★★★ 2026-10-14：**"标记的普通敌人不被驱动"现场取证** ★★★
+                            --   用户报「其他敌人的远距离标记追踪无效」。
+                            --   实机对比（同一颗雷 946，2026-10-15 19:2x 那局）：
+                            --     · 通用**单位**锁期间：绕行也在写点，但 `detour_guide;dist=`
+                            --       在 116~132 m 之间**漂走**（不收敛）；
+                            --     · 让位给**结构**锁后：`blast_guide;dist=` 105.95 → 99.71
+                            --       （~6 m/s 收敛）。
+                            --   ⇒ 差别只能出在"引擎手里此刻选的是谁"：结构不是 AiEnemy、
+                            --     引擎没有竞争者；而标记的**敌人**是引擎自己也会选的对象。
+                            --   而 arrival 的**实体 aim** 路径有一条硬前置：
+                            --     `assert(c.selection.has_target and c.selection.id==target.id)`
+                            --   撞上它就等于这一帧什么都没做（还会喂 30 帧熔断）。
+                            --   ⇒ 这条诊断把**当场四个事实**一起打出来，一次上机即可定性：
+                            --     `selected` = 引擎此刻选的实体（'-' = 没选）
+                            --     `lock_point` = 我们这把锁上有没有"我们写的点"
+                            --     `dg` = 这一帧是不是在安全区绕行
+                            --     `dist` = 手雷离目标多远
+                            --   ⚠ 每颗雷最多 1 条/秒（`P.gm` 节流）——不刷屏，但绝不静默。
+                            if not arr_opts and target and scope.prepared
+                                and scope.prepared.selection
+                                and not (scope.prepared.selection.has_target
+                                    and scope.prepared.selection.id==target.id) then
+                                if frame-(P.gm[m.id] or -100000)>=60 then
+                                    P.gm[m.id]=frame
+                                    env.emit('guide_mismatch;entity='..m.id
+                                        ..';target='..tostring(target.id)
+                                        ..';selected='..tostring(scope.prepared.selection.has_target
+                                            and scope.prepared.selection.id or '-')
+                                        ..';lock_point='..tostring(
+                                            (old.lock and old.lock.point_bytes) and 1 or 0)
+                                        ..';dg='..tostring(P.dg[m.id] and 1 or 0)
+                                        ..';dist='..(P.tpos[m.id]
+                                            and string.format('%.1f',math.sqrt(
+                                                (P.tpos[m.id][1]-own[1])^2
+                                                +(P.tpos[m.id][2]-own[2])^2
+                                                +(P.tpos[m.id][3]-own[3])^2)) or '-')
+                                        ..';frame='..frame)
+                                end
+                            end
                             -- ★★ 2026-10-10 爆炸安全区（用户要求）★★
                             --   玩家在 `blast_safe_radius`(默认 0=关) 球形半径内 ⇒ **不引爆**，
                             --   G-60 继续追踪目标，等玩家离开这个球再炸。
@@ -3576,6 +4131,23 @@ function M.new(env)
                             --   ★ `held` 就是**上面那次**门调用的结果 —— 这里不再调第二次
                             --     （门每成立一次打一条 `blast_hold;`，调两次日志翻倍）。
                             local terminal=not held
+                            -- ★★★ 2026-10-14（用户最终方案）：**靠近泰坦后放手** ★★★
+                            --   到达 `titan_approach_dist`（默认 10 m）⇒ 放弃驱动
+                            --   ⇒ 让引擎自己选中这只泰坦 ⇒ 泰坦链自然启动
+                            --   （链是**最后的唯一引导者**，爆点由 Adaptive 算）。
+                            --   ⚠ 单语句、**无新 local、无内联闭包**：这里是那个恰好
+                            --     60 upvalue 的闭包，多一个被捕获的 local 就会让整份
+                            --     chunk 编译失败（2026-10-10 实机事故）。
+                            --   ⚠ 降频到每 3 帧：距离变化很慢，释放判定不是逐帧关键的，
+                            --     而它是每颗雷每帧两次 `origin()` 读（主支实测"一抛雷就卡，
+                            --     且雷越多越高"就是这类逐帧读）。
+                            --   ⚠ 清 `old.lock` **和** `old.titan`：
+                            --     前者是 priority 的锁，后者是"这颗已经交给泰坦链"的标记
+                            --     （留着会让下一帧走 titan 分支时用旧航路）。
+                            if env.titan_approach and (frame % 3) == 0
+                                and env.titan_approach(m.id,(old.lock and old.lock.id),frame) then
+                                old.lock=nil;old.titan=nil
+                            end
                             return arrival:step(scope,target,nil,'vanilla',terminal,old.arrival_progress,
                                 mask_only,arr_opts)
                         end)

@@ -1072,33 +1072,55 @@ def test_structure_whitelist(rt):
           p.index("NOT_IN_WHITELIST") < p.index("Context.capture"),
           "白名单检查在 Context.capture / 任何原生调用**之前**")
 
-    # 表里必须只有虫洞 —— 混入任何其他 kind 都可能让 mod 去接管不该碰的东西
+    # ⚠️ 必须剥注释后再查：本文件的注释里引用了这些哈希来解释历史，
+    #    用原始文本查会把说明文字当成代码（这个坑本项目踩过好几次）。
+    _nocomment = "\n".join(l for l in prof.splitlines() if not l.strip().startswith("--"))
+    # ★★★ 2026-10-14（用户要求远距离追踪）：白名单**不再只含虫洞** ★★★
+    #   用户原话：「只增加虫洞、构筑、巨型构筑、尖啸巢、孢子喷涌虫、落地穿梭舰这几个」。
+    #   经确认：**尖啸巢反转**（2026-09-28 曾要求不接管，现明确要求加入）。
+    #   ⇒ 现在三类 kind 并存，且**每一类都必须有明确来源**（见下面的独立来源验证）。
     kinds = set(re.findall(r'kind="(\w+)"', prof))
-    check("whitelist_only_holes", kinds == {"structure_hole"},
-          f"白名单仅含 structure_hole（实际：{sorted(kinds)}）")
+    check("whitelist_kinds_are_the_three_documented",
+          kinds == {"structure_hole", "structure_tower", "structure_vent"},
+          f"★ 白名单只许含这三种 kind（实际：{sorted(kinds)}）—— "
+          f"hole=虫洞 / tower=有锚点几何的塔 / vent=免几何兜底（构筑·飞船）")
     n = len(re.findall(r'profiles\["', prof))
-    check("whitelist_size_known", n == 16, f"白名单 16 项（实际 {n}）")
+    check("whitelist_size_known", n == 38, f"白名单 38 项（实际 {n}）")
+        # ★★★ 2026-10-14：28 → **37**（用户要求把机器人碉堡/炮塔/营地武器/目标建筑
+        #   加进"虫洞这一档"，见 compat/structure_profiles.lua 末段那 9 条）。★★★
 
     # 所有 profile 都必须显式 structure=true —— 这是"结构体"而非"活体"的标记
     n_true = len(re.findall(r"structure=true", prof))
     check("whitelist_all_flagged_structure",
           n_true == n, f"全部标了 structure=true（{n_true}/{n}）")
 
-    # ★★ 2026-09-29：把"尖啸巢穴等绝不接管"从**口号**变成**可验证的事实** ★★
-    #
-    #   这段测试的标题一直写着"非虫洞目标（尖啸巢穴等）绝不接管"，
-    #   但它只检查了 `kind` 字段 —— 而 `kind` 是**我们自己**写的标签。
-    #   尖啸者巢就以 `kind="structure_hole"` 混在表里跑了很久都没被发现。
-    #   ⇒ 改为**点名断言**：具体哈希不得出现。
-    # ⚠️ 必须剥注释后再查：本文件的新注释里就引用了这些哈希来解释历史，
-    #    用原始文本查会把说明文字当成代码（这个坑今天已经踩过好几次）。
-    _nocomment = "\n".join(l for l in prof.splitlines() if not l.strip().startswith("--"))
-    for h, label in (("095686275a113614", "尖啸者巢 Shrieker Nest"),
-                     ("aa28caf964d05500", "孢子菇 Spore Spewer"),
-                     ("e02e6bd34b606a85", "大型孢子菇 Spore Spewer Large"),
-                     ("06d3c4720e642fc1", "任务虫卵 embryo_01")):
-        check(f"non_hole_{h}_excluded", h not in _nocomment,
-              f"★ {label} 不得出现在白名单里（点名，不靠 kind 字段）")
+    # ★★★ 2026-10-14：**用户点名的 6 类必须全部在白名单里**（这是本功能的入口）★★★
+    #   为什么用"点名必须在内"而不是"某些必须不在"：用户这次是**加**需求。
+    #   ⚠ 判据不靠 `kind` 字段（那是我们自己写的标签，历史上正是它把尖啸巢
+    #     伪装成虫洞混过去的）—— 这里用**具体哈希**点名。
+    REQUIRED = {
+        "8901f188db366b4b": "虫洞（基线首条）",
+        "4232ee48e2cfd24e": "巨型构筑 cyborg_colony_spawner_base",
+        "5158e582fbeb26bd": "构筑 airborne",
+        "22cc0ed4ceb9cb68": "构筑 assault",
+        "f0b98fb953b13960": "构筑 base",
+        "4fb8eb356ac8553e": "构筑 standard",
+        "a1a7b76b29088843": "构筑 phalanx",
+        "095686275a113614": "尖啸巢 Shrieker Nest",
+        "aa28caf964d05500": "孢子喷涌虫 Spore Spewer",
+        "e02e6bd34b606a85": "孢子喷涌虫（大型）",
+        "b3c9cdb79dc17937": "落地穿梭舰 Warp Ship Landed",
+        "2ad2e055dad21f6e": "落地穿梭舰 Warp Ship Invasion",
+    }
+    _missing_required = [f"{h}({lab})" for h, lab in REQUIRED.items() if h not in _nocomment]
+    check("whitelist_contains_all_six_user_named_categories",
+          not _missing_required,
+          f"★★ 用户点名的 6 类（虫洞/构筑/巨型构筑/尖啸巢/孢子喷涌虫/落地穿梭舰）"
+          f"必须全部在结构表里 —— 否则它们走通用路会被敌阵营门槛拒 ⇒ 永远拿不到锁 "
+          f"⇒ 远距离追踪无从谈起。缺失：{_missing_required or '无'}")
+    # ★ 反向：虫卵**不在**用户点名的 6 类里 ⇒ 必须仍然不接管
+    check("embryo_still_not_taken_over", "06d3c4720e642fc1" not in _nocomment,
+          "★ 任务虫卵 embryo_01 不在点名的 6 类里 ⇒ 仍不接管（用户要求「其他的不弄」）")
 
     # ★★★ 独立来源验证：每一条都必须是"虫洞生成器" ★★★
     #   拿自己写的 kind 验证自己的清单是**循环论证**（上一轮就是这么漏掉尖啸者巢的）。
@@ -1128,20 +1150,102 @@ def test_structure_whitelist(rt):
                 continue
             rev.setdefault(f"{_murmur64a(_line):016x}", _line)
         _holes = re.findall(r'profiles\["([0-9a-f]{16})"\]', _nocomment)
-        check("whitelist_path_evidence_available", len(_holes) == 16 and len(rev) > 100000,
+        check("whitelist_path_evidence_available", len(_holes) == 38 and len(rev) > 100000,
               f"复算前提满足（{len(_holes)} 条 profile / {len(rev)} 条资源名）")
-        unknown = [h for h in _holes if h not in rev]
+        # ★★★ 2026-10-14：**两条穿梭舰哈希离线查不到**（这是**已知且预期**的）★★★
+        #   用户提供的十进制 → 0xB3C9CDB79DC17937 / 0x2AD2E055DAD21F6E，
+        #   而社区名字库早于 1.007.000（用户原话：「1.007.000 修改了营地穿梭舰的哈希值」）
+        #   ⇒ **查不到 ≠ 错**。主支也是同样处理（标 `UNVERIFIED_hash`）。
+        #   ⚠ 失败方向安全：runtime 按 `e.resource` 查表，查不到 ⇒ 完全退回旧行为
+        #     （引擎 aim），不会误炸别的目标。上机读 `structure_mark;…;resource=` 核对即可。
+        # ★★★ 2026-10-14：**广播台屏幕**（`57db57121f3e7ed2`）**不在这一组** ★★★
+        #   它的哈希**已用独立来源确认**（游戏资源路径反查 =
+        #   `.../truth_transmitter/truth_transmitter_tower_screen_03`，
+        #   与用户实机"ping 的是广播台屏幕"逐字对上）⇒ 它必须能反解成功，
+        #   所以它在下面对应一个**明确的类别断言**，而不是"查不到"的豁免名单。
+        _UNRESOLVABLE_BY_DESIGN = {"b3c9cdb79dc17937", "2ad2e055dad21f6e",
+            # ★★★ 2026-10-14：**用户 2026-10-14 新加的 9 条里，有 2 条也查不到** ★★★
+            #   9926876b2375a1bb（机器人 碉堡炮塔 / Bunker Turret）
+            #   fb293a4018d14eea（生化斯坦城市大门 / Cyberstan Wall Gate）
+            #   ⚠ **知情标注**：这两条只有**单一来源**（用户给的十进制实体 ID），
+            #     没有第二来源可对。失败方向安全：runtime 按 `e.resource` 查表，
+            #     表里**有**它们（我们登记的哈希就是用户给的）⇒ 照样接管；
+            #     若 ID 有误，表现是"标记了没反应"，不会误炸别的目标。
+            #   验证：标记后看 `priority_locked;…;resource=<该哈希>;reason=PLAYER_MARK_STRUCTURE`。
+            "9926876b2375a1bb", "fb293a4018d14eea"}
+        unknown = [h for h in _holes
+                   if h not in rev and h not in _UNRESOLVABLE_BY_DESIGN]
         check("whitelist_all_paths_resolved", not unknown,
-              f"★ 16 条全部能反查到游戏资源路径（未解析：{unknown}）")
-        not_spawner = [h for h in _holes
-                       if h in rev and "bug_spawner" not in rev[h]
+              f"★ 除**已知查不到**的两条穿梭舰外，其余全部能反查到游戏资源路径"
+              f"（未解析：{unknown}）")
+        _still_unresolved = [h for h in _UNRESOLVABLE_BY_DESIGN if h in rev]
+        check("whitelist_unverified_ships_are_still_unverified",
+              len(_still_unresolved) <= 2,
+              f"（说明项）两条穿梭舰仍是「离线查不到」状态：{_still_unresolved}")
+        # ★★★ 2026-10-14（用户要求远距离追踪）：**分类别**验证来源 ★★★
+        #   每一类都必须反查到**该类应有的资源路径**，而不是"全表统一是 bug_spawner"。
+        #   判据（独立来源 = 游戏资源路径，不是我们自己的 kind 字段）：
+        #     · 虫洞 / 虫巢     → bug_spawner / mechanical_bughole
+        #     · 尖啸巢          → bug_spawner_shrieker
+        #     · 孢子喷涌虫      → fog_generator
+        #     · 构筑者          → spawner_factory / colony_spawner
+        #     · 落地穿梭舰      → warp / ship / dropship
+        #     · 广播台屏幕      → truth_transmitter
+        _EXPECT = {
+            "095686275a113614": ("shrieker",),                       # 尖啸巢
+            "aa28caf964d05500": ("fog_generator",),                  # 孢子喷涌虫
+            "e02e6bd34b606a85": ("fog_generator",),                  # 孢子喷涌虫（大型）
+            "5158e582fbeb26bd": ("spawner_factory", "colony_spawner"),
+            "22cc0ed4ceb9cb68": ("spawner_factory", "colony_spawner"),
+            "f0b98fb953b13960": ("spawner_factory", "colony_spawner"),
+            "4fb8eb356ac8553e": ("spawner_factory", "colony_spawner"),
+            "a1a7b76b29088843": ("spawner_factory", "colony_spawner"),
+            "4232ee48e2cfd24e": ("spawner_factory", "colony_spawner"),
+            "b3c9cdb79dc17937": ("warp", "ship"),
+            "2ad2e055dad21f6e": ("warp", "ship"),
+            # 非法广播/真相发射塔的**屏幕**（2026-10-14 用户实机报告）。
+            #   ⚠ 断言必须落在**独立来源**上：它的游戏路径是
+            #     `content/objectives/obj_common/truth_transmitter/truth_transmitter_tower_screen_03`
+            #     ⇒ 断言关键字取 `truth_transmitter`（**不是**我们自己的 kind 字段）。
+            #   这条同时是"哈希没写错"的证据：写错一个字符就反解不到、这条立刻红。
+            "57db57121f3e7ed2": ("truth_transmitter",),               # 广播台屏幕
+            # ★★★ 2026-10-14（用户要求加进"虫洞这一档"的 9 条）★★★
+            #   ⚠ 判据仍是**独立来源**（游戏资源路径），不是我们自己的 kind。
+            #   ⚠ 不在表里的那 2 条（9926876b2375a1bb / fb293a4018d14eea）在上面
+            #     的"已知查不到"豁免名单里 ⇒ 这里没有它们是正确的。
+            "cd28a27a79be53d5": ("command_bunker_hmg",),            # 指挥碉堡重机枪
+            "5336583c1f8ba745": ("cyborg_command_bunker",),          # 指挥碉堡（生成器）
+            "aeaef7a1851e6c9d": ("turret_autocannons",),             # 防空炮塔
+            "ff5cc825b9571052": ("turret_mortar",),                  # 迫击炮塔
+            "a98f8b559c7993d8": ("emplacement_hmg",),                # 营地重机枪
+            "2c1a7790c435fd67": ("emplacement_mg",),                 # 营地机枪
+            "e2e6e77dcc99a1cb": ("grinder",),                        # 生物处理器
+            # 落地的机器人运输舰（2026-10-14 用户报告"不能远距离追踪"）。
+            #   独立来源 = 游戏资源路径 `…/obj_cyborgs/cyborg_landed_dropship/…`。
+            "d84ffc32a6e640a8": ("cyborg_landed_dropship",),
+        }
+        _bad_class = []
+        for h, keys in _EXPECT.items():
+            if h not in rev:
+                continue
+            if not any(k in rev[h] for k in keys):
+                _bad_class.append(f"{h}→{rev[h]}")
+        check("whitelist_paths_match_declared_categories", not _bad_class,
+              f"★ 每条 profile 的资源路径必须与它声明的类别相符（异常：{_bad_class}）")
+        # 其余（虫洞族）仍必须是 bug_spawner / mechanical_bughole
+        _rest = [h for h in _holes if h not in _EXPECT and h in rev]
+        not_spawner = [h for h in _rest
+                       if "bug_spawner" not in rev[h]
                        and "mechanical_bughole" not in rev[h]]
         check("whitelist_paths_are_bugholes", not not_spawner,
-              f"★ 每条都是 bug_spawner / mechanical_bughole（异常：{not_spawner}）")
+              f"★ 虫洞族的每条都是 bug_spawner / mechanical_bughole（异常：{not_spawner}）")
+        # ★ 反向：虫卵**绝不许**进来（不在用户点名的 6 类里）
+        #   ⚠ 去掉旧的 `whitelist_excludes_nests_spewers_eggs`：用户本次**明确要求**
+        #     尖啸巢与孢子喷涌虫进来（方向反转），那条断言已与需求相反。
         forbidden = [h for h in _holes
-                     if h in rev and any(k in rev[h] for k in ("shrieker", "fog_generator", "embryo"))]
-        check("whitelist_excludes_nests_spewers_eggs", not forbidden,
-              f"★ 不得含巢体/孢子菇/虫卵（命中：{forbidden}）")
+                     if h in rev and "embryo" in rev[h]]
+        check("whitelist_still_excludes_eggs", not forbidden,
+              f"★ 仍不得含任务虫卵 embryo（命中：{forbidden}）")
 
     # ★ 门控层也必须有同一道白名单（take_gate 是决策入口）
     gate = (ROOT / "src/g60" / "take_gate.lua").read_text(encoding="utf-8")
@@ -1283,8 +1387,8 @@ def test_every_lock_path_rechecks_reservation():
     #     所以 `track=\{` 只能命中一处 —— 我第一版就踩了这个，断言反而"找到 1 处"。
     tracks = [m.start() for m in
               re.finditer(r"\{id=chosen\.entity\.id,identity=chosen\.entity\.identity", code)]
-    check("track_constructions_found", len(tracks) == 2,
-          f"track 构造 {len(tracks)} 处（早期路径 + 主路径，两处都要带 generic）")
+    check("track_constructions_found", len(tracks) == 3,
+          f"track 构造 {len(tracks)} 处（早期路径 + 主路径 + **安全区按住**，三处都要带 generic）")
     missing = []
     for i, at in enumerate(tracks):
         end = tracks[i + 1] if i + 1 < len(tracks) else len(code)
@@ -1615,6 +1719,76 @@ def test_titan_variant_borrow():
           "d522fd4748d443a5" not in r and "672f7da17f3ba34a" not in r,
           "其它未知变体仍未放行")
 
+    # ★★★ 2026-10-14（用户报「孢子泰坦姿态系统不生效」）：**反向穷举**必须钉住 ★★★
+    #   事故：本模块 2026-09-29 写下"逐字段显式复制"清单，而
+    #   `animated_belly`/`right_local`/`forward_local` 是 2026-10-09 才加进基线的
+    #   ⇒ **白名单复制不会自动跟上基线的新字段** ⇒ 变体姿态系统静默退化
+    #     （`titan_context` 的门 `follow_animation and profile.animated_belly` 恒 nil）。
+    #   ⇒ 修法不只是"补三个字段"：借用改成**从基线自动全覆盖**，并在这里做**反向穷举** ——
+    #     基线里**每一个**应借字段都必须出现在变体里。
+    #   ⚠ 判据由**模块自己**提供（`borrowable_fields()`），不在这里手写字段名：
+    #     手写就是第三份清单，必然再次漂移（本项目"同一个判断写两遍"的老毛病）。
+    #   ⚠ 这条门能抓到的**未来**回归：基线新增一个字段而借用链断了 ⇒ 立刻红。
+    rt_v = lupa.LuaRuntime(encoding=None, unpack_returned_tuples=True)
+    base_p = rt_v.execute((ROOT / "compat" / "titan_profile.lua").read_text(encoding="utf-8"))
+    factory = rt_v.execute(vpath.read_text(encoding="utf-8"))
+    vmod = factory(base_p)
+
+    def _s(x):
+        return x.decode("utf-8", "replace") if isinstance(x, (bytes, bytearray)) else str(x)
+
+    # ⚠ `borrowable_fields()` 返回的是 Lua **数组** ⇒ 直接迭代拿到的是下标 1..n，
+    #   必须取 **values**（否则会得到 ['1','2',…]，断言变成检查数字键）。
+    _bf = vmod.borrowable_fields()
+    want = sorted(_s(v) for v in _bf.values())
+    check("variant_borrowable_fields_read_as_values",
+          len(want) > 0 and all(not f.isdigit() for f in want),
+          "★ 读到的是**字段名**而不是数组下标：%s" % (want[:3],))
+    check("variant_borrowable_fields_is_computed_not_handwritten",
+          "function M.borrowable_fields()" in v
+          and "for k,v in pairs(base) do" in v,
+          "★ 可借字段由模块**自动推导**（`pairs(base)`），不是手写清单")
+    check("variant_borrow_covers_every_base_field", len(want) > 0,
+          "基线确实有可借字段（防止空清单 ⇒ 下面的断言恒真）｜实际 %d 个" % len(want))
+    # ⚠ lupa 的键可能是 bytes ⇒ 取 prof 也必须归一化（否则 `prof` 恒 None：
+    #   这正是本文件 test_blast_sites 记过的坑 —— Python 的 str 匹配不上 Lua 的键）。
+    def _lookup(t, name):
+        for k in t.keys():
+            if _s(k) == name:
+                return t[k]
+        return None
+
+    prof = _lookup(vmod.profiles, "ef04cb84d097a497")
+    check("variant_profile_reachable_for_field_check", prof is not None,
+          "能从工厂产物里取到变体 profile（键归一化后）")
+    have = set(_s(k) for k in prof.keys()) if prof is not None else set()
+    missing = [f for f in want if f not in have]
+    check("variant_carries_all_base_fields", not missing,
+          "★★ 基线的**每一个**可借字段都必须出现在变体里 —— 缺一个就是"
+          "「同模型却静默退化」（本次事故正是缺 animated_belly/right_local/"
+          "forward_local）。缺失: %s" % (missing if missing else "无"))
+    # 姿态三件套单独点名：它们是本次事故的直接受害者
+    for _f in ("animated_belly", "right_local", "forward_local"):
+        check("variant_has_" + _f, _f in have,
+              "★ %s 必须在变体上（否则姿态/朝向静默退回兜底）" % _f)
+    # 反向：必须自有的字段**不得**被基线覆盖
+    check("variant_own_keys_not_overwritten",
+          prof is not None and _s(_lookup(prof, "resource")) == "ef04cb84d097a497"
+          and _s(_lookup(prof, "borrowed_from")) == "9e2e17f2ccccafdd",
+          "★ `resource` 必须仍是变体自己的身份（借成基线会当场 identity mismatch）、"
+          "`borrowed_from` 必须是溯源字段")
+    # 变异测试：破坏自动全覆盖，同一条判据必须报缺
+    _mut = v.replace("for k,v in pairs(base) do", "for k,v in pairs({}) do")
+    check("variant_borrow_mutation_is_load_bearing", _mut != v,
+          "变异确实破坏了自动全覆盖（否则下面的对照没意义）")
+    _mmod = rt_v.execute(_mut)(base_p)
+    _mprof = _lookup(_mmod.profiles, "ef04cb84d097a497")
+    _mhave = set(_s(k) for k in _mprof.keys()) if _mprof is not None else set()
+    _mmissing = [f for f in want if f not in _mhave]
+    check("variant_borrow_gate_catches_regression", bool(_mmissing),
+          "★★ 变异后必须**报缺**（证明这条门真的抓得住「退回手写清单」这类回归）："
+          "缺失 = %s" % (_mmissing if _mmissing else "无 ⇒ 空转门！"))
+
 
 def test_dragonroach_takeover():
     print()
@@ -1697,12 +1871,34 @@ def test_adaptive_standoff():
           "route_standoff" not in aim_code and "max_standoff" not in aim_code,
           "★ 调用方不得再算/传 `route_standoff`（那是自研自适应的载体）")
     check("adaptive_standoff_gone_from_config",
+          # ★★★ 2026-10-14（用户要求「还原到 0.1.22」）更新 ★★★
+          #   上一轮曾加过一个"受控浮动带"（`titan_blast_standoff_min/max`），
+          #   用户实测「泰坦引爆点不太对」⇒ 泰坦链三个文件已 `git checkout v0.1.22`
+          #   逐字节还原、浮动带整段清掉。旧名 `titan_standoff_min` 依旧禁止。
           "titan_standoff_min" not in e_code and "titan_standoff=2.5," in e_code,
-          "★ 配置里不得再有 `titan_standoff_min`；standoff 直接取上游的 2.5")
+          "★ 配置里不得有 `titan_standoff_min`（自研压腹机制）；"
+          "`titan_standoff` 取上游的 2.5")
     check("adaptive_standoff_log_gone",
           "titan_standoff_adapted" not in aim_code
           and "line:match('^titan_standoff_adapted;')" not in e_code,
           "★ 自适应的日志与白名单项一并消失（不留「看着还在」的残迹）")
+    check("titan_blast_band_fully_reverted",
+          # ★★★ 2026-10-14（用户要求还原 0.1.22）★★★
+          #   浮动带必须**整段消失**：它改的正是爆点公式（`腹点 + 腹法线×standoff`）。
+          "titan_blast_standoff" not in e_code
+          and "titan_blast_standoff" not in aim_code
+          and "titan_blast_standoff" not in (ROOT / "src/g60/adaptive.lua").read_text(
+              encoding="utf-8"),
+          "★★ 泰坦爆距浮动带必须**整段消失**（用户要求还原到 0.1.22 —— "
+          "爆点公式回到写死的 `2.5`）")
+    check("adaptive_blast_formula_is_0_1_22",
+          # ★ 还原的**实质判据**：公式回到 `n[i]*2.5` 字面量、且 refine 不再收 band。
+          "local c={p[1]+n[1]*2.5,p[2]+n[2]*2.5,p[3]+n[3]*2.5}" in
+          (ROOT / "src/g60/adaptive.lua").read_text(encoding="utf-8")
+          and "function M.refine(own,t,previous,profile,route,now)"
+          in (ROOT / "src/g60/adaptive.lua").read_text(encoding="utf-8"),
+          "★★ 爆点公式必须逐字回到 v0.1.22 的 `{p[1]+n[1]*2.5,…}`，"
+          "`M.refine` 签名回到 6 参（无 band）")
     check("titan_route_still_hard_rejects",
           "insufficient blast standoff clearance" in aim or True,
           "(形式项：硬拒绝仍在上游的 titan_route 里)")
@@ -1711,7 +1907,7 @@ def test_adaptive_standoff():
           and "pcall(Adaptive.refine,own_position,target,prior,profile,value,now)" in aim
           and "env.titan_standoff,env.titan_arrival_region and env.titan_arrival_region.radius" in aim,
           "★ 取而代之的是上游三段链：TitanRoute（带上游 standoff/terminal_radius）"
-          " → BlastRoute.refine → Adaptive.refine")
+          " → BlastRoute.refine → Adaptive.refine（签名与 v0.1.22 逐字一致）")
 
 
 
@@ -1882,7 +2078,18 @@ def test_enemy_veto_wiring():
     #   2026-09-29 晚的实机 bug：第一版只放了社区表标注的 98152772a72f7838，
     #   而引擎真正分配给 G-60 的是 db90077e76faa025（cyborg_dropship）⇒ 从未生效。
     #   教训："名字对得上"不等于"就是那个哈希"。下面每条都断言来源。
-    keys = re.findall(r"\['([0-9a-f]{16})'\]\s*=\s*true", sf)
+    # ★★★ 2026-10-14：`keys` 必须**只取 `excluded` 表** ★★★
+    #   ⚠⚠ 拆表之后 `marked_allowed` 也含 `['hash']=true` 形式的行 ——
+    #     原来那个"整份源码找"的正则会**同时**匹配两张表，
+    #     于是下面几条"排除表恰好两项"的断言全部假红。
+    #   ⇒ 先按 `local excluded = {` … `}` 切出块再取键（判据须落在**正确的表**上）。
+    _ex_start = sf.index("local excluded = {")
+    _ex_block = sf[_ex_start:sf.index("}", _ex_start)]
+    keys = re.findall(r"\['([0-9a-f]{16})'\]\s*=\s*true", _ex_block)
+    # 反向：点名表必须**另有**内容（拆表的意义就在这里）
+    _ma_start = sf.index("local marked_allowed = {")
+    _ma_block = sf[_ma_start:sf.index("\n}", _ma_start)]
+    ma_keys = re.findall(r"\['([0-9a-f]{16})'\]\s*=\s*true", _ma_block)
     #   ★ 2026-10-01 加第二项：光能族**增援飞船** 74e2285c01da4f71
     #     （日志证据 `enemy_selection;entity=1241;resource=74e2285c01da4f71`）
     check("veto_list_is_evidenced_dropships_only",
@@ -1901,7 +2108,30 @@ def test_enemy_veto_wiring():
     #   用户原话："注意是**增援**的飞船"。
     check("veto_list_excludes_landed_warp_ship",
           "b3c9cdb79dc17937" not in keys,
-          "★ 营地穿梭舰 Warp Ship Landed 不得被排除（玩家要炸它）")
+          "★ 营地穿梭舰 Warp Ship Landed 不得被**排除**（玩家要炸它）")
+    # ★★★ 2026-10-14：拆表之后，点名表必须**另外**含用户点名的 6 类 ★★★
+    #   ⚠ 这条与上面那条**不矛盾**：`excluded` 管"引擎自选要清掉"，
+    #     `marked_allowed` 管"玩家点名要放行" —— 方向相反，内容本就该不同。
+    check("marked_allowed_table_is_split_from_excluded",
+          "local marked_allowed = {" in sf
+          and "function M.marked_allowed(resource) return marked_allowed[resource] == true end" in sf
+          and "function M.marked_allowed(resource) return excluded[resource] == true end" not in sf,
+          "★★ `marked_allowed` 必须是**独立表**（拆表）—— 共用一张表时"
+          "「引擎自选要清掉」与「玩家点名要放行」只能同真同假，"
+          "无法表达「别清它、但点名要接管」")
+    _REQ_MA = ["b3c9cdb79dc17937", "2ad2e055dad21f6e",
+               "5158e582fbeb26bd", "22cc0ed4ceb9cb68", "f0b98fb953b13960",
+               "4fb8eb356ac8553e", "a1a7b76b29088843", "4232ee48e2cfd24e",
+               "095686275a113614", "aa28caf964d05500", "e02e6bd34b606a85"]
+    _miss_ma = [h for h in _REQ_MA if h not in ma_keys]
+    check("marked_allowed_covers_the_six_categories", not _miss_ma,
+          f"★ 用户点名的 6 类必须在 `marked_allowed` 里（缺失：{_miss_ma or '无'}）")
+    check("marked_allowed_still_excludes_friendly_assets",
+          "7b0f8449ca9d2da0" not in ma_keys and "98152772a72f7838" not in ma_keys,
+          "★★ 点名表**绝不许**含友方撤离机（鹈鹕 MK2）或停落地面的运输船")
+    check("excluded_table_unchanged_by_split",
+          sorted(keys) == sorted(["db90077e76faa025", "74e2285c01da4f71"]),
+          f"★ 拆表**没有**改动 `excluded` 的语义（仍恰好两项）：实际 {keys}")
     # ★ 安全属性：绝不能把玩家自己的撤离机（鹈鹕 shuttle_dropship = 7b0f8449ca9d2da0）
     #   也否决掉 —— 那会把"不追踪敌方运输船"变成"不追踪自己的撤离机"。
     check("veto_list_excludes_friendly_pelican",
@@ -2578,11 +2808,31 @@ def test_force_lock():
     check("promote_state4_reports_before_after",
           "'state='..tostring(state)..'->'..tostring(after)" in blk,
           "日志含写前→写后状态（判读'到底成没成'的唯一依据）")
-    # 4) 调用点：只在虫洞、且放在点写入之后
-    check("force_lock_only_for_structures",
-          "if chosen.marked_structure and not chosen.generic then" in r,
-          "★ priority 路只对虫洞强制提升（通用敌人引擎自己会提升，少碰一类目标）")
-    _p = r.index("if chosen.marked_structure and not chosen.generic then")
+    # 4) 调用点：**两类都提升**（结构与通用目标），且放在点写入之后
+    #
+    # ★★★ 2026-10-14：这里原来是 `force_lock_only_for_structures`
+    #   （断言 `and not chosen.generic`）—— 那条限制**正是**用户报的
+    #   「普通敌人偶尔生效偶尔不生效，即使生效也要等一段时间才飞过去」的成因：
+    #   引擎只在**它自己**想锁目标时才提升 ⇒ 手雷停在 state 3 ⇒ 我们写的点驱动不了它。
+    #   主支 2026-10-13 已用实机证据推翻该假设（结构 3 颗全成功 vs 标记敌人那颗
+    #   `force_lock` 0 次、state 4 0 次）⇒ 现在断言**反过来**：
+    #   必须对通用目标**也**提升，**且**开关仍由 promote_state4 内部把关。
+    # ⚠ 必须剥注释：源码注释里我**引用**了旧写法作对照（`and not chosen.generic`）
+    #   ⇒ 直接搜原文会命中自己的注释（本工程重复踩过的坑）。
+    _cp = "\n".join(l.split("--")[0] for l in r.splitlines())
+    check("force_lock_covers_generic_too",
+          "if chosen.marked_structure then" in _cp
+          and "and not chosen.generic then" not in _cp,
+          "★★★ priority 路的强制提升必须**覆盖通用目标**（不许再写 `and not chosen.generic`）"
+          "—— 只提升结构 = 继续赌引擎 = 用户报的间歇性")
+    check("force_lock_switch_checked_inside",
+          # 开关只有一处判断（promote_state4 内部），调用侧不许再判一次
+          "env.force_lock_enabled~=false" in r
+          and "force_lock_enabled" not in r[r.index("if chosen.marked_structure then"):
+                                           r.index("if chosen.marked_structure then") + 1200],
+          "★ 开关只在 `promote_state4` 内部判一次（调用侧不许重复判 —— "
+          "同一个判断不许出现两处）")
+    _p = r.index("if chosen.marked_structure then")
     _s = r.index("'priority point setter mismatch'")
     check("force_lock_after_point_write", _s < _p,
           "★ 提升放在点写入**之后**（顺序与引擎自己的提升块一致：先装目标再置 state）")
@@ -2632,12 +2882,16 @@ def test_force_lock():
           "而汇总正是在停机那一刻打的 ⇒ 不白名单化 = 静默丢弃 = 等于没加")
     # ★★ 2026-10-09 自机探针（只读 · 为「G-60 爆炸安全区」打底）★★
     #   目的：确认"我自己"（玩家角色）是谁 + 坐标怎么取。本步**不改任何行为**。
+    #   ★ 2026-10-14（用户要求）：探针**并进** `diagnostics_enabled`（诊断日志开关）
+    #     ⇒ 闸门从 `self_probe_enabled` 改成 `diagnostics_enabled`。
     _ping = (ROOT / "src/g60" / "native_ping.lua").read_text(encoding="utf-8")
     _self = _ping[_ping.index("function api:self()"):_ping.index("function api:observe()")]
     check("self_probe_exists_and_read_only",
-          "function api:self()" in _ping and "self_probe_enabled" in e
+          "function api:self()" in _ping and "diagnostics_enabled" in e
+          and "self_probe_enabled" not in e
           and not any(w in _self for w in ("env.write", "calls.orbit", "=4", "ffi.copy")),
-          "★ 自机探针必须存在，且 `api:self()` 内**不得出现任何写操作**（只读）")
+          "★ 自机探针必须存在，且 `api:self()` 内**不得出现任何写操作**（只读）；"
+          "它由 `diagnostics_enabled` 统一开关（`self_probe_enabled` 已合并删除）")
     check("self_probe_reuses_verified_owner_logic",
           "local_ownership_observed" in _self
           and _ping.index("function api:self()") < _ping.index("function api:observe()"),
@@ -2661,6 +2915,40 @@ def test_force_lock():
     check("self_probe_dual_match_diagnostic",
           "by_hash" in rt and "by_owner" in rt and "same=" in rt,
           "★ 必须同时打 by_hash / by_owner / same —— 这是判断该哈希对不对的**唯一判据**")
+    # ★★★ 2026-10-14（用户要求：自机探针并进诊断日志开关）★★★
+    #   这一段钉三件事，缺一不可 —— 否则"开关看起来生效、其实一半是空的"。
+    check("diag_switch_gates_the_probe",
+          "env.diagnostics_enabled~=false and structure_ping" in rt
+          and "self_probe_enabled" not in rt,
+          "★★ 探针闸门必须改成 `env.diagnostics_enabled`（`self_probe_enabled` 已删除）"
+          "—— 合并后探针跟着诊断开关走")
+    check("diag_switch_filters_the_log",
+          "local DIAG_VERBOSE={" in e and "if he and he.diagnostics_enabled==false then" in e,
+          "★★ 开关的**另一半**是日志过滤（只关探针 = 日志照样刷屏，等于没合并）")
+    # ⚠⚠ 主支在这个点上栽过（页 dock：过滤器读 state、菜单写 host.env ⇒ 全是空的）：
+    #   `state.diagnostics_enabled` 与 `host.env.diagnostics_enabled` **长得一样、名字一样**,
+    #   靠读代码看不出来 ⇒ 只能用守门钉住"过滤器读的是 env 那张表"。
+    check("diag_filter_reads_env_not_state",
+          "local he=host and host.env" in e and "he.diagnostics_enabled==false" in e
+          and "state.diagnostics_enabled==false" not in e
+          and "he=state" not in e,
+          "★★★ 过滤器必须读 `host.env`（**菜单写的就是那张表**）。主支曾经读了 "
+          "`state.diagnostics_enabled` ⇒ 过滤器**永远看不到开关改动** ⇒ 整个开关是空的："
+          "探针确实关了（runtime 读 env）所以「看起来生效了」，但日志一条都没少。"
+          "两张表**同名同形**，这种错读代码看不出来 —— 必须由这条守门钉住")
+    check("diag_verbose_is_high_volume_instrumentation_only",
+          all(t not in e[e.index("local DIAG_VERBOSE={"):e.index("local function emit(")]
+              for t in ("frame_error", "priority_locked", "structure_mark",
+                        "generic_rejected", "arrival_detonated", "errors",
+                        "blast_point", "blast_hit", "titan_skipped")),
+          "★★ 证据行**绝不能**进 DIAG_VERBOSE —— 「诊断被关掉 = 诊断不存在」："
+          "关错了就等于把判断成败的手段一起删掉")
+    check("diag_labels_are_all_tags_we_actually_emit",
+          # 主支那份表里的 driver_audit / titan_probe / titan_clearance / titan_aim
+          # 在本仓**根本不存在** ⇒ 照抄会得到几条永不匹配的死项（门是空转的）。
+          not any(t in e[e.index("local DIAG_VERBOSE={"):e.index("local function emit(")]
+                  for t in ("driver_audit", "titan_probe", "titan_clearance")),
+          "★ 标签表必须按**本仓实际会打的标签**列 —— 照抄主支会混进永不匹配的死项")
     check("self_resource_constant_wired",
           "self_resource='4d1c334d294dfa97'" in e and "self_resource=state.self_resource" in e,
           "★ 玩家哈希必须是**显式常量且接线进 env**（不硬编码在逻辑里，方便关/改）")
@@ -2688,18 +2976,59 @@ def test_force_lock():
     #   ⇒ 必须**共用同一道门**，且都在 explode **之前**判（事后拦不住）。
     _pri = (ROOT / "src/g60" / "native_priority.lua").read_text(encoding="utf-8")
     check("safe_zone_implemented_at_call_site",
-          "local held=not blast_safe_hold(m,scope)" in rt
+          # ★★★ 2026-10-14 更新（用户要求「安全区以引爆点为中心」）★★★
+          #   门挪到**引爆点算出来之后**（体内爆点在 `old.lock` 块里才算），
+          #   于是判据不再是字面量 `local held=not blast_safe_hold(m,scope)`，
+          #   而是"拿到爆点再判"（`held==nil` 时调一次）—— 见下面两条新门。
+          "held=not blast_safe_hold(m,scope," in rt
           and "arrival:step(scope,target,nil,'vanilla',terminal," in rt
           and "local terminal=not held" in rt,
           "★★ 必须在**调用侧**拦（native_arrival 是 SAFETY_LAYER 只读，且 detonate 时"
           "已调 explode ⇒ 事后拦不住）—— 且必须复用 `blast_safe_hold` 这道门，"
           "并把**同一次**门判定的结果同时用于 terminal 与绕行（不许调两次）")
+    check("safe_zone_gate_gets_the_blast_point",
+          # ★★★ 2026-10-14 修复（用户报「空 ping 功能貌似出问题了」）★★★
+          #   ⚠⚠ 这里**只许**传 `blast_point` / `P.tpos` —— **绝不许**传 ping 点 `point`。
+          #   根因（上一轮引入的真 bug）：ping 空地时玩家就站在落点附近 ⇒
+          #   把 ping 点当"预期引爆点"⇒ 玩家恒在 12 m 半径内 ⇒ 门恒判"圈内" ⇒
+          #   绕行块把 ping 点覆盖成 5 m 外的环绕点 ⇒ 手雷绕圈、**永不落点**。
+          #   判据与主支**逐字一致**（用户要求"安全区跟主支类似"）。
+          #   ⚠ 断言必须**只看门那一句**：`or (point and {…})` 在**绕行圆心**的选取里
+          #     是**合法**的（`local c=blast_point or (point and …) or P.tpos`）——
+          #     用整份源码找子串会被那一句误判成 FAIL（我第一版就踩了）。
+          "held=not blast_safe_hold(m,scope,blast_point or P.tpos[m.id])"
+          in ' '.join(rt.split())
+          and "held=not blast_safe_hold(m,scope, blast_point or (point and" not in
+          ' '.join(rt.split())
+          and "P.tpos_frame[m.id]" in rt,
+          "★★ 门只许拿 `blast_point`（体内爆点）或 `P.tpos`（圆心缓存），"
+          "**不许**拿 ping 点 —— 否则空 ping 会被绕行覆盖（实机回归）。"
+          "`P.tpos` 必须**无条件**填（只在 held 时填会死锁：第一次拦不住 ⇒ tpos 永 nil "
+          "⇒ 爆点永远判不了 ⇒ 永远拦不住）")
+    check("safe_zone_titan_passes_arrival_point",
+          # ★ 泰坦链的引爆点 = `Adaptive` 写进 `route.arrival_point` 的那个点，
+          #   而且**上一帧就算好了** ⇒ 不需要为判定多付一次 capture。
+          "local tgt_pt=old.titan and not old.titan.cancelled and old.titan.route" in rt
+          and "old.titan.route.arrival_point or old.titan.route.point" in rt
+          and "blast_safe_hold(m,scope,tgt_pt)" in rt,
+          "★★ 泰坦段也要把**预期引爆点**交给门（否则泰坦链只有手雷半径生效）")
+    check("safe_zone_two_radii_and_failsafe",
+          # ★★★ 2026-10-14：跟主支/上游的两个半径 + fail-safe 方向。
+          "local safe_target=tonumber(env.safe_zone_target_radius) or 0" in rt
+          and "local safe_grenade=tonumber(env.blast_safe_radius) or 0" in rt
+          and "if gd2==nil and td2==nil then" in rt
+          and "env.safe_zone_failsafe~=false" in rt
+          and "if safe_grenade>0 and gd2 and gd2<=safe_grenade*safe_grenade then" in rt
+          and "if not about and safe_target>0 and td2 and td2<=safe_target*safe_target then" in rt,
+          "★★ 两个半径（**目标=主判据**、手雷=可选）+ fail-safe：判定顺序照上游"
+          "（先手雷、后目标）；判据 = **一个玩家坐标都读不到**才走 fail-safe"
+          "（不是「读不到自己」—— 那会让「self 失败但队友可用」时错误放行）")
     check("safe_zone_shared_gate_not_duplicated",
           rt.count("blast_safe_hold") >= 2 and "env.blast_safe_hold=function" in rt,
           "★★ 三条引爆路径必须**共用同一个门函数** —— 第一版各写一份 ⇒ "
           "只拦住 ping 那条路（实机已踩：虫洞/泰坦照炸）")
     check("safe_zone_covers_titan_path",
-          "if not blast_safe_hold(m,scope) then return {kind='safe_hold'} end" in rt
+          "blast_safe_hold(m,scope,tgt_pt)" in rt
           and "result.kind=='safe_hold'" in rt,
           "★★ titan 段（虫洞/泰坦/单位）也必须过门 ⇒ 否则『只对空 ping 生效』会重现；"
           "且 safe_hold 必须**保留锁定**（否则手雷放弃目标乱飘）")
@@ -2708,9 +3037,16 @@ def test_force_lock():
           and _pri.index("env.blast_safe_hold") < _pri.index("scope.calls.explode"),
           "★★ native_priority 的**早期引爆**是第三条路径（直接 calls.explode）"
           "⇒ 也必须过同一道门，且必须在 explode **之前**")
-    check("safe_zone_fail_open",
-          "return true" in rt and "if not mysp then" in rt,
-          "★ 拿不到玩家坐标时**放行**（fail-open：宁可照常引爆，也不让雷失效）")
+    check("safe_zone_failsafe_visible",
+          # ★★★ 2026-10-14（跟主支/上游）：读不到玩家坐标 ⇒ fail-safe（不引爆）。
+          #   ⚠ 无论走 fail-safe 还是 fail-open，**失败都必须可见** ——
+          #     上游把这条写进 README 的理由与本工程踩过的坑一致
+          #     （`blast_hold` 从 1062 条变 0 条而日志里看不出原因）。
+          "blast_safe_failsafe;entity=" in rt
+          and "and not line:match('^blast_safe_failsafe;')" in e
+          and "if env.safe_zone_failsafe~=false then" in rt,
+          "★★ fail-safe 必须**可见且白名单化**（`blast_safe_failsafe;`）—— "
+          "它正是「安全区为什么一直不炸」的唯一解释行；被节流掉 = 查不到原因")
     # ★★ 2026-10-10 实机：fail-open **静默** ⇒ 三条路径全不拦时日志里一条都看不到
     #    （blast_hold 从 1062 变 0，却完全不知道为什么）。⇒ 必须打点。
     check("safe_zone_fail_open_is_visible",
@@ -2750,8 +3086,10 @@ def test_force_lock():
     #   ⇒ 唯一杠杆：玩家在圈内时别让手雷到目标身上
     #     （写成点目标 ⇒ 引擎手里没有实体可撞 ⇒ 撞击/引信无从触发）。
     check("safe_zone_hold_diverts_not_just_declines",
-          "local held=not blast_safe_hold(m,scope)" in rt
-          and "if held then" in rt and "P.tpos[m.id]" in rt
+          # ★★★ 2026-10-14：绕行判据不变（`held` 仍驱动绕行），只是 `held` 的来源
+          #   从"字面量调用"变成"门返回的结果"。本门钉的仍是**行为**：
+          #   held ⇒ 必须注入绕行点，而不是只把 terminal 置 false。
+          "if held then" in rt and "P.tpos[m.id]" in rt
           and "mask_only=nil" in rt,
           "★★ 安全区生效时必须**主动绕行**（把 goal 换成绕目标的旋转点），"
           "不能只把 terminal 置 false —— 引擎自己的引信照样点火（实机已踩：entity=520）")
@@ -2827,12 +3165,17 @@ def test_force_lock():
     #   （引擎自己瞄敌人）时门一次都不会被调用。⇒ 需要第二条坐标来源。
     #   ⚠ 但"同一个判断写两遍"是本工程反复踩的坑 ⇒ 判定必须只留一份。
     check("safe_zone_gate_shares_one_judgment",
-          "local function blast_safe_hold_at(ident,own)" in rt
-          and rt.count("return blast_safe_hold_at(ident,okv and v or nil)")==2
-          and rt.count("if d2>safe*safe then return true end")==1
-          and rt.count("local safe=tonumber(env.blast_safe_radius) or 0")==1,
-          "★★ 安全区判定只能有**一份**（半径/玩家距离/safehold 记账都在 `blast_safe_hold_at`）——"
-          " 两个包装只准各自解决「这颗雷在哪」（已接管走 scope、非自有走 TargetData）")
+          # ★★★ 2026-10-14：判定本体现在有**两个半径**，但"只有一份实现"这条纪律不变 ——
+          #   两个包装（已接管走 scope、非自有走 TargetData）都调同一个
+          #   `blast_safe_hold_at`，且两个半径的读取各只出现一次。
+          "local function blast_safe_hold_at(ident,own,tgt)" in rt
+          and rt.count("blast_safe_hold_at(ident,")>=3
+          and rt.count("local safe_target=tonumber(env.safe_zone_target_radius) or 0")==1
+          and rt.count("local safe_grenade=tonumber(env.blast_safe_radius) or 0")==1
+          and rt.count("if gd2==nil and td2==nil then")==1,
+          "★★ 安全区判定只能有**一份**（两个半径/玩家距离/safehold 记账都在 "
+          "`blast_safe_hold_at`）—— 两个包装只准各自解决「坐标从哪来」"
+          "（已接管走 scope、非自有走 TargetData）")
     check("safe_zone_noown_failopen_visible",
           "blast_safe_noown;entity=" in rt and "safe_nopos" in rt
           and "and not line:match('^blast_safe_noown;')" in e,
@@ -3127,8 +3470,40 @@ def test_force_lock():
     check("menu_restore_diagnostics_whitelisted",
           "and not line:match('^menu_restore;')" in e,
           "★ `menu_restore;` 必须进节流白名单（否则『到底有没有回读』看不见）")
+    # ★★★ 2026-10-14：从主支补回的两处修复（照抄 g60-bughole-lock L1042-1056）★★★
+    #   ① 极性：`blast_safe_hold_at` 返 **true = 安全/可炸**（主支 runtime 原话
+    #      "返回值取反"），而变量名叫 `held` ⇒ 写成 `and held` 就是**反的**
+    #      ⇒「玩家在安全区内反而引爆、安全时却按住不炸」。
+    #   ② `track`：runtime 对 `kind=='lock'` **无条件**取 `result.track.identity`
+    #      ⇒ 这个 lock 漏了 `track` 就是 `attempt to index field 'track' (a nil value)`
+    #      ⇒ **整帧剩余的雷全部被丢掉**（后果远重于"这一颗不炸"）。
+    # ⚠ 必须**剥注释再判**：源码注释里我**引用**了那个错误写法作对照
+    #   ⇒ 直接搜原文会命中自己的注释（本工程重复踩过的坑）。
+    _rc = chr(10).join(l.split("--")[0] for l in r.splitlines())
+    check("safe_hold_lock_has_correct_polarity_and_track",
+          "if hold_ok and not held then" in _rc
+          and "if hold_ok and held then" not in _rc,
+          "★★★ 安全区按住分支必须是 `not held`（门返 true = 安全/可炸）—— "
+          "写成 `and held` 会「安全时按住、危险时照炸」")
+    # ⚠ 窗口要够大：我在这段前面写了几百字注释 ⇒ 900 字符还没走到 return（第一版就踩了）。
+    _sh = r[r.index("if hold_ok and not held then"):r.index("if hold_ok and not held then") + 2600]
+    check("safe_hold_lock_carries_track",
+          "track={id=chosen.entity.id,identity=chosen.entity.identity,unit=chosen.unit" in _sh
+          and "generic=chosen.generic,titan=chosen.titan}}" in _sh,
+          "★★★ 这个 lock 必须带 `track` —— 漏了它 runtime 取 `result.track.identity` "
+          "会抛错、**整帧剩余的雷全丢**（主支原文记录过这条实机后果）")
+    check("safe_hold_branch_is_reachable",
+          # 这条分支必须是**活**的：runtime 真的把它接进了 env。
+          #   ⚠ 实机很少走到（安全区多数时候由 runtime 那侧先拦）——
+          #     正因为如此，"一旦走到就把整帧剩余的雷全丢"这个后果长期没被发现。
+          "env.blast_safe_hold=function(scope,c) return blast_safe_hold(c,scope) end" in
+          (ROOT / "src/g60/experimental_runtime.lua").read_text(encoding="utf-8"),
+          "★★ 安全区按住分支必须真的被接上（runtime 里有 `env.blast_safe_hold=functionscope,c`）"
+          "—— 否则这段是死代码，它里面那两个 bug 永远不会暴露")
     check("menu_only_exposes_runtime_switches",
-          "host.env.blast_safe_radius=v" in e and "host.env.force_lock_enabled=v" in e,
+          # ⚠ 例子用**当前仍在菜单里**的项（原来举的是 `force_lock_enabled`，
+          #   而用户 2026-10-14 要求把"默认开的开关"撤出菜单 ⇒ 那个例子失效了）。
+          "host.env.blast_safe_radius=v" in e and "host.env.titan_approach_dist=tonumber(v) or 10" in e,
           "★ 菜单只改**运行期开关**，不得改编译期常量（resource hash/几何表）")
     # ★★ 2026-10-10 实机崩溃根因：菜单里写 `env.xxx`，而 entry 作用域**根本没有 env**
     #    （env 只是 runtime 闭包内的 local）⇒ `attempt to index global 'env' (a nil value)`
@@ -3396,6 +3771,14 @@ def test_env_wiring_complete():
         "target_allowed",  # experimental_runtime.lua: `env.target_allowed=Allowlist.new(...)`
         "damage_regions",  # 1.1 移植残留：`env.damage_regions or env.adaptive_approach`
                            # 的 OR 兜底；adaptive_approach 已为 true ⇒ 无害死引用
+        # ★ 2026-10-14（用户最终方案「接近标记泰坦后放手」）：
+        #   这三个是**包装函数**，要用 `read`/`base`/`env.exe`（Runtime.new 里的局部）
+        #   ⇒ 只能在 Runtime.new 里赋值，进不了 `env={…}` 字面量。
+        #   配置类字段（`titan_approach_enabled` / `titan_approach_dist`）**在字面量里**
+        #   —— 那才是"菜单改了值能不能进运行期"的关键，别混。
+        "titan_approach",           # experimental_runtime.lua: `env.titan_approach=function(gid,tid,frame)`
+        "titan_approach_pt",        # experimental_runtime.lua: `env.titan_approach_pt=function(gid,tid,frame,resource)`
+        "titan_approach_released",  # experimental_runtime.lua: `env.titan_approach_released=function(gid)`
     }
     missing = sorted(used - assigned - RUNTIME_ASSIGNED)
     check("env_fields_all_wired", not missing,
@@ -3444,10 +3827,15 @@ def test_point_target(rt):
           "★ target=nil 也能走 Policy.step / 引爆 / 返回 target='point'")
 
     # 4) runtime：状态机与优先级
+    # ★★ 2026-10-14（用户报「空 ping 没有跟虫洞一样能远距离追踪」）★★
+    #   第一项从 `point_marker~=nil` 改成 `(point_marker~=nil or (old and old.point))`：
+    #   原来 ping 标记一消失（引擎会过期/轮转）就丢目标 ⇒ **飞行中途丢目标**。
+    #   优先级那两条（让位给结构 / 泰坦）**一个字都没动**。
     check("runtime_point_drive_priority",
-          "local point_drive=not abandoned and point_marker~=nil" in r
+          "local point_drive=not abandoned and (point_marker~=nil or (old and old.point))" in r
           and "and not titan_selected and not (old and old.lock)" in r,
-          "★ 优先级按**每颗**判：已锁结构 ⇒ 让位；引擎选中泰坦/弱点 ⇒ 让位")
+          "★ 优先级按**每颗**判：已锁结构 ⇒ 让位；引擎选中泰坦/弱点 ⇒ 让位；"
+          "且已承诺的点目标在 ping 标记消失后**继续飞**（2026-10-14）")
     # ★ TTL 只能约束"新接管"（2026-10-01 第二次实机修正）★
     #   第一版让 TTL 一到期就把 point_marker 置 nil ⇒ **已在飞的那颗被当场丢掉**
     #   （ping 之后隔一会儿才扔就会撞上）⇒ 这就是"时灵时不灵"的一个来源。
@@ -3480,12 +3868,36 @@ def test_point_target(rt):
     check("point_branch_does_not_step_runner",
           "runner:step" not in _pb and "runner:release(old.ref)" in _pb,
           "点目标分支只释放 runner（不让它改写我们写的点目标）")
+    # ★★ 2026-10-14：取值改成 nil-safe 的 `src=point_marker or old.point` ★★
+    #   直接写 `old.point={x=point_marker.x…}` 在 `point_marker=nil` 时会 nil 索引抛错，
+    #   被上层 pcall 吞掉 ⇒ 症状不减反增（"远距离空 ping 没反应"）。
     check("point_hold_and_start_log",
-          "old.point={x=point_marker.x" in r and "'point_taken;entity=%s" in r,
-          "登记持有 + 首次接管打一行 point_taken")
-    check("runtime_point_released_on_marker_loss",
-          "if held and held.point and not point_marker then" in r and "'point_released;entity='" in r,
-          "★ 标记消失 / TTL 到期 ⇒ 本帧就释放（不残留过期目标）")
+          "local src=point_marker or old.point" in r
+          and "old.point={x=src.x,y=src.y,z=src.z," in r
+          and "'point_taken;entity=%s" in r,
+          "登记持有 + 首次接管打一行 point_taken（取值走 nil-safe 的 src）")
+    # ★★★ 2026-10-14（用户要求，**方向反转**）★★★
+    #   旧守门 `runtime_point_released_on_marker_loss` 钉的是"标记消失 ⇒ 本帧就释放"。
+    #   实机证明那正是"空 ping 跑不远"的直接原因（飞行中途丢目标；虫洞是实体标记不受影响）。
+    #   用户明确要求改成"跟虫洞一样承诺后飞到底" ⇒ 这条断言**必须反向**。
+    #   ⚠ 安全边界没放松：新雷仍需 live ping（见上面的 point_drive 判据与
+    #     `tests/test_point_target_stickiness.py` 的真求值矩阵）。
+    # ⚠⚠ "必须**不含**某串"的断言一律要**先剥注释**：我自己的新注释里就写了
+    #   `held.point=nil` / `point_released` 来解释历史 ⇒ 直接查原文会把说明文字
+    #   当成代码、让这条门**假红**（本工程已踩过多次；`old.point=nil` 的计数同理会被虚增）。
+    _rc = "\n".join(l.split("--")[0] for l in r.splitlines())
+    check("runtime_point_survives_marker_loss",
+          "held.point=nil" not in _rc
+          and "point_released;entity=" not in _rc
+          and "env.emit('point_held;" in _rc,
+          "★★ 标记消失**不再**释放已承诺的点（用户要求「跟虫洞一样飞到底」）；"
+          "取而代之打一行可见的 `point_held`（诊断被节流掉 = 诊断不存在）")
+    # ★ 所有权互斥：结构/泰坦拿到就必须丢弃已承诺的点，否则锁失效后陈旧点会"复活"
+    check("runtime_point_ownership_exclusive",
+          "old.lock=result.track" in _rc and "old.titan=result.track" in _rc
+          and _rc.count("old.point=nil") >= 2,
+          "★★ 结构拿到锁 / 泰坦链接管时显式 `old.point=nil`"
+          "（否则陈旧点会在锁失效后复活、把雷拉回作废落点）")
     check("runtime_point_ttl",
           "point_armed=(frame-P.pt.frame)<=env.point_target_ttl_frames" in r,
           "★ TTL：同一个 ping 标记只在有限帧内**作数给新接管**（已在引导中的不受限）")
@@ -4123,6 +4535,7 @@ def test_marked_unit_rank_order():
     print()
     print("=== 3d. 标记队列的优先级（虫洞 > 蟑龙 > 泰坦 > 名册其它 > 名册外）===")
     ping = (ROOT / "src" / "g60" / "native_ping.lua").read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
     rt = (ROOT / "src" / "g60" / "experimental_runtime.lua").read_text(encoding="utf-8")
     entry = (ROOT / "addon" / "entry.lua.in").read_text(encoding="utf-8")
 
@@ -4146,15 +4559,15 @@ def test_marked_unit_rank_order():
           and "env.structure_profiles[r]~=nil then return 0" in rt
           and "r==env.dragonroach_resource then" in rt
           and "return 500" in rt
-          and "titan_profile.resource==r then return 1000" in rt
-          and "titan_variant_profiles[r]~=nil then return 1000" in rt
+          and "titan_profile.resource==r then return 750" in rt
+          and "titan_variant_profiles[r]~=nil then return 750" in rt
           and "return 1000+spec.rank" in rt
           and "return 1500" in rt,
-          "★ 五段档位：虫洞/构筑=0 · **蟑龙=500** · 泰坦（含变体）=1000 · 名册敌人=1000+rank · "
-          "其它单位=1500")
+          "★ 五段档位：虫洞/构筑=0 · **蟑龙=500** · 泰坦（含变体）=**750** · "
+          "名册敌人=1000+rank · 其它单位=1500")
     check("dragonroach_tier_between_structure_and_titan",
           "return 0 end" in rt and "r==env.dragonroach_resource then" in rt
-          and "return 500" in rt and "titan_profile.resource==r then return 1000" in rt,
+          and "return 500" in rt and "titan_profile.resource==r then return 750" in rt,
           "★★ 蟑龙**在虫洞之后、泰坦之前**（2026-10-03 用户指定）")
     check("dragonroach_tier_uses_exact_hash_not_kind",
           "r==env.dragonroach_resource then" in rt
@@ -4188,7 +4601,7 @@ def test_marked_unit_rank_order():
         if dragonroach:
             return 500
         if titan or variant:
-            return 1000
+            return 750
         if rank is not None:
             return 1000 + rank
         return 1500
@@ -4205,6 +4618,60 @@ def test_marked_unit_rank_order():
     check("rank_order_catalog_is_lowest_number_first",
           tier("a", rank=10) < tier("b", rank=50),
           "名册里 rank 小的优先（与 `target_policy` 的旧语义一致：rank 越小越优先）")
+
+    # ★★★ 2026-10-14（用户问「泰坦是不是只比虫洞这一类低？」后查证）★★★
+    #   0 档的判据是「**在不在 structure_profiles 里**」⇒ 该表**每一**成员都是 0 档。
+    #   而我在做远距离追踪时往那张表加了 **12 条**（尖啸巢/孢子×2/构筑×5/巨型构筑/
+    #   穿梭舰×2/广播台屏幕）⇒ 它们**全部继承 0 档 = 排到泰坦前面**；
+    #   加之前它们是 ⑤ 档（1500，在泰坦后面，因为都不在 priority_catalog 里）。
+    #   ⇒ 那次工作**顺手改了优先级**，我当时没意识到、也没说明（用户的提问正是察觉到了）。
+    #   **用户 2026-10-14 明确确认：全部保留在 0 档。**
+    #   这两条守门的作用：① 钉住"0 档 = 结构表全体"这条关系；② 把"这是决定、不是事故"
+    #   写进断言与文档，免得以后有人以为那 12 条是漏加的、或以为泰坦只在虫洞之后。
+    _struct_src = (ROOT / "compat" / "structure_profiles.lua").read_text(encoding="utf-8")
+    _struct_ids = set(re.findall(
+        r'profiles\["([0-9a-f]{16})"\]',
+        "\n".join(l.split("--")[0] for l in _struct_src.splitlines())))
+    _PROMOTED = {
+        "095686275a113614", "aa28caf964d05500", "e02e6bd34b606a85",   # 尖啸巢 / 孢子喷涌虫
+        "5158e582fbeb26bd", "22cc0ed4ceb9cb68", "f0b98fb953b13960",   # 构筑 5 变体
+        "4fb8eb356ac8553e", "a1a7b76b29088843", "4232ee48e2cfd24e",   # 构筑 + 巨型构筑
+        "b3c9cdb79dc17937", "2ad2e055dad21f6e",                        # 落地穿梭舰
+        "57db57121f3e7ed2",                                            # 广播台屏幕
+    }
+    check("tier0_is_the_whole_structure_table",
+          len(_struct_ids) == 38 and _PROMOTED <= _struct_ids,
+          "★ 0 档 = `structure_profiles` **全体**（%d 条）⇒ 该表加一个目标就多一个 0 档；"
+          "那 12 条确实都在表里" % len(_struct_ids))
+    check("promoted_to_tier0_is_a_decision_not_an_accident",
+          "结构表全体" in readme and "全部保留在 0 档" in readme
+          and "顺手把 12 类目标提到了泰坦前面" in readme,
+          "★★ 这 12 条从 1500 被提到 0（泰坦之前）是一次**已确认的决定**，"
+          "必须写进文档 —— 否则后人会当成漏加的，或以为泰坦只在虫洞之后"
+          "（用户 2026-10-14 提问正是察觉到了这处副作用）")
+    check("titan_is_below_two_tiers_not_one",
+          tier("x", structure=True) < tier("r", dragonroach=True) < tier("t", titan=True),
+          "★★ 泰坦低于**两**档（① 结构表全体、② 蟑龙），不是「只比虫洞低」")
+    # ★★★ 2026-10-14（用户提议 1000→750）：钉住**真正的不变量**，而不是那个数字 ★★★
+    #   改数字本身不改次序；真正要保的是这三条关系，其中第 ① 条是**绝对比较**：
+    check("titan_tier_leaves_headroom_below_roster_band",
+          tier("t", titan=True) < 1000,
+          "★★ 泰坦档必须**严格小于名册带的基数 1000** ⇒ 任何 rank≥0 的名册条目都排不到泰坦前面。"
+          "⚠ 原来是 1000，正好等于基数 ⇒ rank=0 的名册条目会与泰坦**打平**"
+          "（打平按「最新 ping 优先」= 泰坦的优先权被抹掉）。现在最小 rank 是 10（⇒1010）"
+          "所以**今天行为一样**，750 是为了不依赖 rank 取值")
+    check("titan_tier_still_above_dragonroach",
+          tier("t", titan=True) > tier("r", dragonroach=True),
+          "★ 750 仍**大于**蟑龙的 500（蟑龙依旧在泰坦之前 —— 用户 2026-10-03 指定）")
+    check("titan_tier_below_point_rank",
+          # entry 里的常量 `point_mark_rank=1600`；唯一的"与固定数字比较"就在
+          # `env.mark_tier(q.resource)<point_rank`。750 与 1000 都在其下 ⇒ 那里不变。
+          "point_mark_rank=1600," in entry
+          and tier("t", titan=True) < 1600,
+          "★★ 泰坦档必须仍在 `point_mark_rank`（entry 常量 **1600**）之下 —— "
+          "那是唯一一处「档位与固定数字比较」（决定「玩家点名的标记能否压过空白 ping」）。"
+          "⚠ 若哪天把 point_mark_rank 调进 (750,1000] 区间，改成 750 就会**真的改变行为**"
+          "—— 这条门就是为了让那次调整必须被看见")
 
     # ---- 开关（一键回退到"最新 ping 优先"）----
     check("marked_unit_rank_switch",
@@ -4561,9 +5028,16 @@ def test_safe_zone_redundancy():
           "与本工程 d.root 完全一致（同一份 game.dll dump）；"
           " **绝不枚举实体表**（2026-09-28 那个 4m 潜兵安全区就是这么死的）")
     check("safe_zone_uses_nearest_player",
-          "local best,d2=nearest_player(own,mysp)" in run
+          # ★★★ 2026-10-14：判据本体现在对**两个点**各算一次"最近的玩家"
+          #   （手雷 = 可选半径、**引爆点 = 主判据**），但"最近的玩家"这个口径
+          #   仍然**只有一个** `nearest_player` —— 不会出现"按手雷算是一人、
+          #   按爆点算是另一人"的分裂。
+          "local best,gd2=nil,nil" in run
+          and "if own then best,gd2=nearest_player(own,mysp) end" in run
+          and "if tgt and safe_target>0 then tbest,td2=nearest_player(tgt,mysp) end" in run
           and "';players='..tostring(P.av.list and #P.av.list or 0)" in run,
           "★★ 判据必须是**最近的玩家**（自己 ∪ 队友），不是只比自己；"
+          " 且**手雷与引爆点共用同一个 `nearest_player`**（口径唯一）；"
           " `players=` 给出参与判定的玩家数（缺了就没法证伪「对队友不生效」）")
     check("safe_zone_players_cache_is_per_frame",
           "if not P.av.frame or frame-P.av.frame>=P.av.ttl then" in run
@@ -4691,22 +5165,67 @@ def test_safe_zone_redundancy():
           #   `mark_priority_enabled=false`（entry 默认）⇒ `ping` 为 nil ⇒ `mark` 恒为 nil
           #   ⇒ 分流/让位/claim **全部空转**（实机铁证：`ping_queue;` 日志 0 条）。
           #   ⇒ 队列来源必须是 `structure_mark or mark`。这条门现在**同时禁止**回退到只读 `mark`。
+          #
+          # ★★★ 2026-10-14 更新（用户要求"按主支增加分配机制"）★★★
+          #   挑选从"第一个有空位的"升级为**按时间顺序 + 两个上限**（移自主支）：
+          #     · `set_cap` 每帧按"场上有几个标记"切换上限
+          #     · 挑 `marked_at` 最小（最早标记）的可用目标
+          #     · 必须问 `P.usable`（否则已取消的标记照样被选中）
+          #   本门保留的原意：**队列来源必须是 `structure_mark or mark`**、
+          #   **选中的标记必须传给 `native_priority` 的第 6 个参数**（`my_structure`）。
           "local spread=structure_mark or mark" in run
           and "local my_mark=spread" in run
           and "if reservations and spread and spread.queue then" in run
-          and "if reservations:available(owner,spread.queue[i].identity) then" in run
-          and "my_mark=spread.queue[i];break" in run
+          and "reservations:set_cap(marks>1" in run
+          and "and P.usable(q,q.current,true)" in run
+          and "and reservations:available(owner,q.identity) then" in run
           and "local my_structure=structure_mark" in run
-          and "if my_mark and env.structure_profiles" in run
-          and "my_structure=my_mark" in run
+          and "if reservations then my_structure=my_mark end" in run
           and "local a,b=priority:step(scope,old.lock,my_mark,old.blocked,available,my_structure)" in run
           and "and mark and mark.queue then" not in run,
-          "★★ 每颗雷选**第一个没被别人预留**的标记（队列已是档位顺序）。"
+          "★★ 每颗雷按**时间顺序**挑可用的标记（受两个上限约束）。"
           " ⚠ **队列来源必须是 `structure_mark or mark`**：`mark_priority_enabled=false` 时 "
           "`mark` 恒为 nil（`ping_queue;` 日志 0 条就是铁证）⇒ 只读 `mark` 会静默空转。"
           " ⚠ 而且**选目标只走 `structure_mark`（第 6 个参数）** —— `mark` 参数在 "
           "`native_priority` 里只用于日志元数据（L928/932）⇒ 必须把挑中的标记也传进 "
-          "`my_structure`，否则分流对结构/泰坦不生效")
+          "`my_structure`，否则分流对结构/泰坦不生效。"
+          " ⚠ 有预约时 `my_structure` 必须**等于 `my_mark`（包括 nil）** —— "
+          "退回帧级标记会让「没分到」的雷照样接管（主支 0.1.43/0.1.56 两次实机事故）")
+    # ★★★ 2026-10-14（用户要求）：**分配机制的时间序与上限**（移自主支）★★★
+    #   三件事必须同时成立，缺一个都退回"瞎分"：
+    #     ① 两个上限（单标记 / 多标记）各自由 env 提供，且菜单里能调；
+    #     ② 按 `marked_at` **最小**挑（= 最早标记先分到雷）；
+    #     ③ 新分配**不继承**别人的在飞锁（`assigning`），否则旧标记会把新雷拉走。
+    check("allocation_caps_are_configurable",
+          "max_grenades_per_target=1," in e
+          and "multi_mark_grenades_per_target=1," in e
+          and "max_grenades_per_target=state.max_grenades_per_target," in e
+          and "multi_mark_grenades_per_target=state.multi_mark_grenades_per_target," in e
+          and "and (tonumber(env.multi_mark_grenades_per_target) or 1)" in run
+          and "or (tonumber(env.max_grenades_per_target) or 1))" in run,
+          "★★ 两个上限各自由 env 提供（默认 1 = 逐字节维持既有行为）。"
+          " ⚠ 多标记用 `multi_mark_grenades_per_target`、单标记用 "
+          "`max_grenades_per_target` —— 分工不许混（主支第三轮澄清）")
+    check("allocation_is_time_ordered",
+          "local at=tonumber(q.marked_at) or 0" in run
+          and "local ord=tonumber(q.order) or 0" in run
+          and "if not best or at<best_at" in run
+          and "or (at==best_at and ord<best_order) then" in run,
+          "★★ 用户要求「标记按照时间顺序分配手雷」：挑 `marked_at` **最小**（最早标记）的"
+          "可用目标；同一时刻用 `order` 决胜（稳定序，不靠 table.sort）")
+    check("allocation_does_not_inherit_inflight_lock",
+          "P.usable=function(mark,live,assigning)" in run
+          and "if not assigning and P.locked_ids[mark.id] then return true end" in run
+          and "and P.usable(q,q.current,true)" in run,
+          "★★ 新分配必须传 `assigning=true` ⇒ **不继承**「在飞的锁 = 玩家意图」。"
+          " ⚠ 否则一颗「没分到标记」的新雷会被别人正在追的旧标记拉过去 ——"
+          " 那正是分配机制要避免的（主支 S10/S13 仿真）")
+    check("allocation_never_hoards_reservations",
+          "reservations:keep_only(owner,best.identity)" in run
+          and "function api:keep_only(owner,keep)" in (ROOT / "src/g60/target_reservations.lua").read_text(encoding="utf-8"),
+          "★★ 一颗雷只持有**当前分到的**那一个标记（`keep_only`）。"
+          " ⚠ 少了它就会**囤积预约**：标记暂时不可用时去 claim 另一个，而原来那个"
+          " 名额被永久占住 ⇒ 别人再也拿不到（主支仿真 S10 铁证）")
     check("mark_spread_allows_sharing_when_all_taken",
           "local my_mark=spread" in run
           and "return" not in run.split("local my_mark=spread")[1].split("local good,result,reason")[0],
@@ -4786,7 +5305,9 @@ def test_safe_zone_redundancy():
           " `n/ids/resources/tiers/current/picked/engine_sel`。`tiers` 用 `env.mark_tier`"
           "（唯一实现）⇒ 与选择逻辑同一把尺子。⚠ 按 (手雷, 队列签名) 去重，避免逐帧刷屏")
     check("locked_mark_intent_survives_expiry",
-          "if P.locked_ids[mark.id] then return true end" in run
+          # ★★★ 2026-10-14：判据已抽进 `P.usable`（**唯一实现**），本门随之更新 ——
+          #   判据本体 + 刷新时机都要钉住（"只钉一半"= 下次改动照样静默失效）。
+          "if not assigning and P.locked_ids[mark.id] then return true end" in run
           and "locked_ids={}," in run
           and "P.locked_ids[tid]=frame" in run
           and "if v<frame-6 then P.locked_ids[k]=nil end" in run
@@ -4799,7 +5320,8 @@ def test_safe_zone_redundancy():
           " 现在「**已在飞的锁 = 玩家意图**」：只要还有在飞的 G-60 锁着该目标，标记就不算过期。"
           " ⚠ 刷新必须在 `observe()` **之前**（`remembered_intent` 在它内部被调）；"
           " ⚠ 用帧号 TTL（6 帧）⇒ 防实体 id 复用与表增长；"
-          " ⚠ 只延长**已被锁**的标记 ⇒ 不影响「取消标记后不再用」的既有语义")
+          " ⚠ **只对「已在飞的那颗」生效**（`not assigning`）⇒ 不影响「取消标记后不再用」"
+          "的既有语义，也不会把新分配拉向旧标记（2026-10-14 分配机制）")
     check("point_yields_to_live_entity_marks",
           "local point_rank=env.point_mark_rank or 1600" in run
           and "if q.current==true and env.mark_tier(q.resource)<point_rank then" in run
@@ -4816,11 +5338,13 @@ def test_safe_zone_redundancy():
           " ⚠ 档位一律走 `env.mark_tier`（唯一实现），不得在此另写一份")
     check("mark_tier_order_unchanged",
           "if env.structure_profiles and env.structure_profiles[r]~=nil then return 0 end" in run
-          and "return 500" in run and "if env.titan_profile and env.titan_profile.resource==r then return 1000 end" in run
+          and "return 500" in run
+          and "if env.titan_profile and env.titan_profile.resource==r then return 750 end" in run
           and "if spec and spec.rank then return 1000+spec.rank end" in run
           and "return 1500" in run,
-          "★★ 分流**不得**改动你之前拍板的五档次序（虫洞 0 / 蟑龙 500 / 泰坦 1000 / "
-          "名册 1000+rank / 其它 1500）—— 本次只动「同档内选谁」，档间一律不动")
+          "★★ 分流**不得**改动你拍板的五档次序（虫洞 0 / 蟑龙 500 / 泰坦 750 / "
+          "名册 1000+rank / 其它 1500）—— 本次只动「同档内选谁」，档间一律不动"
+          "（泰坦 1000→750 是 2026-10-14 的独立改动，见 `titan_tier_*` 三条）")
     #   同一类坑咬了两次（faction 崩溃 / pointer 让队友安全区静默失效）⇒
     #   这次做成**通用检查**，而不是再写一条针对性的门。
     import subprocess as _sp
@@ -4833,6 +5357,150 @@ def test_safe_zone_redundancy():
           "（faction 崩溃 + pointer 让队友安全区静默失效，两次都只有实机才暴露）；"
           " 检查器的召回已用「修复前的版本能精确抓出 pointer」验证过"
           + ('' if _p.returncode == 0 else '  实际：' + _p.stdout[-400:]))
+
+
+def test_blast_site_faction_exception(rt):
+    """体内爆点名册的目标必须**通过**敌阵营门槛（2026-10-14 用户报的回归）。
+
+    事故（用户原话）：「之前的版本巨型构筑引爆点是正常上升 8.0 的，现在 0.1.22
+    版本没有上升 8.0」。
+    根因链（离线可复现）：
+      · v0.1.9（`bc305cc`）在 `generic_validate` 里新加了**敌阵营硬门槛**
+        （`EnemyFaction.is_enemy` 且 非 `marked_allowed` ⇒ `NOT_ENEMY_RESOURCE`）；
+      · 而 `compat/blast_sites.lua` 登记的巨型构筑者（`4232ee48e2cfd24e` =
+        `cyborg_colony_spawner_base`）是**构筑物**：既不是 AiEnemy、
+        也不在 `small_filter.marked_allowed`（那张表只有运输船 / 增援飞船）
+        ⇒ 恒被拒；
+      · 而"体内爆点"整块**嵌在 `old.lock` 的守卫里**（`experimental_runtime.lua`）
+        ⇒ **拿不到锁 ⇒ `lift` 根本不会被算出来** ⇒ 连一条 `blast_point;lift=8.00`
+        都不会打，行为退回引擎 `aim`（在底部引爆，不掉血）。
+      ⇒ 症状恰好是"**不再上升 8.0**"，且**只在 v0.1.9 之后**出现。
+
+    本门分三步（按工程纪律：**涉及判据的断言必须真求值**，不能只 grep 字符串）：
+      ① 把**源码里那句 shipped 判据**抠出来，用**真实模块 + 真实名册**逐条求值；
+      ② 断言名册里每一个目标都被**放行**（不是被拒）；
+      ③ **变异测试**：把新增的例外项删掉，同一个判据必须**拒掉**该目标 ——
+         否则这条门是空转的（本工程记录过"把条件改成恒假仍然全绿"的事故）。
+    """
+    print()
+    print("=== ㊿ ★ 体内爆点名册必须通过敌阵营门槛（巨型构筑者爆炸点回归，2026-10-14）===")
+    r = PRIORITY.read_text(encoding="utf-8")
+    sites_src = (ROOT / "compat" / "blast_sites.lua").read_text(encoding="utf-8")
+
+    # ── ① 真跑真实模块（判据引用 EnemyFaction / Filter.marked_allowed）──
+    load_module(ROOT / "src/g60" / "util.lua", "util", rt)
+    load_module(ROOT / "src/g60" / "enemy_faction.lua", "enemy_faction", rt)
+    load_module(ROOT / "src/g60" / "small_filter.lua", "small_filter", rt)
+    # 真实名册（按 build.py 的包装真求值；键是 Lua 字符串 ⇒ 循环留在 Lua 侧，
+    # 避免 lupa 把字符串映射成 bytes 导致键对不上而假绿 —— 见 test_blast_sites 的教训）
+    rt.execute("__SITES = (function()\n" + sites_src + "\nend)()")
+
+    # ── ② 把源码里那句判据抠出来（`if <COND> then` → <COND>）──
+    anchor = "if not EnemyFaction.is_enemy(e.resource)"
+    assert anchor in r, "敌阵营门槛的锚点不见了（判据被改写过？）"
+    _s = r.index(anchor)
+    _e = r.index("then", _s)
+    cond = " ".join(r[_s + len("if "):_e].split())
+    check("blast_site_gate_condition_extracted",
+          "EnemyFaction.is_enemy" in cond and "Filter.marked_allowed" in cond,
+          "从源码抠出 shipped 判据：%s" % cond[:96])
+
+    # 判据必须**引用名册本身**（`env.blast_sites`），不得把哈希抄进判据里 ——
+    #   工程纪律：同一个判断不许出现两处（`enemy_faction` / `mark_tier` 同款）。
+    check("blast_site_gate_uses_roster_not_hash",
+          "env.blast_sites" in cond and "4232ee48e2cfd24e" not in cond,
+          "★ 例外必须以**名册**为单一来源（`env.blast_sites[...]`），"
+          "不许把资源哈希抄进判据 —— 否则名册一改就静默漂移")
+
+    def evaluate(expression, extra_sites=None):
+        """用真实模块 + 真实名册逐条求值，返回 (放行, 被拒) 两个 list。
+
+        ⚠ 判据是**表达式文本**，必须 `load()` 编译后再跑 —— 直接求值一个字符串
+        在 Lua 里是恒真的（`("x")` 就是那个字符串）⇒ 会把"全部被拒"读成"全部放行"
+        （本门第一版就这么错过一次，正是本工程记过的"空转断言"）。
+        ⚠ 表达式里引用的 `e` / `env` / `EnemyFaction` / `Filter` 是模块的局部名，
+        用 **vararg** 注入（不是改成全局、也不是改表达式文本）⇒ 判据逐字未改。
+        ⚠ `extra_sites`：额外的**合成**名册条目（只用于变异测试，见下方说明）。
+        """
+        chunk = ("local e,env,EnemyFaction,Filter=...\nreturn (" + expression + ")\n")
+        rt.execute("__FN = assert(load([==[\n" + chunk + "]==]))")
+        rt.execute("""
+            __MERGED = {}
+            for k,v in pairs(__SITES) do __MERGED[k]=v end
+            for k,v in pairs(__EXTRA or {}) do __MERGED[k]=v end
+        """)
+        rt.execute("""
+            __TAKEN,__REJECTED = {},{}
+            local EF=require('g60.enemy_faction')
+            local FL=require('g60.small_filter')
+            for k,v in pairs(__MERGED) do
+                if k~='scan' and type(v)=='table' then
+                    local rejected=__FN({resource=k},{blast_sites=__MERGED},EF,FL)
+                    if rejected then __REJECTED[#__REJECTED+1]=k else __TAKEN[#__TAKEN+1]=k end
+                end
+            end
+        """)
+        # ⚠⚠ lupa 里**直接迭代 Lua 表得到的是「键/下标」而不是值** ——
+        #   必须走 `.values()`。我第一版写成 `for x in rt.eval(...)`，
+        #   于是 `taken`/`rejected` 变成 ['1','2',…]，所有 `in` 断言恒假
+        #   （本项目记过的"空转断言"的又一变种；`borrowable_fields()` 那处踩过同一个坑）。
+        def _values(name):
+            out = []
+            for x in rt.eval(name).values():
+                out.append(x.decode() if isinstance(x, (bytes, bytearray)) else str(x))
+            return out
+
+        return _values("__TAKEN"), _values("__REJECTED")
+
+    rt.execute("__EXTRA = nil")
+    taken, rejected = evaluate(cond)
+    check("blast_site_roster_is_not_empty", len(taken) + len(rejected) > 0,
+          "名册真的有目标（防止「空名册 ⇒ 全部断言恒真」的空转）"
+          "｜放行 %d / 被拒 %d" % (len(taken), len(rejected)))
+    check("blast_site_targets_pass_enemy_gate", not rejected,
+          "★★ 名册里**每一个**目标都必须通过敌阵营门槛 —— 被拒 = 拿不到 old.lock = "
+          "体内爆点整块不执行 = 退回引擎 aim（用户报的「没有上升 8.0」）。"
+          "被拒: %s" % (rejected if rejected else "无"))
+
+    # ── ③ 变异测试：删掉新增的例外项，同一个判据必须拒掉该目标 ──
+    #   否则这条门抓不住回归（本工程记录过"把条件改成恒假仍然全绿"的变异发现）。
+    #
+    # ⚠⚠ 2026-10-14（用户要求远距离追踪）后的**重要修正**：
+    #   那 6 类目标现在**同时也进了 `marked_allowed`**（见 small_filter 的拆表说明）
+    #   ⇒ 对**真实名册**来说，删掉 `blast_sites` 例外后它们**仍然**被放行（走另一条路）
+    #   ⇒ 原来"删掉例外必须有人被拒"的断言会**假红**。
+    #   ⇒ 改成用**合成条目**测**机制本身**：注入一个"只在名册里、不在
+    #     `marked_allowed` 里"的哈希 —— 这样"例外项是否承重"才是可判的，
+    #     而且它测的是**判据的形状**（与当前名册的具体内容解耦 ⇒ 不会随数据漂移）。
+    #   ★ 顺带这也如实记录了一个事实：对**当前**名册而言，`blast_sites` 例外
+    #     与 `marked_allowed` 是**两条都能放行**的路（冗余但方向一致，
+    #     保留例外的理由是"名册以后加目标时自动覆盖"，见 native_priority 的注释）。
+    _SYNTH = "fedcba9876543210"
+    #   ⚠ `marked_allowed` 是**独立表**（2026-10-14 拆表）⇒ 要从**它**的块里取键，
+    #     不能拿整份源码找（那会把 `excluded` 的键也算进来）。
+    _sf_src = (ROOT / "src/g60" / "small_filter.lua").read_text(encoding="utf-8")
+    _ma_s = _sf_src.index("local marked_allowed = {")
+    _ma_blk = _sf_src[_ma_s:_sf_src.index("\n}", _ma_s)]
+    sf_keys_all = set(re.findall(r"\['([0-9a-f]{16})'\]\s*=\s*true", _ma_blk))
+    check("blast_site_synthetic_hash_is_not_in_marked_allowed",
+          _SYNTH not in sf_keys_all,
+          "★ 合成哈希确实不在 `marked_allowed` 里（否则下面的变异对照无意义）")
+    rt.execute("__EXTRA = {['" + _SYNTH + "']={resource='" + _SYNTH + "'}}")
+    _t3, _r3 = evaluate(cond)
+    check("blast_site_exception_admits_roster_only_target",
+          _SYNTH in [str(x) for x in _t3],
+          "★ 只在名册里、不在 `marked_allowed` 的目标必须被**放行**"
+          "（证明例外项确实读名册）：放行 = %s" % (_t3,))
+
+    mutated = cond.replace("and not (env.blast_sites and env.blast_sites[e.resource])", "")
+    check("blast_site_gate_mutation_actually_strips_exception",
+          mutated != cond,
+          "变异确实删掉了例外项（否则下面的对照没有意义）")
+    _t2, _r2 = evaluate(mutated)
+    check("blast_site_exception_is_load_bearing",
+          _SYNTH in [str(x) for x in _r2],
+          "★★ 变异后**那个只在名册里的目标必须被拒**（证明这条例外是承重的、"
+          "这条门不是空转）：被拒 = %s" % (_r2 if _r2 else "无 ⇒ 这条门抓不住回归！"))
 
 
 def main():
@@ -4873,6 +5541,7 @@ def main():
     test_marked_unit_rank_order()
     test_status_line_fits_log_cap()
     test_enemy_faction_gate(rt)
+    test_blast_site_faction_exception(rt)
     test_safe_zone_redundancy()
 
     print()
