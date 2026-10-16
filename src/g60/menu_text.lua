@@ -115,12 +115,6 @@ M.TEXT = {
         ['mark_retain_seconds.label'] = 'Keep marks alive after the icon fades (s)',
         ['mark_retain_seconds.desc'] =
             'A marker icon only lives about 8 s, but a G-60 flying to a distant target can take longer than that. With this above 0 the mod keeps remembering the mark for this many seconds after the icon fades, so you can still throw at it. 600 s is effectively the whole match. 0 = off (default). A mark you cancel yourself (icon vanishes long before its 8 s) is dropped immediately',
-        -- ★★★ 2026-10-16（用户要求「战争纵步者的引爆点可以自行调整上下距离」）★★★
-        --   锚点是**引擎自己的瞄准点** ⇒ 0 = 今天的行为（不是"相对地表的高度"）。
-        --   ⚠ 文案里必须写清"引擎瞄点"这个锚点，否则用户会以为 0 = 贴地。
-        ['unit_blast_dz.label'] = 'War Strider blast point: up/down (m)',
-        ['unit_blast_dz.desc'] =
-            'Moves the War Strider detonation point up or down, measured from where the engine already aims (+0.25, i.e. the current height). 0 = unchanged. Negative lowers it — use this when the blast sits too high to kill',
         -- ★★★ 2026-10-14（用户要求「安全区以引爆点为中心」）★★★
         ['safe_zone_target_radius.label'] = 'Safe zone (around blast point)',
         ['safe_zone_target_radius.desc'] =
@@ -177,12 +171,6 @@ M.TEXT = {
         ['mark_retain_seconds.label'] = '图标消失后仍认标记（秒）',
         ['mark_retain_seconds.desc'] =
             '标记图标只活约 8 秒，而 G-60 飞远距离目标可能更久。这个值大于 0 时，图标消失后再保留这么久，你仍然可以扔雷追踪它。**600 秒 ≈ 整局残留标记**。**0 = 关闭（默认）**。⚠ **你主动取消的标记不算数**（图标远早于 8 秒就消失 ⇒ 立即丢弃）；已在飞的那颗不受影响',
-        -- ★★★ 2026-10-16（用户要求「战争纵步者的引爆点可以自行调整上下距离」）★★★
-        --   锚点是**引擎自己的瞄准点** ⇒ 0 = 今天的行为（不是"相对地表的高度"）。
-        --   ⚠ 文案里必须写清"引擎瞄点"这个锚点，否则用户会以为 0 = 贴地。
-        ['unit_blast_dz.label'] = '战争纵步者引爆点（上下，米）',
-        ['unit_blast_dz.desc'] =
-            '把战争纵步者的引爆点往上/往下挪，**相对引擎已经瞄的那个点（+0.25，即当前高度）**算。**0 = 与改动前完全一样**。**负数 = 往下**，引爆点偏高打不死时就用它',
         -- ★★★ 2026-10-14（用户要求「安全区以引爆点为中心」）★★★
         ['safe_zone_target_radius.label'] = '安全区半径（以引爆点为中心）',
         ['safe_zone_target_radius.desc'] =
