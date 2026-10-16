@@ -103,7 +103,27 @@ function M.decide(opts)
         if o.selection_vetoed then
             return {drive=false,early=false,veto=true,why='VETO_ENEMY_SELECTION'}
         end
-        return {drive=false,early=false,why='no_mark_no_hold'}
+        -- ★★★ 2026-10-16：无标记改派（"每个敌人只吃一颗"）的放行 ★★★
+        --   与 `point_armed` 同源：都是"玩家投了雷、我们要主动给它指定一个目标"，
+        --   而不是"本 mod 已有锁定"。
+        --
+        --   为什么必须有这一条：改派的目标场景就是**完全无标记**，而那时
+        --   `structure_mark` 为空、`old` 还不存在（`old` 只在本门放行之后才被创建）
+        --   ⇒ 不放行就落到 `no_mark_no_hold` ⇒ **先有鸡还是先有蛋**，
+        --   整条改派链路结构性不可达（v0.1.25 实机 `spread_pick` 0 条的真根因）。
+        --
+        --   ⚠⚠ 位置陷阱（两处我都踩过，由 `tests/test_spread_gate.py` 真求值抓住）：
+        --     ① 不能放在这个 `if` 块**之后** —— 那时已经 return `no_mark_no_hold` 了；
+        --     ② 不能放在**否决之前** —— 会抢走否决优先级，而"G-60 不追运输船"
+        --        是用户确认过的行为，语义不许变。
+        --   ⇒ 正好落在这里：否决**照旧优先**；改派只是**不再落进 `no_mark_no_hold`**，
+        --     然后**复用下面的既有尾段**（早期门槛 / can_guide / can_detonate 全不变）
+        --     —— 不新增第二条决策路径，也不新增任何写途径。
+        --   ⚠ 收窄面：只有 runtime **真的算出候选**（`o.spread_armed`）才放行；
+        --     候选还要过 `reservations:available`（名额门）与优先级名册筛选。
+        if not o.spread_armed then
+            return {drive=false,early=false,why='no_mark_no_hold'}
+        end
     end
 
     -- 早期路径还有飞行时长门槛：刚出膛那几帧 movement 还没建立，

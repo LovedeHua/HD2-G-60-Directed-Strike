@@ -1,0 +1,636 @@
+# 无标记分散 · 优先级名册草稿 v3
+
+> ⚠⚠ **本文是 v3 审阅过程记录，档位已过时。** 现行名册在
+> `src/g60/spread_priority.lua`（手工维护，80 条），且已于 2026-10-16 **二次细分**：
+>   终结族 13 档（强袭虫拆 4 级 + 新增 虫窝护卫/狂暴武斗虫/武斗虫 最低档）
+>   机器人 12 档（巨型者拆 2 级 + 蹂躏者拆 4 级 + 新增狂暴者、机枪奇袭者最低档）
+> **以名册文件与 `tests/test_spread_priority.py` 为准**；本文只用于追溯当时的判定理由。
+
+来源 `绝地潜兵2哈希整合表.xlsx`（只取敌人阵营段）。判定法：硬排除（反坦克/结构/子模型/废案）
+→ 空格尾段=部件则剔 → 组件词剔 → 其余按家族收录；**一条只进一个档**（长关键词优先）。
+
+## 终结族
+
+### 第 1 档 — 蟑龙
+
+| 中文名 | 英文名 | hex16 | 建议 | 理由/备注 |
+|---|---|---|---|---|
+| 蟑龙 | Dragonroach | `960b48a421a3faaa` | **收录** |  |
+| 蟑龙 吐火攻击 | Dragonroach Vomit | `76e9644bcd3f341b` | **剔除** | 主体+部件（尾段「吐火攻击」） |
+
+小计：命中 2 条 / 建议收录 **1** 条。
+
+### 第 2 档 — 吐酸泰坦(含变体)
+
+| 中文名 | 英文名 | hex16 | 建议 | 理由/备注 |
+|---|---|---|---|---|
+| 吐酸泰坦 | Bile Titan | `9e2e17f2ccccafdd` | **收录** |  |
+| 孢子泰坦 | Spore Burst Bile Titan | `ef04cb84d097a497` | **收录** |  |
+
+小计：命中 2 条 / 建议收录 **2** 条。
+
+### 第 3 档 — 穿刺虫
+
+| 中文名 | 英文名 | hex16 | 建议 | 理由/备注 |
+|---|---|---|---|---|
+| 穿刺虫 | Impaler | `dcf8e74212fbee3b` | **收录** | N5-N10刷新 |
+| 穿刺虫触手 | Tentacle | `672f7da17f3ba34a` | **剔除** | 由本体召唤，单独召唤会马上消失 |
+
+小计：命中 2 条 / 建议收录 **1** 条。
+
+### 第 4 档 — 强袭虫(含变体)
+
+| 中文名 | 英文名 | hex16 | 建议 | 理由/备注 |
+|---|---|---|---|---|
+| 强袭虫 | Charger | `1a7fcdff98c664b0` | **收录** |  |
+| 孢子强袭虫 | Spore Charger | `6b202392f4ab605e` | **收录** | N10刷新 |
+| 巨兽级强袭虫 | Charger Behemoth | `3aff5fd7d5450b99` | **收录** |  |
+| 巨兽级强袭虫 MK2 | Charger Behemoth MK2 | `a05bd1ec67b3ac4c` | **收录** |  |
+| 钻地强袭虫 | Rupture Charger | `0ab7b92b131c228c` | **收录** |  |
+
+小计：命中 5 条 / 建议收录 **5** 条。
+
+### 第 5 档 — 阿尔法指挥官
+
+| 中文名 | 英文名 | hex16 | 建议 | 理由/备注 |
+|---|---|---|---|---|
+| 阿尔法指挥官 | Alpha Commander | `f79cd8bb654397df` | **收录** | N10刷新 |
+
+小计：命中 1 条 / 建议收录 **1** 条。
+
+### 第 6 档 — 喷涌虫(胆汁/抚育/钻地)
+
+| 中文名 | 英文名 | hex16 | 建议 | 理由/备注 |
+|---|---|---|---|---|
+| 胆汁喷涌虫 | Bile Spewer | `36aa99cce5e60146` | **收录** | 绿胖，cha_boomer |
+| 胆汁喷涌虫 MK2 | Bile Spewer MK2 | `ccae5264acd591b7` | **收录** | 绿胖，cha_boomer_tier_2，N6+刷新 |
+| 胆汁喷涌虫 吐酸器 | Bile Spewer Vomit | `6f91bc8002875e76` | **剔除** | 主体+部件（尾段「吐酸器」） |
+| 胆汁喷涌虫 迫击炮 | Bile Spewer Artillery | `767977bd472a62da` | **剔除** | 主体+部件（尾段「迫击炮」） |
+| 抚育喷涌虫 | Nursing Spewer | `6021e22338333d88` | **收录** | 黄胖，cha_boomer_nurser_mission |
+| 抚育喷涌虫 MK2 | Nursing Spewer MK2 | `cc7022fdd172089b` | **收录** | 黄胖，N10刷新，cha_boomer_nurser |
+| 抚育喷涌虫 吐酸器 | Nursing Spewer Vomit | `529dfe4c4c881324` | **剔除** | 主体+部件（尾段「吐酸器」） |
+| 钻地喷涌虫 | Rupture Spewer | `a381a11c07d3eb94` | **收录** |  |
+| 钻地喷涌虫 酸液投掷物 | Rupture Spewer Acid Grenade | `ced70b42c32cbed1` | **剔除** | 主体+部件（尾段「酸液投掷物」） |
+
+小计：命中 9 条 / 建议收录 **5** 条。
+
+### 》档位间隙
+
+### 第 7 档 — 追踪虫 / 掠食追踪虫(同档)
+
+| 中文名 | 英文名 | hex16 | 建议 | 理由/备注 |
+|---|---|---|---|---|
+| 追踪虫 | Stalker | `f540ca9d9d4a422e` | **收录** | 隐身虫 |
+| 掠食追踪虫 | Predator Stalker | `d1e990baf22d5a52` | **收录** |  |
+
+小计：命中 2 条 / 建议收录 **2** 条。
+
+## 机器人
+
+### 第 1 档 — 移动工厂
+
+| 中文名 | 英文名 | hex16 | 建议 | 理由/备注 |
+|---|---|---|---|---|
+| 移动工厂 | Factory Strider | `d37e8d120d2836e3` | **收录** |  |
+| 移动工厂 带干扰塔 | Jammer Factory Strider | `30f2dee2333f227a` | **收录** | 此移动工厂仅限“拦截车队”任务出现 |
+| 移动工厂 加特林 MK1（右） | Factory Strider Gatling MK1 (Right) | `3aafba89b53b0f63` | **剔除** | cyborg_spawner_turret_front_right |
+| 移动工厂 加特林 MK2（左） | Factory Strider Gatling MK2 (Left) | `390e6b3d2f26bd70` | **剔除** | cyborg_spawner_turret_front_left |
+| 移动工厂 加特林 MK3 | Factory Strider Gatling MK3 | `48c91e42b9f16512` | **剔除** | cyborg_top_turret_mg  开火扩散小 |
+| 移动工厂 加特林 MK4 | Factory Strider Gatling MK4 | `1c6981ca2fb69508` | **剔除** | cyborg_spawner_turret_back_left |
+| 移动工厂 加特林 MK5 | Factory Strider Gatling MK5 | `6a7a54d5fb3a6d17` | **剔除** | cyborg_spawner_turret_back_right |
+| 移动工厂 连发加农炮 | Factory Strider Cannon Turret | `843d18d4b5512b63` | **剔除** | cyborg_big_walker_turret_cannon |
+| 移动工厂 干扰器 | Factory Strider Scrambler | `b971b1141e1cbfac` | **剔除** | 主体+部件（尾段「干扰器」） |
+
+小计：命中 9 条 / 建议收录 **2** 条。
+
+### 第 1 档 — 噪轰引擎
+
+| 中文名 | 英文名 | hex16 | 建议 | 理由/备注 |
+|---|---|---|---|---|
+| 噪轰引擎 | Vox Engine | `bc242702fb46b7e7` | **收录** |  |
+| 噪轰引擎 曲射导弹（射弹） | Vox Engine Missile (Projectile) | `30fbc4fd513c35e9` | **剔除** | 子模型/占位/射弹 |
+| 噪轰引擎 加特林机枪（右） | Vox Engine Gatling Right | `356de4a7808ef3e3` | **剔除** | 两个挂载点默认为倒挂，而加特林模型默认也是倒挂。 |
+| 噪轰引擎 加特林机枪（左） | Vox Engine Gatling Left | `f2881f5807348116` | **剔除** | 主体+部件（尾段「加特林机枪（左）」） |
+| 噪轰引擎 速射加农炮 | Vox Engine Cannon Turret | `611ba777783b08a2` | **剔除** | cyborg_siege_engine_turret |
+
+小计：命中 5 条 / 建议收录 **1** 条。
+
+### 第 2 档 — 坦克(湮灭/碎裂/铁幕…)
+
+| 中文名 | 英文名 | hex16 | 建议 | 理由/备注 |
+|---|---|---|---|---|
+| EXO-51 伐木者 反坦克炮 | Lumberer Exosuit Anti-Tank Cannon | `17c5d12d8d5dee2c` | **剔除** | 反坦克类装备（Anti-Tank 里含 Tank，必须硬排除） |
+| MD-17 反坦克地雷 | MD-17 Anti-Tank Mine Deployer | `25a2fd037b6ed25c` | **剔除** | 反坦克类装备（Anti-Tank 里含 Tank，必须硬排除） |
+| E/AT-12固定反坦克炮 | E/AT-12 Anti-Tank Emplacement | `2b11c9e4980ec479` | **剔除** | 反坦克类装备（Anti-Tank 里含 Tank，必须硬排除） |
+| 机器人小兵 反坦克手榴弹（废案） | Cyborg's Anti-Tank Grenade (Model) | `8e569186de6e3b24` | **剔除** | 无模型，机器人无法扔出来 |
+| 坦克 轻机枪 | Cyborg Tank LMG | `16023e554fee830e` | **剔除** | cyborg_tank_hull_mg，疑似废案 |
+| 坦克 加农炮塔 | Cyborg Tank Cannon Turret | `b8580cac32214fc0` | **剔除** | cyborg_tank_turret_base，疑似废案 |
+| 坦克 加特林 | Cyborg Tank Gatling | `51c6132ec1d10e7e` | **剔除** | cyborg_tank_machinegun，疑似废案 |
+| 湮灭坦克 | Annihilator Tank | `53d8919d7b8abd67` | **收录** | 加农炮坦克 |
+| 湮灭坦克 MK2 | Annihilator Tank MK2 | `31bae74d2f064d8d` | **剔除** | 废案，有BUG |
+| 湮灭坦克 加农炮塔 | Annihilator Tank Heavy Fusion Cannon | `8fb47dd28b398cf7` | **剔除** | cyborg_tank_turret_heavycannon |
+| 湮灭坦克 加农炮塔 同轴机枪 | Annihilator Tank Fusion Repeater | `36390775d61159eb` | **剔除** | cyborg_tank_coaxial_mg |
+| 湮灭坦克 车体重机枪 | Annihilator Tank Heavy Fusion Repeater | `972baac825d4d165` | **剔除** | cyborg_tank_hull_hmg |
+| 碎裂坦克 | Shredder Tank | `c6449ffd9ea3779c` | **收录** | 防空炮坦克 |
+| 碎裂坦克 炮塔 | Shredder Tank Fusion Autocannon | `49674794a165eda8` | **剔除** | cyborg_tank_turret_autocannons |
+| 铁幕坦克 | Barrager Tank | `63df3d07b7424588` | **收录** | 火箭炮坦克 |
+| 铁幕坦克 炮塔 | Barrager Tank Ballistic Missile | `5d142c3a73ebc634` | **剔除** | cyborg_tank_turret_rocketlauncher |
+
+小计：命中 16 条 / 建议收录 **3** 条。
+
+### 第 2 档 — 战争纵步者
+
+| 中文名 | 英文名 | hex16 | 建议 | 理由/备注 |
+|---|---|---|---|---|
+| 战争纵步者 | War Strider | `ef570293245a17c2` | **收录** |  |
+| 战争纵步 加农炮（右） | War Strider Cannon Right (Model) | `9ab036439f74c115` | **剔除** | 子模型/占位/射弹 |
+| 战争纵步 加农炮（左） | War Strider Cannon Left (Model) | `8372619b2702d743` | **剔除** | 子模型/占位/射弹 |
+| 战争纵步者 高爆手雷 | War Strider HE Grenade | `c9af550acbec004c` | **剔除** | 主体+部件（尾段「高爆手雷」） |
+
+小计：命中 4 条 / 建议收录 **1** 条。
+
+### 第 3 档 — 巨型者(含变体)
+
+| 中文名 | 英文名 | hex16 | 建议 | 理由/备注 |
+|---|---|---|---|---|
+| 巨型抹煞者 | Hulk Obliterator | `1e66ee1f6f7fd00e` | **收录** | cha_lieutenant_artillery，双火箭 |
+| 巨型抹煞者 火箭发射器 | Hulk Obliterator Rocket Launcher (Model) | `8a4de24951a1726d` | **剔除** | 子模型/占位/射弹 |
+| 巨型抹煞者 旗帜 | Hulk Obliterator Flag (Model) | `8fc2784308e9ba99` | **剔除** | 子模型/占位/射弹 |
+| 巨型炙焰者 | Hulk Scorcher | `3e0537d606438fea` | **收录** | cha_lieutenant_assault |
+| 巨型炙焰者 电锯 | Hulk Scorcher Saw (Model) | `c89ed7ac3e425b25` | **剔除** | （右手，挂载点一） |
+| 巨型炙焰者 电锯 MK2 | Hulk Scorcher Saw MK2 (Model) | `bb37f12d0f46690f` | **剔除** | （右手，挂载点一） |
+| 巨型炙焰者 火焰喷射器 | Hulk Scorcher Flamer (Model) | `f2b4a99d1b0e40c8` | **剔除** | （左手，挂载点二） |
+| 巨型者 | Hulk | `96ba14c9ebb49ce1` | **收录** | cha_lieutenant_base，基础版，双机枪 |
+| 巨型碾压者 | Hulk Bruiser | `137988cea16458f7` | **收录** | cha_lieutenant_suppressor |
+| 巨型者 机枪 | Hulk HMG (Model) | `5b596a4d21bc91a3` | **剔除** | 子模型/占位/射弹 |
+| 巨型者 火箭发射器 | Hulk Rocket Launcher (Model) | `c8378469e1936877` | **剔除** | 子模型/占位/射弹 |
+| 巨型炙焰者 MK2（炽灼部队） | Hulk Scorcher MK2 | `1897bdd32105d2dc` | **收录** | cha_lieutenant_ivory_legion_assault |
+| 巨型烈焰轰炸者 | Hulk Firebomber | `6dab2eadf5d8b692` | **收录** | cha_lieutenant_ivory_legion |
+| 巨型烈焰轰炸者 燃烧榴弹发射器 | Hulk Firebomber Grenade Launcher (Model) | `b846cdcf41967725` | **剔除** | 子模型/占位/射弹 |
+| 巨型烈焰轰炸者 旗帜 | Hulk Firebomber Flag (Model) | `c2b9eb21b06f8378` | **剔除** | 子模型/占位/射弹 |
+| 喷气巨型炙焰者 | Jet Brigade Hulk Scorcher | `e44ec9f9b3fe1d2a` | **收录** | cha_lieutenant_assault_jumppack |
+| 喷气巨型碾压者 | Jet Brigade Hulk Bruiser | `32cdeada234fb8df` | **收录** | cha_lieutenant_suppressor_jumppack |
+| 巨型者 喷气背包 | Jet Brigade Hulk Backpack (Model) | `b940c889d77f8219` | **剔除** | 子模型/占位/射弹 |
+
+小计：命中 18 条 / 建议收录 **8** 条。
+
+### 第 4 档 — 炮艇
+
+| 中文名 | 英文名 | hex16 | 建议 | 理由/备注 |
+|---|---|---|---|---|
+| 炮艇 | Gunship | `282eb766c1ffa6a1` | **收录** |  |
+| 炮艇 机枪 | Gunship Turret | `2d62a25f36c08f33` | **剔除** | 主体+部件（尾段「机枪」） |
+| 炮艇 火箭巢 | Gunship Rocket Pods | `c3c1bba1f445a81e` | **剔除** | 结构类目标 |
+
+小计：命中 3 条 / 建议收录 **1** 条。
+
+### 第 5 档 — 强化侦察纵步者
+
+| 中文名 | 英文名 | hex16 | 建议 | 理由/备注 |
+|---|---|---|---|---|
+| 强化侦察纵步者 | Reinforced Scout Strider | `9076eeed17fcee35` | **收录** | 发射火箭，N8-N10刷新 |
+| 强化纵步 全包裹驾驶舱 | Reinforced Scout Strider Fullcover Cabin (Model) | `d3cd6f0ca83bb51e` | **剔除** | 子模型/占位/射弹 |
+| 强化纵步 发射架（左） | Reinforced Scout Strider Rocke Left  (Model) | `a8173fba5dec35c3` | **剔除** | 装饰物，无实际影响 |
+| 强化纵步 发射架（右） | Reinforced Scout Strider Rocke Right  (Model) | `397fb7e4883af100` | **剔除** | 子模型/占位/射弹 |
+
+小计：命中 4 条 / 建议收录 **1** 条。
+
+### 第 5 档 — 激进先锋
+
+| 中文名 | 英文名 | hex16 | 建议 | 理由/备注 |
+|---|---|---|---|---|
+| 激进先锋（男） | Male Radical | `746a7f3beda32699` | **收录** |  |
+| 激进先锋（女） | Female Radical | `cbb1ba3366009c3a` | **收录** |  |
+| 激进先锋 能量霰弹枪 | Radical Shotgun (Model) | `543ad246bcb333d4` | **剔除** | 子模型/占位/射弹 |
+| 激进先锋 烟雾弹 | Radical Smoke Grenade (Model) | `c39e7fd97e974e5e` | **剔除** | 子模型/占位/射弹 |
+
+小计：命中 4 条 / 建议收录 **2** 条。
+
+### 第 5 档 — 惑乱者
+
+| 中文名 | 英文名 | hex16 | 建议 | 理由/备注 |
+|---|---|---|---|---|
+| 惑乱者（男） | Male Agitator | `9d8827fed763650e` | **收录** |  |
+| 惑乱者（女） | Female Agiator | `09fe0be51a23396c` | **收录** |  |
+| 惑乱者 能量炮 | Agitator Hand Gun (Model) | `67381f685e9b69a8` | **剔除** | 子模型/占位/射弹 |
+| 惑乱者 手榴弹 | Agitator Grenade (Model) | `495435d51f47411f` | **剔除** | 子模型/占位/射弹 |
+
+小计：命中 4 条 / 建议收录 **2** 条。
+
+### 第 6 档 — 蹂躏者(含变体)
+
+| 中文名 | 英文名 | hex16 | 建议 | 理由/备注 |
+|---|---|---|---|---|
+| 蹂躏者 | Devastator | `c626d2bb495a202d` | **收录** | cha_soldier_iron_fleet |
+| 蹂躏者 MK2 移动工厂生产 | Devastator MK2 Spawn | `fc8dec78be8ab47d` | **收录** | cha_soldier_jetpack_standard，单独召唤会导致升天 |
+| 蹂躏者 MK3 | Devastator MK3 | `ae63e525853d7044` | **收录** | cha_soldier，正常刷新 |
+| 蹂躏者 标准武器 | Devastator Gun (Model) | `070bc8d3e18bb8f9` | **剔除** | 子模型/占位/射弹 |
+| 火箭蹂躏者 | Rocket Devastator | `9647b00cc3a9d36f` | **收录** | cha_soldier_rpg，正常刷新 |
+| 火箭蹂躏者 MK2 | Rocket Devastator MK2 | `f66d0bad8693779a` | **收录** | cha_soldier_rpg_assassinate |
+| 重型蹂躏者 | Heavy Devastator | `f8b5a81a86d5d4eb` | **收录** | cha_soldier_mg_assassinate |
+| 重型蹂躏者 MK2 | Heavy Devastator MK2 | `b92435fbf60f0748` | **收录** | cha_soldier_mg，正常刷新 |
+| 重型蹂躏者 MK3 | Heavy Devastator MK3 | `91ebd77931110afc` | **收录** | cha_soldier_riotgunner |
+| 重型蹂躏者 机枪 | Heavy Devastator Gun (Model) | `2ed3696e12a14d4c` | **剔除** | 子模型/占位/射弹 |
+| 重型蹂躏者 燃烧机枪 | Heavy Devastator Incendiary Gun (Model) | `1d2ae78e0354c855` | **剔除** | 比正常燃烧机枪射速更快 |
+| 重型蹂躏者 盾牌（默认涂装） | Defeat Devastator Shield (Model) | `f96257fcae258caa` | **剔除** | 子模型/占位/射弹 |
+| 火箭蹂躏者 MK3 （炽灼部队） | Incendiary Rocket Devastator | `c9bcccb0a54a82a4` | **收录** | cha_soldier_rpg_ivory_legion |
+| 蹂躏者 MK3（炽灼部队） | Incendiary Devastator | `57eed0eac346cd9d` | **收录** | cha_soldier_ivory_legion |
+| 燃烧机枪蹂躏者 | Incendiary MG Devastator | `58b2b86c11369241` | **收录** | cha_soldier_mg_ivory_legion |
+| 燃烧机枪蹂躏者 燃烧机枪 | Incendiary MG Devastator Gun (Model) | `d1f232a6929e6d44` | **剔除** | 子模型/占位/射弹 |
+| 烈火蹂躏者 | Conflagration Devastator | `e0353177f1329573` | **收录** | cha_soldier_shotgun_ivory_legion，火喷盾哥 |
+| 烈火蹂躏者 龙息霰弹枪 | Conflagration Devastator Gun (Model) | `0db407ede5603524` | **剔除** | 子模型/占位/射弹 |
+| 蹂躏者 盾牌（炽灼部队） | Incendiary Devastator Shield (Model) | `feb484ee972469f7` | **剔除** | 子模型/占位/射弹 |
+| 喷气蹂躏者 | Jet Brigade Devastator | `be743b2faa3a6e26` | **收录** | cha_soldier_jumppack |
+| 蹂躏者 喷气背包 | Jet Brigade Devastator Backpack (Model) | `33b3e0ce8d179eec` | **剔除** | 子模型/占位/射弹 |
+
+小计：命中 21 条 / 建议收录 **13** 条。
+
+## 光能族
+
+### 第 1 档 — 猎杀器
+
+| 中文名 | 英文名 | hex16 | 建议 | 理由/备注 |
+|---|---|---|---|---|
+| 猎杀器 | Harvester | `965eae5a51acdd4a` | **收录** |  |
+| 猎杀器 MK2 | Harvester MK2 | `d63fcbff0851b7af` | **收录** |  |
+| 猎杀器 激光武器 | Harvester Beam Weapon (Model) | `c6a5bb8b319217ac` | **剔除** | 子模型/占位/射弹 |
+| 猎杀器 激光武器（眼部破损） | Harvester Beam Weapon Broken Eye (Model) | `e8a244ffa3a48fe4` | **剔除** | 打坏眼睛后的激光，伤害更高，音效和特效上有差别 |
+| 猎杀器 电弧 | Harvester Arc Weapon (Model) | `8dbf99607bd8e550` | **剔除** | 子模型/占位/射弹 |
+| 猎杀器 等离子加农炮 | Harvester Plasma Cannon (Model) | `cb85e7f7ff8855f4` | **剔除** | 疑似废案，正常情况下不会使用这个 |
+
+小计：命中 6 条 / 建议收录 **2** 条。
+
+### 第 2 档 — 证真者
+
+| 中文名 | 英文名 | hex16 | 建议 | 理由/备注 |
+|---|---|---|---|---|
+| 证真者 | Veracitor | `20b9c7734daead65` | **收录** | （近战螃蟹） |
+
+小计：命中 1 条 / 建议收录 **1** 条。
+
+### 第 2 档 — 御门者
+
+| 中文名 | 英文名 | hex16 | 建议 | 理由/备注 |
+|---|---|---|---|---|
+| 御门者 | Gatekeeper | `453fe22c634eb30f` | **收录** | （远程螃蟹） |
+| 御门者 等离子速射炮 （右） | Gatekeeper Plasma Gatling Right (Model) | `d6fb1326fc0a95c1` | **剔除** | 子模型/占位/射弹 |
+| 御门者 等离子速射炮 （左） | Gatekeeper Plasma Gatling Left (Model) | `ee4dee909ff50d5e` | **剔除** | 子模型/占位/射弹 |
+| 御门者 等离子狙击 （右） | Gatekeeper Plasma Sniper Right (Model) | `3d2fe75b0dc50142` | **剔除** | 测试时发现，这个跟猎杀器不能正常开火的武器，是一样的伤害ID和视觉效果 |
+| 御门者 等离子狙击 （左） | Gatekeeper Plasma Sniper Left (Model) | `297434e9e8a4cd5a` | **剔除** | 子模型/占位/射弹 |
+
+小计：命中 5 条 / 建议收录 **1** 条。
+
+### 第 2 档 — 粉碎者
+
+| 中文名 | 英文名 | hex16 | 建议 | 理由/备注 |
+|---|---|---|---|---|
+| 粉碎者 | Crusher | `905809a4c28d8a45` | **收录** |  |
+| 粉碎者的武器 | Crusher Weapon (Model) | `258bd988cd66c94b` | **剔除** | 子模型/占位/射弹 |
+
+小计：命中 2 条 / 建议收录 **1** 条。
+
+### 第 3 档 — 崇高监视者
+
+| 中文名 | 英文名 | hex16 | 建议 | 理由/备注 |
+|---|---|---|---|---|
+| 崇高监视者 | Elevated Overseer | `604a794ec45bb820` | **收录** |  |
+| 崇高监视者 等离子步枪 | Elevated Overseer Rifle (Model) | `0cf9b9b95edfef81` | **剔除** | 子模型/占位/射弹 |
+| 崇高监视者 手榴弹 | Elevated Overseer Grenade (Model) | `c222e5f15e289e85` | **剔除** | 子模型/占位/射弹 |
+
+小计：命中 3 条 / 建议收录 **1** 条。
+
+### 第 3 档 — 新月监视者
+
+| 中文名 | 英文名 | hex16 | 建议 | 理由/备注 |
+|---|---|---|---|---|
+| 新月监视者 | Crescent Overseer | `e8f19a0aa958e46d` | **收录** | 两个武器数值一样，唯一区别就在于弹道下坠和出膛速度 |
+| 新月监视者 曲射武器 | Crescent Overseer Mortar Gun (Model) | `705362ad578943f6` | **剔除** | 子模型/占位/射弹 |
+| 新月监视者 直射武器 | Crescent Overseer Charge Gun (Model) | `212710da2e8366f5` | **剔除** | 子模型/占位/射弹 |
+
+小计：命中 3 条 / 建议收录 **1** 条。
+
+### 第 3 档 — 肉瘤体
+
+| 中文名 | 英文名 | hex16 | 建议 | 理由/备注 |
+|---|---|---|---|---|
+| 肉瘤体 | Fleshmob | `67dc32dca4f02d33` | **收录** |  |
+
+小计：命中 1 条 / 建议收录 **1** 条。
+
+### 第 4 档 — 监视者
+
+| 中文名 | 英文名 | hex16 | 建议 | 理由/备注 |
+|---|---|---|---|---|
+| 监视者 | Overseer | `da40bb347c7447f2` | **收录** |  |
+| 监视者 MK2 | Overseer MK2 | `08e6ffc2474287bd` | **收录** | 标记名字为炽热异噬者，模型和攻击行为一致 |
+| 监视者 手臂护盾 | Overseer Shield | `7ea558204d0ffc29` | **剔除** | 冷知识科普：刺虹（光能战机）的伤害，有一个特殊的伤害类型，这个类型可以让地面的监视者和猎杀器，免疫刺魟扫射时造成的直击和爆炸伤害。 |
+| 监视者 等离子法杖 | Overseer Lightspear (Model) | `9c7ef47a463d5327` | **剔除** | 子模型/占位/射弹 |
+| 监视者（无包裹模型） | Overseer (No Package) | `f1610ac48cdc5240` | **剔除** | 废案，无伤害，攻击玩家数次后消失 |
+
+小计：命中 5 条 / 建议收录 **2** 条。
+
+### 第 5 档 — 突入者
+
+| 中文名 | 英文名 | hex16 | 建议 | 理由/备注 |
+|---|---|---|---|---|
+| 突入者 | Obtruder | `34dfd23365472e9e` | **收录** |  |
+| 突入者 武器 | Obtruder Weapon (Model) | `19806b4fb83fdf7c` | **剔除** | 子模型/占位/射弹 |
+
+小计：命中 2 条 / 建议收录 **1** 条。
+
+### 第 5 档 — 悲怜体
+
+| 中文名 | 英文名 | hex16 | 建议 | 理由/备注 |
+|---|---|---|---|---|
+| 悲怜体 | Wretch | `cc188f0c80505c6c` | **收录** |  |
+
+小计：命中 1 条 / 建议收录 **1** 条。
+
+## 自检
+
+- ✅ 必须收录的都在 
+- ✅ 反坦克类一条都不许收录 
+- ✅ 迫击炮/投掷物/干扰器不许收录 
+- ✅ 同一哈希不许进两档 
+- ✅ 崇高/新月监视者只在其本档 — ['崇高监视者', '新月监视者']
+- ✅ 每档都有命中 
+
+## 未进任何档的敌人段实体（查漏用）
+
+- `9ef9b0df05bc5f67` 380mm 火力网 投弹总数升级 / 380mm Barrage Total Bombs Upgrade *(?)*
+- `fc165f5604fd3911` 火力网 地狱火升级 / Barrage Hellbomb Upgrade *(?)*
+- `db465c00e23cdd50` 轨道燃烧加特林 / Orbital Incendiary Gatling *(?)*
+- `f1b196470bf9b2c1` 火力网 核弹升级 / Barrage Nuke Upgrade *(?)*
+- `8d49e41fdfcf6784` 轨道燃烧毒气火力网 / Orbital Napalm Gas Barrage *(?)*
+- `ae4d54f6cb8cc350` 轨道静电120mm火力网 / Orbital 120mm EMS Barrage *(?)*
+- `08d58cb1bf65f7a9` 轨道烟雾游走火力网 / Orbital Smoke Walking Barrage *(?)*
+- `0d5d20ae6948881c` 轨道激光升级 / Orbital Laser Upgrade *(?)*
+- `f05b1f6d977e0816` 轨道炮升级 MK1 / Oribtal Railcannon Upgrade MK1 *(?)*
+- `15b44a4a593a5c5d` 轨道炮升级 MK2 / Oribtal Railcannon Upgrade MK2 *(?)*
+- `78e1497571012c47` 无票者（轻型） / Voteless Light *(光能族-基础单位)*
+- `0adc9f9173ad8e1d` 无票者（中型） / Voteless Medium *(光能族-基础单位)*
+- `44458a2c52b002fb` 无票者（重型） / Voteless Heavy *(光能族-基础单位)*
+- `ac60e78435098c9d` 守望者 / Watcher *(光能族-基础单位)*
+- `f5247de3abfb822b` 守望者 电弧发射器 / Watcher Arc Weapon (Model) *(光能族-基础单位)*
+- `9a812e8a51a51822` 守望者（废案，崩溃） / Watcher (Crash) *(光能族-基础单位)*
+- `19e18b46ec55d94a` 刺魟 / Stingray *(光能族-基础单位)*
+- `8f2158c7e969e2ab` 刺魟 机炮 / Stingray Plasma Cannon (Model) *(光能族-基础单位)*
+- `f22d027b37bef107` 利维坦 / Leviathan *(光能族-基础单位)*
+- `87b80042c0f7fc96` 利维坦（废案） / Leviathan *(光能族-基础单位)*
+- `f196069e7e14c497` 利维坦 激光炮 左 / Leviathan Beam Turret Left (Model) *(光能族-基础单位)*
+- `7acb4bd753b71de0` 利维坦 激光炮 右 / Leviathan Beam Turret Right (Model) *(光能族-基础单位)*
+- `4e342031a9d5c4f9` 利维坦 激光炮 / Leviathan Beam Turret (Model) *(光能族-基础单位)*
+- `74e2285c01da4f71` 增援穿梭舰 / Warp Ship *(光能族-基础单位)*
+- `336afdb6f784f639` 穿梭舰护盾 / Warp Ship Shield *(光能族-基础单位)*
+- `fb9937035d652c43` 装甲兵（侦察奇袭者） / Trooper *(机器人-基础单位)*
+- `7b48cacdbacb3881` 装甲兵 MK2 / Trooper MK2 *(机器人-基础单位)*
+- `ae57fcdb49f74e98` 装甲兵 MK2（机枪奇袭者，无背包） / Trooper MK2 MG *(机器人-基础单位)*
+- `4019623142351cb6` 装甲兵 MK3 / Trooper MK3 *(机器人-基础单位)*
+- `7ece5304f868f6b3` 装甲兵（无包裹） / Trooper (No Package) *(机器人-基础单位)*
+- `257d805caa7e10c0` 装甲兵 霰弹（废案） / Shotgun Trooper *(机器人-基础单位)*
+- `d8cbc4a807a6d035` 乱斗者 / Brawler *(机器人-基础单位)*
+- `a71aafd82c6ebc92` 机械统帅 / Commissar *(机器人-基础单位)*
+- `64ba5f030b114ec1` 奇袭者 / Raider *(机器人-基础单位)*
+- `0002ba767df856f3` 劫掠者 / Marauder *(机器人-基础单位)*
+- `30cf04b2ec8c9bd4` 侦察奇袭者 / Scout Raider *(机器人-基础单位)*
+- `2a12104f2853ae16` 火箭奇袭者 / Rocket Raider *(机器人-基础单位)*
+- `b056f8fc74aba02d` 激光炮装甲兵（废案） / Cannon Trooper *(机器人-基础单位)*
+- `b4ed319b39f5457b` 机枪奇袭者 / MG Raider *(机器人-基础单位)*
+- `426b3df007be9f18` 机枪奇袭者 背包 / MG Raider Backpack *(机器人-基础单位)*
+- `68ba814ff35bf19c` 机器人小兵 机枪 / Conscript MG (Model) *(机器人-基础单位)*
+- `9951ecae4e403070` 机器人小兵 信号枪 / Conscript Flare Gun (Model) *(机器人-基础单位)*
+- `bcb3210cf8ef49d3` 机器人小兵 步枪 / Conscript Rifle (Model) *(机器人-基础单位)*
+- `cbce5f5f0310ef15` 机器人小兵 手枪 / Conscript Pistol (Model) *(机器人-基础单位)*
+- `99870d0755f9ce68` 机器人小兵 火箭发射器 / Conscript Rocket Launcher (Model) *(机器人-基础单位)*
+- `2d1636f2ee8a6306` 机器人小兵 刀刃 / Conscript Blade (Model) *(机器人-基础单位)*
+- `8f3a6de385966f9e` 机器人小兵 霰弹枪 / Conscript Shotgun (Model) *(机器人-基础单位)*
+- `71b285b6d2b161c9` 机器人小兵 激光炮 / Conscript Cannon (Model) *(机器人-基础单位)*
+- `6290e1debc0d884b` 机器人小兵 手榴弹 / Cyborg's Grenade (Model) *(机器人-基础单位)*
+- `a6a68d8af177f3a1` 狂暴者 / Berserker *(机器人-基础单位)*
+- `54e107dacf6929cb` 狂暴者 MK2 / Berserker MK2 *(机器人-基础单位)*
+- `4fb6077f1597691d` 狂暴者 链锯 / Berserker Chainsaw (Model) *(机器人-基础单位)*
+- `9ab148deeff42556` 机器人 轻型火箭弹 / Cyborg Light Rocket *(机器人-基础单位)*
+- `f8131632aa867107` 侦察纵步者 / Scout Strider *(机器人-基础单位)*
+- `2a346bf4552997e2` 侦察纵步 重机枪 / Scout Strider HMG (Model) *(机器人-基础单位)*
+- `ee00bfe8ff769f70` 侦察纵步 驾驶舱 / Scout Strider Cabin (Model) *(机器人-基础单位)*
+- `98152772a72f7838` 运输船 / Dropship *(机器人-基础单位)*
+- `9f57782f00e6ed20` 装甲兵（炽灼部队） / Incendiary Trooper *(机器人-特殊变种)*
+- `09dfb04b2e578bc3` 激光装甲兵 / Incendiary Rocket Trooper *(机器人-特殊变种)*
+- `82a87ad8d595b2ba` 炙焰装甲兵 / Pyro Trooper *(机器人-特殊变种)*
+- `f4c0b6c9218fb571` 炙焰装甲兵 火焰喷射器 / Pyro Trooper Flamer (Model) *(机器人-特殊变种)*
+- `57f11209295752b5` 炙焰装甲兵 背包 / Pyro Trooper Backpack (Model) *(机器人-特殊变种)*
+- `089833d2880d9e06` 机枪奇袭者（炽灼部队） / Incendiary MG Raider *(机器人-特殊变种)*
+- `e683d2ca5618d74a` 奇袭者（炽灼部队） / Incendiary Raider *(机器人-特殊变种)*
+- `1b5b9ac4f96b36e5` 机械统帅（炽灼部队） / Incendiary Commissar *(机器人-特殊变种)*
+- `a701e55ea68d4cf9` 炽灼部队  燃烧手雷 / Cyborg's Incendiary Grenade (Model) *(机器人-特殊变种)*
+- `b5dbc0c240c921ad` 狂暴者 MK3（炽灼部队） / Incendiary Berserker *(机器人-特殊变种)*
+- `52018deb9ab6827e` 喷气装甲兵（崩溃） / Jet Brigade Trooper (Crash) *(机器人-特殊变种)*
+- `72ca650b593aee7a` 喷气装甲兵 背包（崩溃） / Jet Brigade Trooper Backpack (Crash) *(机器人-特殊变种)*
+- `af0f9b3a163787a5` 喷气装甲兵 / Jet Brigade Trooper *(机器人-特殊变种)*
+- `856e9710e45e760f` 特攻奇袭者 / Jet Brigade Raider *(机器人-特殊变种)*
+- `215ce160a17be4cd` 喷气机械统帅 / Jet Brigade Commissar *(机器人-特殊变种)*
+- `a4552f97033392f4` 喷气机枪奇袭者 / Jet Brigade MG Raider *(机器人-特殊变种)*
+- `e2e62fdd39407fe3` 喷气背包 / Jet Brigade Conscript Backpack *(机器人-特殊变种)*
+- `d5792f6856b06ba4` 喷气狂暴者 / Jet Brigade Berserker *(机器人-特殊变种)*
+- `8ff0a839830a7692` 食腐虫 / Scavenger *(终结族-基础单位)*
+- `51eea86bf6997e4e` 食腐虫 MK2 / Scavenger MK2 *(终结族-基础单位)*
+- `dfbacbd977a948dc` 食腐虫 MK2（俘虏） / Scavenger MK2 (Captive) *(终结族-基础单位)*
+- `9a8a3aae287b230c` 食腐虫 MK3 / Scavenger MK3 *(终结族-基础单位)*
+- `72a83e49ced6db3d` 胆汁吐沫虫 / Bile Spitter *(终结族-基础单位)*
+- `aab438596f5e8fd9` 猛扑虫 / Pouncer *(终结族-基础单位)*
+- `d9511e9f6bd62e3f` 追猎虫 / Hunter *(终结族-基础单位)*
+- `3d0e03e2d574e1ca` 追猎虫 MK2 / Hunter MK2 *(终结族-基础单位)*
+- `5ca832447445c0ba` 追猎虫 MK3 / Hunter MK3 *(终结族-基础单位)*
+- `eacee39fa017b495` 武斗虫 / Warrior *(终结族-基础单位)*
+- `be39e313a1e46bb9` 武斗虫 MK2 / Warrior MK2 *(终结族-基础单位)*
+- `4e97fb073bdc7a4b` 武斗虫 MK2（俘虏） / Warrior MK2 (Captive) *(终结族-基础单位)*
+- `32541fc4ec7c9cdc` 武斗虫 MK3 / Warrior MK3 *(终结族-基础单位)*
+- `10081acef6163ef6` 酸液武斗虫 / Bile Warrior *(终结族-基础单位)*
+- `b2a6fa1e4284c7e6` 狂暴武斗虫 / Warrior (Spawned) *(终结族-基础单位)*
+- `a1f37bf2a40fbde4` 虫窝护卫 / Hive Guard *(终结族-基础单位)*
+- `d522fd4748d443a5` 虫族指挥官 / Brood Commander *(终结族-基础单位)*
+- `64090088502435dd` 尖啸虫 / Shrieker *(终结族-基础单位)*
+- `d465d9c7f77a07cb` 霸王虫 / Hivelord *(终结族-基础单位)*
+- `9e53a0971179344c` 霸王虫 吐酸器 / Hivelord Vomit MK1 *(终结族-基础单位)*
+- `3c7f77f1a7467349` 霸王虫 吐酸器 MK2 / Hivelord Vomit MK2 *(终结族-基础单位)*
+- `883401af2a98a5f6` 掠食追猎虫 / Predator Hunter *(终结族-特殊变体)*
+- `1d8d9aa0502f866e` 掠食追猎虫 吐酸器 / Predator Hunter Vomit *(终结族-特殊变体)*
+- `a35207c6f2150806` 钻地武斗虫 / Rupture Warrior *(终结族-特殊变体)*
+- `db964631be1cf501` 孢子食腐虫 / Spore Burst Scavenger *(终结族-特殊变体)*
+- `1f0a91729c0004e0` 孢子追猎虫 / Spore Burst Hunter *(终结族-特殊变体)*
+- `728421351d440ebc` 孢子武斗虫 / Spore Burst Warrior *(终结族-特殊变体)*
+- `31400a6a3003e29c` B-1 补给背包（支架） / B-1 Supply Pack (Hellpod) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `4ef9a47109239a58` B-1 补给背包（模型） / B-1 Supply Pack (Model) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `77c52e494527aa8a` B-100 便携式地狱火炸弹（支架） / B-100 Portable Hellbomb (Hellpod) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `9ace8638421abc8e` B-100 便携式地狱火炸弹（模型） / B-100 Portable Hellbomb (Model) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `4c7e4680ff843a1b` LIFT-182 传送背包（支架） / LIFT-182 Warp Pack (Hellpod) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `b49756795d9b0e68` LIFT-182 传送背包（模型） / LIFT-182 Warp Pack (Model) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `52dce8a110418742` LIFT-860 悬浮背包（支架） / LIFT-860 Hover Pack (Hellpod) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `5ec80f4f1cdb66cf` LIFT-860 悬浮背包（模型） / LIFT-860 Hover Pack (Model) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `61353df120f27732` LIFT-850 喷射背包（支架） / LIFT-850 Jump Pack (Hellpod) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `59c5ca839449b379` LIFT-850 喷射背包（模型） / LIFT-850 Jump Pack (Model) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `f88d61a8fe1e0766` SH-32 防护罩生成包（支架） / SH-32 Shield Generator Pack (Hellpod) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `12c8d71ac3897a5c` SH-32 防护罩生成包（模型） / SH-32 Shield Generator Pack (Model) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `09183066c4ebce28` SH-51 定向护盾（支架） / SH-51 Directional Shield (Hellpod) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `a4e796f84801b40a` SH-51 定向护盾（模型） / SH-51 Directional Shield (Model) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `b56fa3f5510000ab` SH-51 定向护盾（护盾） / SH-51 Directional Shield (Shield) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `3a50b58b0553056a` SH-20 防弹盾牌背包（支架） / SH-20 Ballistic Shield Backpack (Hellpod) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `967ed15e0bae363b` SH-20 防弹盾牌背包（模型） / SH-20 Ballistic Shield Backpack (Model) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `5f9aeac72b738298` SH-20 防弹护盾背包 小型 (模型) / SH-20 Ballistic Shield Backpack Small (Model) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `f5c67aed5cb5aca0` SH-20 防弹护盾背包 MK2 (模型) / SH-20 Ballistic Shield Backpack MK2 (Model) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `0807d288ad22601b` AX/AR-23 护卫犬（支架） / AX/AR-23 Guard Dog (Hellpod) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `255ebc5767d7ceec` AX/AR-23 护卫犬（背包） / AX/AR-23 Guard Dog (Backpack) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `a0ff2f9a0ca6992a` AX/AR-23 护卫犬（无人机） / AX/AR-23 Guard Dog (Drone) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `a32621e3bde13379` AX/AR-23 护卫犬（武器） / AX/AR-23 Guard Dog AR-23P (Model) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `019544309fac4508` AX/AR-23 护卫犬 MK2（无人机） / AX/AR-23 Guard Dog MK2 (Drone) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `263817187b7ce092` AX/AR-23 护卫犬 MK2（武器） / AX/AR-23 Guard Dog MK2 Gun (Model) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `f800d5f62789246c` AX/AR-23 护卫犬 MK3（无人机） / AX/AR-23 Guard Dog MK3 (Drone) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `3d4970d1c4e640ee` AX/AR-23 护卫犬 MK3（武器） / AX/AR-23 Guard Dog MK3 Gun (Model) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `f9d5219640d65ef9` AX/AR-23 护卫犬 MK4（无人机） / AX/AR-23 Guard Dog MK4 (Drone) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `a1379c8c41a10e22` AX/AR-23 护卫犬 MK5（武器） / AX/AR-23 Guard Dog Plasma Gun (Model) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `de6f09bc8eaebe27` AX/LAS-5 漫游车（支架） / AX/LAS-5 Rover (Hellpod) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `af9b683ccb6ddc02` AX/LAS-5 漫游车（背包） / AX/LAS-5 Rover (Backpack) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `5beec97f4c7f4ae9` AX/LAS-5 漫游车（无人机） / AX/LAS-5 Rover (Drone) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `7956c174e9faefe0` AX/LAS-5 漫游车 MK2（无人机） / AX/LAS-5 Rover MK2 (Drone) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `2c66c201b2543d2c` AX/LAS-5 漫游车（武器） / AX/LAS-5 Rover Gun (Model) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `d8e278355cf29ef4` AX/TX-13 腐息（支架） / AX/TX-13 Dog Breath (Hellpod) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `bffcb4cd971a8eda` AX/TX-13 腐息（背包） / AX/TX-13 Dog Breath (Backpack) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `b9baf571fc8f9959` AX/TX-13 腐息（无人机） / AX/TX-13 Dog Breath (Drone) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `b729a2ba153bcaed` AX/TX-13 腐息（武器） / AX/TX-13 Dog Breath Gun (Model) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `41436d438139f786` AX/FLAM-75 热狗（支架） / AX/FLAM-75 Hot Dog (Hellpod) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `3015626aa69f8d4d` AX/FLAM-75 热狗（背包） / AX/FLAM-75 Hot Dog (Backpack) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `979e9bc6d48d1fc6` AX/FLAM-75 热狗（无人机） / AX/FLAM-75 Hot Dog (Drone) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `65cd4325ba23f3c6` AX/FLAM-75 热狗（武器） / AX/FLAM-75 Hot Dog Gun (Model) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `72db04413d4ab0f0` AX/ARC-3 K9（支架） / AX/ARC-3 K-9 (Hellpod) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `c28da712b12e3dfa` AX/ARC-3 K9（背包） / AX/ARC-3 K-9 (Backpack) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `4b071633584e4594` AX/ARC-3 K9（无人机） / AX/ARC-3 K-9 (Drone) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `a0532c3616528cbf` AX/ARC-3 K9（武器） / AX/ARC-3 K-9 (Model) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `79e4b3d2da5e45e3` EXO-45 爱国者外骨骼 / EXO-45 Patriot Exosuit *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `08f6089289c83d22` EXO-45 爱国者 加特林机枪 / Patriot Exosuit Gatling *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `824b7e0c4c879eb5` EXO-45 爱国者 火箭发射器 / Patriot Exosuit Rocket Launcher *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `a526dc7d89ff696d` EXO-45 爱国者 火箭（射弹） / Patriot Exosuit Missile (Projectile) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `821d035aa47e3e75` EXO-45 爱国者 火箭发射器 MK2 / Patriot Exosuit Rocket Launcher MK2 *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `87d6654dadf3c41d` EXO-45 爱国者 火箭 MK2（射弹） / Patriot Exosuit Missile MK2 (Projectile) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `c2d449ecf7facab1` EXO-49 解放者外骨骼 / EXO-49 Emancipator Exosuit *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `bf4167fd26917ab1` EXO-49 解放者 手臂 / Emancipator Exosuit Autocannon *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `e5f64dcc3bfe9dd1` EXO-49 解放者 手臂 左手 / Emancipator Exosuit Autocannon Left *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `32c7063b4bcc4208` EXO-49 解放者 手臂 左手 MK2 / Emancipator Exosuit Autocannon Left MK2 *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `8ca4dfa795a473c8` EXO-49 解放者 手臂 左手 MK3 / Emancipator Exosuit Autocannon Left MK3 *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `ff9878576a4c543b` EXO-49 解放者 手臂 右手 / Emancipator Exosuit Autocannon Right *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `0a03761d50ba5121` EXO-49 解放者 手臂 右手 MK2 / Emancipator Exosuit Autocannon Right MK2 *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `3e3a31261a124454` EXO-49 解放者 手臂 右手 MK3 / Emancipator Exosuit Autocannon Right MK3 *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `7b2326f6fd9c8069` EXO-51 伐木者外骨骼 / EXO-51 Lumberer Exosuit *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `0736bee2d6328726` EXO-51 伐木者 喷火武器 / Lumberer Exosuit Flamer *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `35dbf54f016f3624` EXO-55 突破外骨骼 / EXO-55 Breakthrough Exosuit *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `65489809a8181b96` EXO-55 突破 盾牌 / Breakthrough Exosuit Shield *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `df51fe8d62f294be` EXO-55 突破 重型霰弹枪 / Breakthrough Exosuit Heavy Shotgun *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `cc21c7ffd3ebefb9` M-102 快速侦查载具 / M-102 Fast Recon Vehicle *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `e9cd1d0d118886af` M-102 快速侦查载具（地图产出） / M-102 Fast Recon Vehicle (Map Spawn) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `085c1edb038ec24e` M-102 快速侦查载具 车载重机枪 / M-102 Fast Recon Vehicle HMG *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `9b2140378640432e` M-103 补给型快速侦察载具 / M-103 Supply FRV *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `4df41f84668d07fb` M-103 补给型 解放者炮塔 / M-103 Supply FRV AR Sentry *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `9e83637bb077e782` M-103 补给型 车尾补给箱 / M-103 Supply FRV Supply Box *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `2d85bfe3d8717fe5` M-104 炽热型快速侦察载具 / M-104 Incinerator FRV *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `444880f62ca7eae8` M-104 炽热型 喷火枪 / M-104 Incinerator FRV Flamer *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `f99fbdafeaf3d006` M-104 炽热型 燃料罐 / M-104 Incinerator FRV Fuel *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `16474112801385b6` TD-220 堡垒 MK XVI / TD-220 Bastion MK XVI *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `1fa1f596769225c2` TD-220 堡垒 主炮 / Bastion MK XVI Heavy Cannon *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `439f9e65c18567da` TD-220 堡垒 同轴重机枪 / Bastion MK XVI HMG *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `b0c9faf4af8903f9` TD-110 风暴漩涡 / TD-110 Maelstrom *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `d58ae6a04edb10de` TD-110 风暴漩涡 双联加特林机枪 / Maelstrom Twin Gatling *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `c36b5b37c058dbdd` TD-110 风暴漩涡 激光指示器 / Maelstrom Target Designator *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `3a061009aa31e9cb` TD-110 风暴漩涡 烟雾弹发射器 / Maelstrom Smoke Grenade Launcher *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `8aff7f0793a5bced` TD-110 风暴漩涡 垂发火箭 / Maelstrom Vertical Missile Launcher *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `d24156bd98fff3fe` TD-110 风暴漩涡 垂发火箭（射弹） / Maelstrom Missile (Projectile) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `423ff97d57ab04f5` 地面全地形采集钻机 / Ground All-Terrain Extraction Rig *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `0801b6b3c5d12ebc` 地面全地形采集钻机 MK2 / Ground All-Terrain Extraction Rig MK2 *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `9872eeb31a5f88fd` 地面全地形采集钻机 炮塔 / GATER Turret *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `130574e0fffe0058` 地面全地形采集钻机 油罐 / GATER Oilcan *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `c25dc40ede0e2d16` 地面全地形采集钻机 重机枪炮塔 / GATER HMG Turret *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `75be82ed8592a6b3` 鹈鹕运输机 / Pelican Transport *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `ef3a4136b21592cb` 鹈鹕 (撤离) / Pelican *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `7b0f8449ca9d2da0` 鹈鹕 MK2(撤离) / Pelican MK2 *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `3f8734aec15b82ad` 鹈鹕 MK3 (撤离) / Pelican MK3 *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `3f70e3503a3293f9` 带货柜的鹈鹕 / Pelican MK4 *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `d108b49ce580b5c5` 鹈鹕 SEAF小队 / Pelican SEAF Squad *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `8365609b35ef6672` 鹈鹕 40mm 穿甲高爆机炮 / Pelican Turret *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `18f11a4e18192cfe` 鹈鹕（撤离科学家） / Pelican Extract Civilians Shuttle *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `888eaafd58c03c75` 货运卡车 / Cargo Truck *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `8c33c20637d2a687` 装甲运兵车 / APC *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `d336ba1cad16769f` 装甲运兵车 炮塔 / APC Turret *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `de6cd49631940a14` 装甲运兵车 炮塔 MK2 / APC Turret MK2 *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `b9606c5aab32c3c2` APC上的 M-105 盟友 MK4（模型） / M-105 Stalwart MK4 On APC (Model) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `d53ee03481ae73fd` APC上的 M-105 盟友 MK5（模型） / M-105 Stalwart MK5 On APC (Model) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `37cde43876ba26bb` A/MG-43 哨戒机枪 / A/MG-43 Machine Gun Sentry *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `aa4564f90cdbf5f1` A/MG-43 哨戒机枪 MK2 / A/MG-43 Machine Gun Sentry MK2 *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `ef85d6cf58e31d70` A/G-16 加特林哨戒炮 / A/G-16 Gatling Sentry *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `7ff0fd4572f5996f` A/G-16 加特林哨戒炮 MK2 / A/G-16 Gatling Sentry MK2 *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `04c99523a808ef90` A/G-16 加特林哨戒炮 MK2.1 / A/G-16 Gatling Sentry MK2.1 *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `87f46b6d12bb016a` A/G-16 加特林哨戒炮 MK3 / A/G-16 Gatling Sentry MK3 *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `57f27cbd5b71b0cb` A/G-16 加特林哨戒炮 MK4 / A/G-16 Gatling Sentry MK4 *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `68a34d32a1025f04` A/G-16 加特林哨戒炮 MK5 / A/G-16 Gatling Sentry MK5 *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `820cc3bafe962858` A/FLAM-40 火焰哨戒炮 / A/FLAM-40 Flame Sentry *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `56070f36cfffa8a8` A/LAS-98 激光哨戒炮 / A/LAS-98 Laser Sentry *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `37079568dc86e9c6` A/MLS-4X 火箭哨戒炮 / A/MLS-4X Rocket Sentry *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `54d86057f5dacfb9` A/AC-8 自动哨戒炮 / A/AC-8 Autocannon Sentry *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `8633ff89ef4f6788` A/AC-8 自动哨戒炮MK2（焦土射弹） / A/AC-8 Autocannon Sentry Plasma *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `51a0812e3bce2d74` A/M-12 高爆迫击炮 / A/M-12 Mortar Sentry *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `b2053a1838092f8b` A/M-23 静电迫击炮 / A/M-23 EMS Mortar Sentry *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `299c0d3dfd2f0994` A/GM-17 瓦斯迫击炮 / A/GM-17 Gas Mortar Sentry *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `f00c349422e8e320` MD-6 反步兵地雷 / MD-6 Anti-Personnel Mine Deployer *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `bf32e12923a9a252` MD-i4 燃烧地雷 / MD-14 Incendiary Mine Deployer *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `a9982969137f3d77` MD-8 毒气地雷 / MD-8 Gas Mine Deployer *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `74599e56f72f9d7e` A/ARC-3特斯拉塔 / A/ARC-3 Tesla Tower *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `ed13ddc480ec6910` FX-12防护罩中继器 / FX-12 Shield Generator Relay *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `0e977c49db7604f9` E/MG-101 固定重机枪 / E/MG-101 HMG Emplacement *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `a970cba66fbeaa11` E/MG-101 固定重机枪 MK2 / E/MG-101 HMG Emplacement MK2 *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `1980d92b619ff5fe` E/MG-101 固定重机枪（激光） / E/MG-101 HMG Emplacement (Laser) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `24510e7b16b5f7a5` E/MG-101 固定重机枪（磁轨炮） / E/MG-101 HMG Emplacement (Railgun) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `e0e257b37526dbe3` E/MG-101 固定重机枪（火焰喷射器） / E/MG-101 HMG Emplacement (Flamethrower) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `eb91b90eec279745` E/MG-101 固定重机枪（火箭哨戒炮） / E/MG-101 HMG Emplacement (Rocket) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `0c8257d1c0255593` E/GL-21 掷弹兵防御墙 / E/GL-21 Grenadier Battlement *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `4da14f6695d958ed` 防御墙（崩溃） / Defense Wall *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `29ae906ea485a7fa` 盟友防御墙（崩溃） / Starwart Defense Wall *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `5052ec6a928ccf1a` 补给（支架） / Supplies (Hellpod) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `a94913ca014f7579` 补给（模型） / Ammo Cache (Model) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `73681ffd58fa1a90` 补给上的解放者 / Resupply Pod AR-23 *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `c6a87c428fd3c7a3` 地狱火 / Hellbomb *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `b3f6ec87073aafec` 医疗背包（支架） / Medic Backpack (Hellpod) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `0a55e504092b981d` 医疗背包（背包） / Medic Backpack (Model) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `6b6e7fe1b931393c` 暗流体背包（支架） / Dark Fluid Backpack (Hellpod) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `073270650f859dd0` 暗流体背包（背包） / Dark Fluid Backpack (Model) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `9ea89ceea6f8e766` 幼虫容器（背包） / Larva Container (Model) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `af04113302f5621d` 医疗补给（支架） / Medical Supply (Hellpod) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `3b8d16c646a729a8` 医疗补给（模型） / Medical Supply (Model) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `9de2c3a3c9a6353e` 战术摄像机（支架） / Tactical Video Camera (Hellpod) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `372481e910c05a76` 战术摄像机（模型） / Tactical Video Camera (Model) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `38cb9c758e07bc58` 机炮模型爆炸背包 (模型) / Autocannon Explosive Backpack (Model) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `e09fcb5a280acb1d` 大炮 迷你核弹 / Mini Nuke (SEAF) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `6b7ee87fb2ec6455` 大炮 高爆弹 / High-Yield Explosive (SEAF) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `dc19126d15692d04` 大炮 炸弹 / Explosive (SEAF) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `e4be3fdf0c857b7f` 大炮 凝固汽油弹 / Napalm (SEAF) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `c02c2623b6359bb3` 大炮 静电场 / Static Field (SEAF) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `f598598c47617605` 大炮 烟雾弹 / Smoke (SEAF) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `df3c4f91e298bfa4` 虫窝钻机 / Hive Breaker Drill *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `24aca2b4d15d2e2f` 发电机 / Power Generator *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `84f256fbf7b0bcc1` 大门 / Gate *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `d357dee3cc202bd3` 大门 MK2 / Gate MK2 *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `6293caf0559bacf6` SOS信标 / SOS Beacon *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `0965aaeba7ccbca8` 增援信标 / Reinforced Beacon *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `5727c125bd88d82c` 紧急撤离信标 / Emergency Extraction Beacon *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `0a12d5a29cdf2d40` 立即撤离信标 / Landingzone Beacon *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `16f397ca5f51f271` 战略配备信标球 / Stratagem Ball *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `73f8498bffdcf415` 空的绝地喷射舱 / Empty Hellpod *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `e58163e71928d3e2` 绝地喷射舱 MK1 / Helldivers' Hellpod MK1 *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `ef9eb729a9d6d849` 绝地喷射舱 MK2 / Helldivers' Hellpod MK2 *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `b52beaae4f85c391` 无装备空投仓支架 / Sealed Hellpod *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `7a3637cd33a54e4c` SEAF / SEAF *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `021eaecf4ca267dc` SEAF（城市） / SEAF (City) *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `7bb964a9db5ee774` SEAF MK2 / SEAF MK2 *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `76ac2c791ce6eb5b` SEAF MK3 / SEAF MK3 *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `9ecfea53bcb158bf` SEAF MK4 / SEAF MK4 *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `76070813b0d1c473` SEAF MK5 / SEAF MK5 *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `ea6959232bb47d4b` SEAF MK6 / SEAF MK6 *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `4ea134679a235be0` SEAF MK7 / SEAF MK7 *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `975927d040d1543d` SEAF MK8 / SEAF MK8 *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*
+- `9f0245aa414ca45c` SEAF 机枪手 / SEAF MG *(部分哈希里出现的“无包”全名为“无包裹模型”，意思是不会因为某些条件执行预加载，需要你携带对应的战备，或前往者对应的阵营和任务才会加载)*

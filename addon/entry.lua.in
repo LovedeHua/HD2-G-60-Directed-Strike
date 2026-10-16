@@ -354,6 +354,7 @@ local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets
     --   ▸ 图标消失后再认这么久（标记有效期本身跟着 ping 图标 ≈8 秒）。
     --   ▸ **0 = 关闭**（默认）⇒ 与改动前**逐字节一致**：新增行为不偷偷改变手感。
     --   ▸ 600 秒 = 10 分钟 ⇒ 实际等于"整局残留标记"。
+    --   ▸ **步长 1**（2026-10-16 用户要求，原为 5）：这样 600 秒的超长窗口也能精确到秒。
     --   ▸ 它在 runtime 的 `P.usable` 里是**唯一判定点**（与两个
     --     `*_mark_live_only` 开关同一处，不新增第二套判据）。
     --   ▸ **主动取消不算数**：图标远早于 8 秒就消失 ⇒ 立即丢弃（判据见 runtime）。
@@ -535,6 +536,29 @@ local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets
     --     本工程分开 —— 手雷坐标读不到时，只要**目标半径**还有效就仍然按爆点判，
     --     两边都判不了才走上面这个开关。
     safe_zone_failsafe=true,
+    -- ★★★ 2026-10-16（用户要求）：**引爆点上下距离可调**（战争纵步者）★★★
+    --   用户原话：「能否让战争纵步者的引爆点可以自行调整上下距离？」
+    --   目的（用户）：「引爆点偏高的话会打不死」⇒ 要能**往下调**。
+    --
+    --   锚点是**引擎自己的瞄准点**（`calls.aim`）—— 但要**加上 `native_arrival:141`
+    --   那个 `+0.25`**：那才是"今天实际用来引爆的高度"。
+    --   ⇒ **0 = 精确等于今天的行为**（"现状高度 = 引擎 aim + 0.25"）。
+    --     这是本条与 2026-10-14 被回退的「强袭虫抬高引爆点」的**根本差别**：
+    --     那版用 `blast_sites` 的 `lift`（相对**实体原点/地表**的绝对高度），
+    --     与"现状高度"差多少**只能靠试**，且随姿态漂移 ⇒ 用户判定「没啥收益」并回退。
+    --     改成"相对引擎瞄点（+0.25 基线）"之后 **0 就是已知答案**，不再是未知量。
+    --   ⚠⚠ 基线 0.25 **必须**由我们补：点目标路径在 `native_arrival:134` 是
+    --     `goal={want_point[1],want_point[2],want_point[3]}`（**直接赋值、不加 0.25**）
+    --     ⇒ 我们不补，`dz=0` 就比现状低 0.25 m（我第一版正是这么错的）。
+    --     守门 `test_unit_blast_dz.py` 同时钉住"安全层那句 +0.25 还在"
+    --     与"runtime 补了同一个数"，两边单独漂移都会被抓住。
+    --
+    --   负值 = 往下（用户要的方向）；正值 = 往上。
+    --   ⚠ 范围取 ±3.0 / 步长 0.1：米级、够细。再大就会掉出 G-60 的 4 m 内半径
+    --     （爆炸中心必须落进去才造成伤害），所以上沿没有意义 ⇒ 不给到 ±6。
+    --   ⚠ 生效范围仅限**名册里标了 `aim_dz=true` 的目标**（当前只有战争纵步者）
+    --     —— 别的敌人一个字节都不动（改这个值不会影响它们）。
+    unit_blast_dz=0,
     -- ★★ 2026-10-10 安全区**绕行半径**（用户要求进菜单）★★
     --   玩家在安全区内时，手雷不再飞向目标，而是绕目标**盘旋**（等玩家走开再炸）；
     --   这个值就是盘旋圆的半径（米）。默认 **5**（实机 2026-10-10 那一局用的值）。
@@ -789,6 +813,16 @@ local ok,why=pcall(function()
             --   用于确认短路真的生效（不再出现误导性的 priority_locked）。
             --   诊断被节流掉 = 诊断不存在（同日 arrival_already_exploded 已栽过一次）。
             and not line:match('^priority_precheck_exploded;')
+            -- ★★★ 2026-10-16：无标记改派的两条**唯一判据行**（必须白名单）★★★
+            --   `spread_pick;`  = "无标记时挑中了谁、rank 多少、几个候选" ——
+            --     没有它就无法判断改派到底生效没有（本项目已有多次"诊断被节流掉
+            --     = 诊断不存在"的事故：arrival_already_exploded / blast_hold）。
+            --     ⚠ 我上一轮实机核对时日志里 0 条，**并非**证明它没跑 ——
+            --     而是这两条当时**不在白名单**、被 60 行后的节流静默丢弃了。
+            --   `alloc_cap;`    = 无标记 ⇒ cap=1 那条规则的可见证据（`marks=` / `src=`）。
+            --   两者都按 (手雷 / 变化时) 去重，不会刷屏。
+            and not line:match('^spread_pick;')
+            and not line:match('^alloc_cap;')
             -- ★ 2026-10-09：强制提升 state=4 的结果（写前/写后值）——
             --   它是"写内存这条路到底成不成"的**唯一判据**，被节流掉 = 实验没法判读
             and not line:match('^force_lock;')
@@ -913,6 +947,14 @@ local ok,why=pcall(function()
             -- ★ 2026-10-03：体内爆点的**证据行**（"这颗实际在哪炸的"，每颗一条）——
             --   它是"打没打准 / 抬高生效没有"的唯一量化依据。
             and not line:match('^blast_hit;')
+            -- ★★★ 2026-10-16（用户要求「调战争纵步者引爆点上下」）★★★
+            --   这两条是**新功能唯一的判据**：
+            --     `unit_blast;`    —— 偏移真的算出来并落成点了（带 dz/aim_dz/age）
+            --     `unit_aim_failed;` —— 引擎瞄点拿不到（**必须可见**，否则功能静默不生效）
+            --   "诊断被节流掉 = 诊断不存在"（同日 blast_point / arrival_already_exploded
+            --   都栽过）⇒ 必须进白名单。两条都按手雷**只打一次**，不刷屏。
+            and not line:match('^unit_blast;')
+            and not line:match('^unit_aim_failed;')
             -- ★ 2026-10-07：generic 认领 profile 的 pose capture 失败回落 motion 位置。
             --   它是"爆点退化为实体位置"的唯一判据 —— 被节流掉 = 诊断不存在。
             and not line:match('^generic_pose_fallback;')
@@ -1255,6 +1297,10 @@ local ok,why=pcall(function()
         --   `mark_yield_distance` —— (c) 的"还没飞太远"门槛（米）。第 1 步**只用来算
         --     `would_yield` 供判读**，不执行转火。
         mark_tier=nil,mark_yield_distance=30,
+    -- 2026-10-16: 无标记改派用（挂在 env 上 ⇒ tick 闭包零新增 upvalue）
+    spread_priority=SpreadPriority,spread_candidates=Candidates,
+    -- 2026-10-16: env.spread_rank/spread_faction 由 runtime 启动时装填(与 mark_tier 同款)
+    spread_rank=nil,spread_faction=nil,
         -- ★ 2026-10-10 用户要求「泰坦只该低于虫洞」：空白 ping（点目标）的档位。
         --   默认 **1600** ⇒ 比"名册外的其它单位"(1500) 还低 ⇒ 只要有**任何活着的实体标记**
         --   （虫洞 0 / 蟑龙 500 / 泰坦 1000 / 名册 1000+rank / 其它 1500）就压得住它。
@@ -1328,6 +1374,11 @@ local ok,why=pcall(function()
         --   ⚠ 三个都必须接：本项目栽过"开关写进 state 却没进 env ⇒ 功能静默不生效、
         --     门却是绿的"（target_fields_probe，2026-10-08）。
         safe_zone_target_radius=state.safe_zone_target_radius,
+        -- ★★★ 2026-10-16（用户要求）：引爆点上下距离（战争纵步者）★★★
+        --   ⚠ 必须接进 env：本项目栽过"开关写进 state 却没进 env ⇒ 功能静默不生效、
+        --     门却是绿的"（target_fields_probe，2026-10-08）。守门 `env_fields_all_wired`
+        --     会直接卡住漏接。
+        unit_blast_dz=state.unit_blast_dz,
         safe_zone_failsafe=state.safe_zone_failsafe,
         blast_safe_radius=state.blast_safe_radius,
         blast_safe_orbit=state.blast_safe_orbit,
@@ -1423,6 +1474,16 @@ local ok,why=pcall(function()
         {id='g60.safe_zone_target_radius',kind='slider',min=0,max=30,step=1,key='safe_zone_target_radius',
             get=function() return tonumber(host.env.safe_zone_target_radius) or 12 end,
             set=function(v) host.env.safe_zone_target_radius=v end},
+        -- ★★★ 2026-10-16（用户要求）：**战争纵步者引爆点上下距离** ★★★
+        --   用户原话：「能否让战争纵步者的引爆点可以自行调整上下距离？」
+        --   目的（用户）：「引爆点偏高的话会打不死」⇒ 主要往**负方向**调。
+        --   锚点 = **引擎自己的瞄准点** ⇒ 0 = 今天的行为（见 state 里那段完整说明）。
+        --   ⚠ 这是"滑块"而不是"开关"：`menu_restore` 实机证明本宿主**接受 slider**
+        --     （14 项里 8 项是 slider，值都被回读成功）⇒ 不像 MOM 那样会静默拒绝。
+        --   ⚠ 只对名册里标了 `aim_dz=true` 的目标生效（当前 = 战争纵步者）。
+        {id='g60.unit_blast_dz',kind='slider',min=-3,max=3,step=0.1,key='unit_blast_dz',
+            get=function() return tonumber(host.env.unit_blast_dz) or 0 end,
+            set=function(v) host.env.unit_blast_dz=v end},
         -- 安全区（**手雷半径**；上游已移除的 `player_safety_radius`，本工程留成选项）
         --   ⚠ 默认 0 = 关：重构后主判据是上面的目标半径，这一条默认不叠加。
         {id='g60.blast_safe_radius',kind='slider',min=0,max=30,step=1,key='blast_safe_radius',
@@ -1548,7 +1609,7 @@ local ok,why=pcall(function()
         -- ★★★ 2026-10-14（用户拍板 B 方案）：**标记保留窗（秒）** ★★★
         --   0 = 关闭（默认，与改动前一致）；600 = 10 分钟 ≈ 整局残留标记。
         --   ⚠ 范围与 runtime 的夹取**对齐**（0~600），否则是死配置。
-        {id='g60.mark_retain_seconds',kind='slider',min=0,max=600,step=5,
+        {id='g60.mark_retain_seconds',kind='slider',min=0,max=600,step=1,
             key='mark_retain_seconds',
             get=function() return tonumber(host.env.mark_retain_seconds) or 0 end,
             set=function(v) host.env.mark_retain_seconds=tonumber(v) or 0 end},
@@ -1746,7 +1807,7 @@ local ok,why=pcall(function()
         ..';build=BUGHOLE_PLUS_TITAN;scope=marked_bughole_and_bile_titan;'
         ..'bughole_profiles='..tostring(profile_count)..';enemy_priority=REMOVED;weakpoints=REMOVED;'
         ..'hole_variants=INCLUDED;spore_spewer_egg=REMOVED;target_valid=SOFT_SIGNAL;'
-        ..'selection_veto=DISABLED;unmarked_behavior=VANILLA;filter_enabled=true;'
+        ..'selection_veto=DISABLED;unmarked_behavior=ONE_GRENADE_PER_ENEMY;filter_enabled=true;'
         ..'enemy_tracking=VANILLA_UNTOUCHED;priority_gated=STRUCTURE_ONLY;arrival_gated='
         ..(state.allow_state3 and 'STATE3_ALLOWED' or 'HELD_LOCK_ONLY')
         ..';allow_state3='..tostring(state.allow_state3)..';'
@@ -1834,9 +1895,20 @@ local ok,why=pcall(function()
         --   "看不到就等于无法确认它到底生效了没有"是本工程的老毛病；
         --   而"到底以谁为中心、几个半径"正是判读安全区行为的第一眼。
         ..';safe_zone_target_radius='..tostring(state.safe_zone_target_radius)
+        -- ★★★ 2026-10-16（用户要求）：引爆点上下距离必须**在状态行可见** ★★★
+        --   "看不到就等于无法确认它到底生效了没有"是本工程的老毛病；而这个值
+        --   正是用户要在游戏里反复试的那个量 ⇒ 状态行没有它就得靠翻菜单。
+        ..';unit_blast_dz='..tostring(state.unit_blast_dz)
         ..';blast_safe_radius='..tostring(state.blast_safe_radius)
         ..';safe_zone_failsafe='..tostring(state.safe_zone_failsafe)
     emit(status_core);emit(status_titan);emit(status_marks)
+    -- ★★★ 2026-10-16：**构建指纹**（独立一行）★★★
+    --   事故背景：同一天把同一个版本号改了两次（未发版）⇒ 实机日志只有
+    --   `version=0.1.25`，**分不出跑的是哪个构建**，白排查一轮。
+    --   ⚠ 为什么不塞进上面那三段：`status_core` 等有 **900 字符**预算
+    --     （`status_len;…;cap=900` 守门钉着），塞进去会顶爆。
+    --   ▸ 取 git 短哈希（脏树带 `+dirty`）；无 git 时退化为源码哈希。
+    emit('entry_build;id=@@ENTRY_BUILD@@;version=@@VERSION@@')
     emit('status_len;core='..#status_core..';titan='..#status_titan
         ..';marks='..#status_marks..';cap=900')
 end)

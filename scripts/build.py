@@ -25,7 +25,68 @@ CONFIG = json.loads((ROOT / 'compat/build.json').read_text())
 #
 #   事故背景：发 Release v0.1.2 时成品包还叫 `G60-BugHole-Lock-0.1.0.zip`
 #   —— 因为 TITLE / ZIP_NAME 把 '0.1.0' 硬编码在代码里，与 Release 标签完全脱节。
-RELEASE_VERSION = '0.1.24'
+RELEASE_VERSION = '0.1.25'
+
+# ★★★ 2026-10-16：**构建指纹**（`entry_build;id=…` 启动日志行）★★★
+#   同一天同版本号改了两次 ⇒ 实机日志分不清构建（见 addon/entry.lua.in 的说明）。
+def _entry_build():
+    try:
+        import subprocess
+        h = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD'],
+                                    cwd=str(ROOT),
+                                    stderr=subprocess.DEVNULL).decode().strip()
+        dirty = subprocess.check_output(['git', 'status', '--porcelain'],
+                                        cwd=str(ROOT),
+                                        stderr=subprocess.DEVNULL).decode().strip()
+        return h + ('+dirty' if dirty else '')
+    except Exception:
+        import hashlib
+        raw = (ROOT / 'addon/entry.lua.in').read_bytes()
+        return 'src' + hashlib.sha256(raw).hexdigest()[:10]
+
+
+ENTRY_BUILD = _entry_build()
+# ★ v0.1.25（2026-10-16，用户报）：**无标记时每个敌人只能接受一颗手雷**
+#   ▸ ★★ 2026-10-16 **二次修正**（用户实机反馈「还是会追同一个敌人」）★★
+#     第一版只做了「无标记 ⇒ cap=1」，但 `n` 当时数的是 `#spread.queue`（**队列长度**），
+#     而队列是 ping 记忆的**历史** —— 已取消/过期的标记仍留在里面。
+#     实机铁证（用户日志 v0.1.25 三行全是）：
+#       alloc_cap;marks=3;cap=1 / marks=2;cap=1 / marks=1;cap=2
+#       ⇒ **marks=0 从未出现** ⇒ 「无标记」这条规则**从未真正生效**
+#       （旁证：`TARGET_RESERVED` 0 条）。
+#     而且「单标记兜底」分支（`my_mark=spread`）**不问 `P.usable`** ⇒ 还会把雷派去追
+#     那个**已取消**标记的目标 ⇒ 多颗雷撞同一个敌人。
+#     ⇒ 现在两处都按 `P.usable(q,q.current,true)` 判（与挑目标**同一判据**）：
+#       cap 只数可用标记；单标记兜底也要求可用（**活标记的「多颗一起追」行为不变**）。
+#     守门新增真求值用例 `stale_queue_counts_as_no_mark`（队列全是历史残留 ⇒ 等同无标记 ⇒ cap=1）。
+#   用户原话：「无标记时投掷多颗手雷，多颗手雷大概率会锁定同一个目标，
+#   优化成无标记时每个敌人只能接受一颗手雷」。
+#   ▸ 根因（已核实）：`reservations:set_cap` 原本**只在"有标记队列"的块里**调用
+#     ⇒ **无标记时 cap 一直是构造时的值**（= `max_grenades_per_target`）。
+#     实机铁证：用户日志 `mark_queue;…;cap=2` ⇒ 两颗雷压在同一个敌人身上是"合法"的。
+#     ⚠ 无标记那条路的预留门本身是有的（`native_priority` 三处 `available()` 都查）
+#       ⇒ 只差 cap 这一个值。
+#   ▸ 改法：cap **每帧只算一次**（仍是全文件唯一一处 `set_cap`），三档：
+#       无标记 ⇒ **1**（硬性一颗）· 1 个标记 ⇒ `max_grenades_per_target`
+#       · 2+ 标记 ⇒ `multi_mark_grenades_per_target`
+#   ▸ 可见性：变化时打一条 `alloc_cap;marks=…;cap=…;src=NO_MARK_ONE_PER_ENEMY|MARK_SETTING`。
+#   守门：`tests/test_no_mark_one_grenade.py`（16 项，含真求值三档/夹取/去重）。
+#   ⚠ 用户已明确：**问题 1（标记超出距离上限 ⇒ 退回引擎自选）保持现状不改**，
+#     那是他自己的距离设置问题（把「接管距离上限」调大即可）。
+#   ▸ 同版（2026-10-16 用户截图要求）：**「图标消失后仍认标记（秒）」滑块步长 5 → 1**
+#     （600 秒的超长窗口也能精确到秒；默认仍是 0）。
+#   ▸ 同版（2026-10-16 用户报 + 用户指定 lift）：**生物处理器（bio-processor / grinder）
+#     `e2e6e77dcc99a1cb` 加入 `compat/blast_sites.lua`，`lift=1.5`**。
+#     症状：标记它之后手雷绕着转圈、不引爆 —— 日志证据 `blast_detour;…;src=target`
+#     （绕行圆心退回目标自身）+ 每帧 `priority_locked` 而**始终没有 arrival_detonated**；
+#     对比有爆点的结构（巨型构筑者 lift=8.00 / 构筑者 0.50）都是 `src=blast` 且成功引爆。
+#     ⇒ 根因：该目标 2026-10-14 刚进 `structure_profiles`，但**没有体内爆点条目**。
+#     ⚠ `lift=1.5` 是**用户指定值**（本文件的既定纪律是 lift 要实机标定）；
+#       判定真值仍看日志 `blast_point;…;resource=e2e6e77dcc99a1cb;lift=1.50` 与
+#       `blast_hit;…;delta=` —— 偏大就换档位表扫（与 FAB_SCAN 同流程）。
+#     守门：`tests/test_bio_processor_blast_site.py`（11 项：条目真求值 + 形状同形 +
+#       **该资源必须也在 structure_profiles 里**（否则拿不到锁 ⇒ 条目永不生效，
+#       这是本文件自己记录过的实机教训）+ 查不到时失败方向安全）。
 # ★ v0.1.24（2026-10-14，用户拍板 **B 方案**）：**标记保留窗**
 #   用户要求：「标记远距离目标时增加标记时间 / 残留标记」。
 #   标记图标只活约 8 秒（ping 槽 `+0x10 duration`），而 G-60 飞远距离目标可能更久
@@ -457,6 +518,7 @@ def assemble():
                        + ('(TitanProfile)' if factory else ''))
     text = (ROOT / 'addon/entry.lua.in').read_text().replace('@@MODULES@@', '\n'.join(modules))
     text = text.replace('@@VERSION@@', VERSION)
+    text = text.replace('@@ENTRY_BUILD@@', ENTRY_BUILD)
     # ★ 两个占位符语义不同，别混（2026-10-01）：
     #   @@VERSION@@          = **本裁剪版的发布版本**（RELEASE_VERSION）—— "这是哪一版 mod"
     #   @@RUNTIME_BASELINE@@ = **上游运行时基线**（build.json 的 runtime_version，0.5.20）

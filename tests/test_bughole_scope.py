@@ -980,11 +980,15 @@ def main():
     check('entry_no_old_global', "rawset(_G,'G60SmartTargeting'" not in entry)
     check('entry_no_old_log', "open_log,'G60SmartTargeting.log'" not in entry)
     # ★ 2026-09-29 范围扩展：虫洞 + 吐酸泰坦（build 标识随之改名）。
-    #   仍然必须声明 enemy_priority=REMOVED / unmarked_behavior=VANILLA ——
-    #   扩展的是"接哪些目标"，不是"接所有目标"。
+    #   `enemy_priority=REMOVED` 仍然成立（不按原版敌人优先级名册自动挑目标）。
+    # ★★ 2026-10-16 二次修正：`unmarked_behavior` **不再是 VANILLA** ★★
+    #   用户要求"无标记时每个敌人只能接受一颗手雷" ⇒ 无标记时会主动改派目标
+    #   （挑 rank 最高者、占用预约名额）⇒ 那是**非原生**行为，必须如实声明。
+    #   ⚠ 旧断言把 `VANILLA` 钉死，等于要求状态行**说谎** —— 已改。
     check('startup_declares_scope',
           'build=BUGHOLE_PLUS_TITAN' in entry and 'bughole_profiles=16' in entry
-          and 'enemy_priority=REMOVED' in entry and 'unmarked_behavior=VANILLA' in entry
+          and 'enemy_priority=REMOVED' in entry
+          and 'unmarked_behavior=ONE_GRENADE_PER_ENEMY' in entry
           and 'scope=marked_bughole_and_bile_titan' in entry
           and 'titan_enabled=' in entry and 'titan_resource=' in entry)
     # ★ 裁剪 D（修 bug 的关键）：designed_targets_only 必须为 false。
@@ -1232,9 +1236,12 @@ def main():
     check('F_priority_gated_on_structure',
           'if old and old.quarantined then' in gate
           and 'if not (o.structure_mark or (old and (old.lock or old.titan or old.point))' in gate
-          and 'or o.point_armed) then' in gate,
+          and 'or o.point_armed) then' in gate
+          and 'if not o.spread_armed then' in gate,
           'priority 门控：虫洞标记 / 已有锁定 / **TTL 内的 ping（2026-10-09 加）** 才驱动；'
-          'quarantined 交回原生')
+          'quarantined 交回原生；'
+          '★ 2026-10-16 加 `spread_armed`（无标记改派）—— 它只把「不再落进 '
+          'no_mark_no_hold」这一条放宽，仍然排在否决之后、且复用同一条尾段')
     check('F_arrival_gated_on_held_lock',
           'if not (o.old and (o.old.lock or o.old.titan or o.old.point)) then' in gate
           and 'if not o.can_guide then' in gate,

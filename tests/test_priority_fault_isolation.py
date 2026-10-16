@@ -2245,9 +2245,14 @@ def test_takeover_scope_is_bughole_and_titan_only():
     check("enemy_priority_removed",
           "enemy_priority=REMOVED" in e,
           "敌人优先级功能已移除")
-    check("unmarked_behavior_vanilla",
-          "unmarked_behavior=VANILLA" in e,
-          "未标记目标完全原生")
+    # ★★ 2026-10-16 二次修正：范围**确实变了**，声明必须跟着改 ★★
+    #   用户要求"无标记时每个敌人只能接受一颗手雷" ⇒ 未标记行为**不再是纯原生**
+    #   （改派会挑目标、并占用预约名额）。旧值 `VANILLA` 是**假陈述**，
+    #   与 `test_bughole_scope.py` 的同名断言一起把错误声明钉住了。
+    check("unmarked_behavior_declared",
+          "unmarked_behavior=ONE_GRENADE_PER_ENEMY" in e,
+          "未标记时改为「每个敌人一颗」（用户 2026-10-16 要求），"
+          "声明必须如实反映，不能再写 VANILLA")
 
     # 泰坦段与 arrival 的关系：泰坦航点建立后 arrival 提前返回，
     # 所以 has_weakpoint 放行泰坦**不会**让泰坦掉进虫洞的到达区域。
@@ -3568,9 +3573,11 @@ def test_force_lock():
     #   ⇒ 前面两道门连碰都碰不到。⇒ 给门控加 `point_armed`。
     _tg = (ROOT / "src/g60" / "take_gate.lua").read_text(encoding="utf-8")
     check("gate_drives_on_armed_ping",
-          "or o.point_armed) then" in _tg and "point_armed=ping_take}" in rt,
+          "or o.point_armed) then" in _tg and "point_armed=ping_take" in rt
+          and "spread_armed=P.spread_pick_row~=nil" in rt,
           "★★ 门控必须把「TTL 内的 ping」当成与标记同级的**玩家意图** —— "
-          "否则纯空地 ping 永远落在 `no_mark_no_hold`，整条路不跑（真正的根因）")
+          "否则纯空地 ping 永远落在 `no_mark_no_hold`，整条路不跑（真正的根因）；"
+          "★ 2026-10-16 同处再传 `spread_armed`（无标记改派），语义同源、仍排在否决之后")
     check("ping_take_defined_before_gate",
           rt.index("local ping_take=point_marker~=nil and point_armed==true")
           < rt.index("local gate=TakeGate.decide{"),
@@ -5176,7 +5183,19 @@ def test_safe_zone_redundancy():
           "local spread=structure_mark or mark" in run
           and "local my_mark=spread" in run
           and "if reservations and spread and spread.queue then" in run
-          and "reservations:set_cap(marks>1" in run
+          # ★★★ 2026-10-16（用户报"无标记时多颗雷撞同一目标"）★★★
+          #   `set_cap` 从"只在有标记队列的块里调用"改成**每帧只算一次、三档**：
+          #     无标记 ⇒ **1**（硬性一颗）/ 单标记 ⇒ `max_grenades_per_target`
+          #     / 多标记 ⇒ `multi_mark_grenades_per_target`。
+          #   ⚠ 本条门的**原意不变**：cap 必须按"场上有几个标记"切换，且要在
+          #     **挑标记之前**算好（否则挑的时候用的是上一帧/构造时的 cap）。
+          # ★★★ 2026-10-16 修正：**只数"可用"的标记**（队列是 ping 记忆的历史，
+          #   已取消/过期的仍留在里面 ⇒ 用户实机 `marks=0` 从未出现、规则空转）
+          and "local n=0" in run
+          and "if q and P.usable(q,q.current,true) then n=n+1 end" in run
+          and "reservations:set_cap(c)" in run
+          and run.index("reservations:set_cap(c)")
+              < run.index("if reservations and spread and spread.queue then")
           and "and P.usable(q,q.current,true)" in run
           and "and reservations:available(owner,q.identity) then" in run
           and "local my_structure=structure_mark" in run

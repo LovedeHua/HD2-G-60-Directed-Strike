@@ -106,7 +106,7 @@ function M.capture(reader,base)
                     native_update_eligible=index<active and math.floor(flags/2)%2==0,
                     candidate_source=u32(record,0x68),selection_id=u32(record,0x18),
                     selection_flag=record:byte(0x78+1),flight_start=hex64(record,0x188),
-                    identity_bytes=identity,record_bytes=record}
+                    identity_bytes=identity,record_bytes=record,entity_address=entity}
                 if row.selection_flag~=0 then row.selection_resource=entity_resource(row.selection_id) end
                 matches[#matches+1]=row
             end

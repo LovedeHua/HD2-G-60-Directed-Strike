@@ -37,8 +37,8 @@ def check(name, ok, detail=''):
 
 print('=== ① 接线：滑块 / 默认值 / env / 状态行 / 文案 ===')
 check('slider_present',
-      "{id='g60.mark_retain_seconds',kind='slider',min=0,max=600,step=5," in ENTRY,
-      '滑块 min=0 max=600 step=5（0 必须可选 ⇒ 不回退就不用重打包）')
+      "{id='g60.mark_retain_seconds',kind='slider',min=0,max=600,step=1," in ENTRY,
+      '滑块 min=0 max=600 **step=1**（2026-10-16 用户要求；0 必须可选 ⇒ 不回退不用重打包）')
 check('default_zero',
       'mark_retain_seconds=0,' in ENTRY,
       '★★★ 默认 **0 = 关闭** ⇒ 与改动前逐字节一致（新增行为不许偷偷改变手感）')

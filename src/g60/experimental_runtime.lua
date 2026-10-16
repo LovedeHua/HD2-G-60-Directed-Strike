@@ -109,6 +109,21 @@ function M.new(env)
         --       同样因为 upvalue 上限 60 而放进 P（不新增 local）。
         site={},orig={},hit={},hl={},
         pex={},swk={},swn=0,
+        -- ★★★ 2026-10-16（用户要求）：**可调引爆点上下距离**（战争纵步者）★★★
+        --   `adz[m.id]` = 该手雷最近一次算出的「引擎瞄准点 − 实体 motion 位置」**世界向量**。
+        --   为什么缓存它而不每帧直接用引擎瞄准点：
+        --     这条路的点在**我们手里**（走 `point_target`，写 `invalid_id`）⇒ 引擎下一帧
+        --     **就看不到实体目标了** ⇒ `calls.aim` 的前置（引擎选中同一实体）会间歇失效。
+        --     只用"当帧能算出来的那几帧"驱动会变成断续驱动（收敛不了）。
+        --   ⇒ 取一次偏移、之后每帧用**实时 motion 位置**重新落点（点跟着目标走），
+        --     等引擎再次选中时刷新偏移。这是**近似**（目标转向时世界系偏移会略旧），
+        --     所以上机日志必须能看出"这一颗用的是哪一帧的偏移"（`fresh=`）。
+        --   ⚠ 同样放进 P（tick 的 xpcall 恰好 60 upvalue，见上面说明）。
+        adz={},
+        --   `abz[m.id]` = 该手雷的 `unit_blast` 取证行**已打过哪种**（'ok' 抓到了瞄点 /
+        --     'noaim' 没抓到）。用一张表记两态 ⇒ 只在这两件事**首次成立**时各打一条，
+        --     既不刷屏、也绝不静默（"看不到 = 无法确认"，本工程老毛病）。
+        abz={},
         -- ★ 2026-10-05：`pbt` = "ping 点压过引擎自选泰坦"这条日志的按手雷去重表。
         --   不加去重会**逐帧**刷屏（条件一旦成立就一直成立，直到点打掉或 TTL 过期）。
         pbt={},
@@ -925,6 +940,42 @@ function M.new(env)
         local spec=env.priority_catalog and env.priority_catalog[r]
         if spec and spec.rank then return 1000+spec.rank end
         return 1500
+    end
+
+    -- ★★★ 2026-10-16（用户要求）：**无标记分散用的分阵营优先级查询** ★★★
+    --   名册 `g60.spread_priority`（63 条，用户逐条审过）由上面的 require 内联进包。
+    --   · `env.spread_rank(resource)` -> rank（越小越优先）；名册里没有 => nil
+    --     （= 该阵营的"其他敌人"，最低优先，由调用方给兜底 rank）
+    --   · `env.spread_faction(resource)` -> '终结族'/'机器人'/'光能族'/nil
+    --   ⚠ 只在**加载时建一次反查表**（63 条），运行期查询是 O(1)，不进热路径的循环。
+    --   ⚠ 与 `env.mark_tier` 的分工：mark_tier 管"标记目标的档位"（虫洞 0 / 泰坦 750 …），
+    --     spread_rank 管"普通敌人之间的先后"（用户这张分阵营表）。两者都不改写对方。
+    if not P.spread_index then
+        local ix={}
+        if type(env.spread_priority)=='table' then
+            for fac,rows in pairs(env.spread_priority) do
+                if type(rows)=='table' then
+                    for hash,row in pairs(rows) do
+                        if type(row)=='table' and type(row.rank)=='number' then
+                            ix[tostring(hash)]={rank=row.rank,faction=tostring(fac)}
+                        end
+                    end
+                end
+            end
+        end
+        P.spread_index=ix
+        P.spread_count=0
+        for _ in pairs(ix) do P.spread_count=P.spread_count+1 end
+    end
+    env.spread_rank=function(r)
+        if not r then return nil end
+        local e=P.spread_index[tostring(r)]
+        return e and e.rank or nil
+    end
+    env.spread_faction=function(r)
+        if not r then return nil end
+        local e=P.spread_index[tostring(r)]
+        return e and e.faction or nil
     end
     local ping=env.priority_catalog and env.mark_priority_enabled~=false and Ping.new(env)
     local structure_ping=env.structure_profiles and Ping.new(env,{
@@ -2794,6 +2845,216 @@ function M.new(env)
                     --   永远落到 `no_mark_no_hold` ⇒ 不建 `old` ⇒ ping 路整条不跑
                     --   （用户报「空标记应用失败，无效」的根因）。
                     local ping_take=point_marker~=nil and point_armed==true
+                    -- ★★★ 2026-10-16 二次修正：无标记"每个敌人只吃一颗"的候选计算 ★★★
+                    --   【实机铁证】用户 v0.1.25 日志里 `spread_pick;` **0 条**，而包内确有
+                    --   该逻辑、加载器也确认 `g60_directed_strike: loaded` ⇒ 功能从未生效。
+                    --   根因（已定位，非猜测）：原改派块写在 `if enters then`
+                    --   （= `priority~=nil and gate.drive`）**内部**，而"完全无标记"时
+                    --   门控返回 `no_mark_no_hold` ⇒ `gate.drive=false` ⇒ **整块结构性不可达**；
+                    --   而 `old` 又只在那个块内被创建 ⇒ 先有鸡还是先有蛋。
+                    --   ⇒ 候选计算必须**上移到门控之前**，并把"确实选出了候选"作为
+                    --     门控的一条放行依据（`spread_armed`，见 take_gate 的同名判据）。
+                    --   ⚠ 候选上下文**直接由本帧观测行构造**（`m.identity_bytes` + `m.entity_address`），
+                    --     **不**额外付一次 `Search.capture` —— 原先那条路是 early_nav_probe
+                    --     专用的（默认关闭、且只在 state 2/3 且每颗只跑一次），
+                    --     既与"每帧都要判"的需求不符，也解释了为什么 `P.cap` 恒为 nil。
+                    --   ⚠ 不新增**被闭包捕获的外层 local**：tick 闭包 upvalue 正是 60、零余量
+                    --     （实测 `function at line 9885 has more than 60 upvalues`）。
+                    --     本块内全是函数局部，用 `do … end` 限定作用域。
+                    -- ★★★ 2026-10-16 二次修正：**cap 必须在改派块之前算好** ★★★
+                    --   【实机】用户报「最高档只有一个敌人、多颗手雷仍一起飞向它」。
+                    --   根因（已核实）：cap 计算原本在 `if enters then` **内部**（更靠下），
+                    --   而改派块会**先**调 `reservations:available()` 判名额
+                    --   ⇒ pick 读到的是**上一帧的 cap**；首帧更是**构造值**
+                    --   （`Reservations.new(max_grenades_per_target)`，用户设 2）
+                    --   ⇒ "还有空位"成立 ⇒ 多颗雷共享同一个目标。
+                    --   ⚠ 而且无标记时 `enters` 依赖 `spread_armed`、`spread_armed` 又依赖
+                    --     pick 成功 ⇒ 自有先后死结：**cap 永远追不上 pick**。
+                    --   ⇒ 顺序必须是：**cap → pick → gate → 消费**。
+                    --   ⚠ 全文件**仍只有这一处**算 cap（"同一个判断不许出现两处"）。
+                    --   ⚠ 只数**可用**标记：队列是 ping 记忆的历史，已取消/过期的仍在里面。
+                    --   ⚠ `P.alloc_cap/alloc_n` 只为"变了才打一条日志"；放 P 不放 local
+                    --     （tick 的 xpcall upvalue 恰好 60）。
+                    --   ⚠⚠ `spread` 在下面才声明（`local spread=structure_mark or mark`）
+                    --     ⇒ 这里**不能**引用它（Lua 会解析成全局 nil ⇒ n 恒 0 ⇒ 规则空转）。
+                    --     本处直接按**同一定义**取标记来源，避免前向引用：
+                    --       spread = structure_mark or mark
+                    local mk=structure_mark or mark
+                    if reservations then
+                        local n=0
+                        if mk and mk.queue then
+                            for i=1,#mk.queue do
+                                local q=mk.queue[i]
+                                if q and P.usable(q,q.current,true) then n=n+1 end
+                            end
+                        end
+                        local c=1
+                        if n>1 then
+                            c=tonumber(env.multi_mark_grenades_per_target) or 1
+                        elseif n==1 then
+                            c=tonumber(env.max_grenades_per_target) or 1
+                        end
+                        if c<1 then c=1 end
+                        reservations:set_cap(c)
+                        if P.alloc_cap~=c or P.alloc_n~=n then
+                            P.alloc_cap=c;P.alloc_n=n
+                            if env.emit then
+                                env.emit('alloc_cap;marks='..tostring(n)..';cap='..tostring(c)
+                                    ..';src='..(n==0 and 'NO_MARK_ONE_PER_ENEMY' or 'MARK_SETTING')
+                                    ..';frame='..frame)
+                            end
+                        end
+                    end
+                    do
+                        -- 只在"完全无标记"且我们自己什么都没持有时才改派；有标记的路一律不动。
+                        --   ⚠ 沿用本文件的既有写法（`local held=old` + `held and held.X`）：
+                        --     `old` 在首次遇到这颗 G-60 时是 nil，静态检查
+                        --     （no_unguarded_old_index）要求每处 `old.` 引用都带 nil 守卫。
+                        local held=old
+                        -- ★★★ 2026-10-16 三次修正（用户报"改派抢了标记虫洞"）★★★
+                        --   【实机铁证】build 5f390d2+dirty，同一颗雷 851：
+                        --     :446 mark_queue;entity=851;n=1;ids=581;current=0;loads=1;
+                        --          cap=2;picked=-;engine_sel=581;frame=33356   ← 标记**过期**了
+                        --     :447 spread_pick;entity=851;target=812;…;frame=33368 ← 被改派抢走
+                        --   玩家标记虫洞 581、扔出的雷还在飞（`loads=1` 名额仍在、引擎仍选 581），
+                        --   但 ping 图标活够 8 秒消失 ⇒ `structure_mark=nil`、
+                        --   `old.lock` 被 native_priority 的 released 分支清掉
+                        --   ⇒ 旧判据 `not held.lock` **恰好在这一刻变真** ⇒ 改派把雷劫走。
+                        --   ⚠ 根因：判据用的是**瞬时**的 `held.lock`，而它正是过期时会被清的东西。
+                        --     "这雷到底是不是改派发给它的"必须看**持久**归属，不能看瞬时锁。
+                        --   ⇒ 只有**我们自己改派出去的**雷（`held.spread`）才允许再改派；
+                        --     玩家标记过的雷（`held.spread` 为空）**一辈子不许被改派碰**。
+                        --   ⚠ 存量标记（虫洞/单位/ping 点）的让位与释放逻辑**一行未动** ——
+                        --     本处只收窄"改派"的适用范围，不碰任何既有路径。
+                        local no_mark=(structure_mark==nil) and (point_marker==nil)
+                            and (held==nil
+                                or (held.spread and not held.lock and not held.titan and not held.point))
+                        P.spread_pick_row=nil
+                        -- ★★★ 2026-10-16 三次修正（用户报"锁定泰坦 ⇒ 不走泰坦链"）★★★
+                        --   **第二种**抢专属链目标的情形：候选表里排除专属链目标（见上面的过滤）
+                        --   只解决了"改派**主动**挑专属链目标"；这一条解决"引擎**已经**给这雷
+                        --   选中了专属链目标，而改派把它改成打旁边的小怪"。
+                        --   两条路的后果一样：只要改派给这颗雷安上 `old.lock`，
+                        --   `marked_lock_held` 就为真 ⇒ `titan_selected=false`
+                        --   ⇒ **泰坦链整条不跑** ⇒ 雷撞本体、不能颗秒。
+                        --   ⇒ 引擎本帧选中的若是**专属链目标**（`claim_profile` 认领的一切：
+                        --     虫洞/构筑、吐酸泰坦与变体、蟑龙），改派**整体让位**：
+                        --     不挑候选（`P.spread_pick_row=nil`）⇒ 门控那一帧也不放行
+                        --     ⇒ 这雷交还引擎 ⇒ 引擎继续选它 ⇒ 专属链接手（归属唯一）。
+                        --   ⚠ 用户报的"影响到标记虫洞炸毁"也有这一半：引擎选中的**虫洞/构筑**
+                        --     同样在 `claim_profile` 里 ⇒ 一并保护（虫洞是主功能，优先级最高）。
+                        --   ⚠ 用 `m.selection_flag~=0` 确认"引擎确实选了实体目标"
+                        --     （`selection_flag==1` + id=0 是"点"不是实体，见其它处的同款判据；
+                        --      `native_observer:110` 也只在 `selection_flag~=0` 时才填 resource）。
+                        --   ⚠ 用 `has_weakpoint`（`claim_profile` 的唯一包装，判据就是
+                        --     `claim_profile(res)~=nil`）而不是直接调 `claim_profile`：
+                        --     后者不是本闭包已捕获的 upvalue ⇒ 直接引用会多加一个 upvalue
+                        --     而闭包恰好 60 = 上限 ⇒ 整份 chunk 编译失败。
+                        local engine_on_chain=(m.selection_flag~=0)
+                            and has_weakpoint(m.selection_resource)
+                        if engine_on_chain then no_mark=false end
+                        if reservations and no_mark and env.spread_candidates
+                            and m.entity_address and m.identity_bytes then
+                            local owner=Reservations.owner(m)
+                            local ctx={id=m.id,index=m.index,
+                                identity_bytes=m.identity_bytes,
+                                entity_address=m.entity_address}
+                            local sc=select(2,pcall(env.spread_candidates.capture,
+                                TargetData.new(read,base,env.exe),ctx))
+                            if type(sc)=='table' then
+                                local best,best_rank,best_ent
+                                for i=1,#sc do
+                                    local row=sc[i]; local ent=row and row.entity
+                                    -- ★★★ 2026-10-16 三次修正（用户报"改派锁定泰坦 ⇒ 不能颗秒"）★★★
+                                    --   改派**绝不允许**挑本 mod 有**专属链**的目标
+                                    --   （吐酸泰坦 / 孢子泰坦 / 蟑龙 —— 即 `claim_profile` 认领的那些）。
+                                    --
+                                    --   根因：名册给泰坦 rank=2（只有蟑龙更高）⇒ 无标记时
+                                    --   改派**优先**挑中泰坦，然后把它当普通目标锁上 `old.lock`
+                                    --   ⇒ `marked_lock_held` 变真 ⇒ `titan_selected=false`
+                                    --   ⇒ **泰坦链（腹点几何 + standoff + 弱点）整条不跑**，
+                                    --   雷直接撞泰坦本体 ⇒ 用户原话「不能颗秒泰坦」。
+                                    --   ⇒ 归属必须唯一：专属链的目标由专属链处理，改派只碰普通敌人。
+                                    --   ⚠ 用 `has_weakpoint`（**claim_profile 的唯一包装**，
+                                    --     判据就是 `claim_profile(res)~=nil`，见其定义处）
+                                    --     而不是直接调 `claim_profile`：后者在 tick 的那个
+                                    --     xpcall 闭包里**不是**已捕获的 upvalue ⇒ 直接引用
+                                    --     会**多加一个 upvalue**，而那个闭包恰好 60 = 上限
+                                    --     ⇒ 整份 chunk 编译失败（我第一版正是这么错的，
+                                    --     由 check_lua51_compile 当场拦下）。
+                                    --     不另写一份"是不是泰坦"的判据 —— 否则又是
+                                    --     "同一个判断两处"，正是本项目反复踩的坑。
+                                    -- ★★★ 2026-10-16（用户第四次修正）：专属链家族**优先** ★★★
+                                    --   用户原话：「无标记下投掷手雷，手雷会使用泰坦链来颗秒泰坦，
+                                    --   但泰坦的优先级很低，只有附近无其他敌人时才会追踪泰坦」。
+                                    --
+                                    --   上一轮（e0f7eb9）为了修「锁定泰坦 ⇒ 不走泰坦链」把
+                                    --   **全部** `has_weakpoint` 目标都踢出候选表 —— 那修的是
+                                    --   "改派**独占**泰坦"（= 把泰坦当普通目标锁死），代价是
+                                    --   **泰坦再也赢不过旁边的小怪**（`candidates=15` 那帧就是
+                                    --   被普通敌人抢走的）。
+                                    --   ⇒ 现在把两件事分开：
+                                    --     · **结构**（虫洞/构筑，`env.structure_profiles`）**继续排除**
+                                    --       —— 它们是用户报①的"标记虫洞炸毁"，归属永远在结构路；
+                                    --     · **专属链家族**（泰坦/变体/蟑龙）**纳入候选并置于最高档**
+                                    --       `rank=-1` ⇒ 只要场上有一个链家族目标，改派就先把它
+                                    --       交给专属链（见 `marked_lock_held` 处：这类"伪标记"
+                                    --       不算持有标记锁 ⇒ 泰坦链照常接管、颗秒不回退）。
+                                    --   ⚠ 档位用 `-1` 而不是依赖名册 rank：名册里泰坦 rank=2、
+                                    --     蟑龙 rank=1 虽然也压得住普通敌人（≥3），但**名册外的
+                                    --     链目标**（将来新增的变体）会拿到 9999 ⇒ 反被小怪压住。
+                                    --     `-1` 让"链家族优先"只依赖 `has_weakpoint` 这一把尺子。
+                                    --   ⚠ 仍然只用 `has_weakpoint`（已捕获的 upvalue）与 `env`
+                                    --     —— 本闭包 upvalue 余量为 0，多一个 local 就整份编译失败。
+                                    --   ⚠ `ent` 可能为 nil（`row and row.entity`）⇒ 必须先判空，
+                                    --     否则 `ent.resource` 就是 "attempt to index nil"，
+                                    --     被外层 pcall 吞掉 ⇒ 整段改派**静默失效**。
+                                    local is_structure=ent~=nil and ent.resource~=nil
+                                        and env.structure_profiles~=nil
+                                        and env.structure_profiles[ent.resource]~=nil
+                                    if ent and ent.identity and ent.resource
+                                        and not is_structure
+                                        and reservations:available(owner,ent.identity) then
+                                        local rank=9999
+                                        if env.spread_rank then
+                                            local r=env.spread_rank(ent.resource)
+                                            if type(r)=='number' then rank=r end
+                                        end
+                                        -- 专属链家族（泰坦/变体/蟑龙；结构已在上面排除）
+                                        if has_weakpoint(ent.resource) then rank=-1 end
+                                        -- 同 rank 取候选表**更早**的（= 引擎评分顺序）
+                                        if best_rank==nil or rank<best_rank then
+                                            best,best_rank,best_ent=row,rank,ent
+                                        end
+                                    end
+                                end
+                                if best and best_ent then
+                                    P.spread_pick_row={id=best_ent.id,identity=best_ent.identity,
+                                        resource=best_ent.resource,current=true,marked_at=frame/60,
+                                        order=best.ordinal or 0}
+                                    if env.emit then
+                                        if not P.spread_logged then P.spread_logged={} end
+                                        if not P.spread_logged[m.id] then
+                                            P.spread_logged[m.id]=true
+                                            env.emit('spread_pick;entity='..tostring(m.id)
+                                                ..';target='..tostring(best_ent.id)
+                                                ..';resource='..tostring(best_ent.resource)
+                                                ..';rank='..tostring(best_rank)
+                                                -- ★ 2026-10-16（用户第四次修正）：标出"这次改派
+                                                --   挑的是专属链家族"——否则实机上分不清
+                                                --   「泰坦被优先追踪」与「普通敌人被挑中」，
+                                                --   而这两者的 rank 可能是 2 与 -1 的差别，
+                                                --   光看 rank 还要人去查名册。用**同一把尺子**
+                                                --   `has_weakpoint`（已捕获的 upvalue，不新增）。
+                                                ..';chain='..(has_weakpoint(best_ent.resource) and '1' or '0')
+                                                ..';why=PRIORITY;candidates='..tostring(#sc)
+                                                ..';frame='..frame)
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                    end
                     local gate=TakeGate.decide{
                         behavior_id=m.behavior_id,state=m.state,
                         native_update_eligible=m.native_update_eligible,
@@ -2802,7 +3063,8 @@ function M.new(env)
                         selection_vetoed=veto_selected,
                         state_age=state_age[early_fp] or 0,
                         early_min_age=EARLY_MIN_AGE,
-                        point_armed=ping_take}
+                        point_armed=ping_take,
+                        spread_armed=P.spread_pick_row~=nil}
                     if not gate.drive and structure_mark and old then
                         if gate.why=='holding_nothing' or gate.why=='no_mark_no_hold'
                             then diag.held=diag.held+1
@@ -2917,6 +3179,12 @@ function M.new(env)
                         end
                         seen[m.id]=true;current={ref=old.ref,match=m}
                         local owner=reservations and Reservations.owner(m)
+                        -- ★★ 2026-10-16 二次修正：原改派块就写在这里（`if enters then` 内），
+                        --   而 `enters=priority~=nil and gate.drive`；门控对"完全无标记"
+                        --   返回 `no_mark_no_hold` ⇒ `gate.drive=false` ⇒ **整块结构性不可达**
+                        --   （实机铁证：包内确有该逻辑、mod 确实加载，而日志 `spread_pick` 0 条）。
+                        --   ⇒ 候选计算已**上移到门控之前**（见 `local gate=TakeGate.decide{` 之前），
+                        --     本处只保留 `owner`。
                         local available=reservations and function(identity) return reservations:available(owner,identity) end
                         -- ★★ 2026-10-10 多标记分流（用户要求）★★
                         --   事故：场上标了 2 个敌人、扔了 2 颗 G-60 时，**两颗都飞向
@@ -2966,11 +3234,14 @@ function M.new(env)
                         --
                         --   ⚠ 必须问 `P.usable`：队列是 ping 记忆的**历史**，已取消的标记
                         --     仍留在里面。只看名额会让新扔的雷飞向一个**已被取消**的目标。
+                        -- ★★★ 2026-10-16：**cap 的计算已上移到改派块之前**（见上面的说明）★★★
+                        --   原因：改派块会先调 `available()` 判名额，而 cap 原本在这一行
+                        --   才 `set_cap` ⇒ pick 永远读到**上一帧**的 cap（首帧更是构造值）
+                        --   ⇒ 多颗雷共享同一个目标。顺序必须是 **cap → pick → gate → 消费**。
+                        --   ⚠ 这里**不再**算 cap（全文件只有一处算，那份"同一个判断不许
+                        --     出现两处"的纪律不变）。
                         if reservations and spread and spread.queue then
                             local marks=#spread.queue
-                            reservations:set_cap(marks>1
-                                and (tonumber(env.multi_mark_grenades_per_target) or 1)
-                                or (tonumber(env.max_grenades_per_target) or 1))
                             local multi=marks>1
                             local best,best_at,best_order
                             for i=1,marks do
@@ -3012,6 +3283,16 @@ function M.new(env)
                                 --   ⚠ 单标记（`multi=false`）**保留兜底**：那时 `spread` 就是
                                 --     唯一的标记，退回它正是"单标记多颗一起追"要的行为。
                                 my_mark=nil
+                            else
+                                -- ★★★ 2026-10-16 修正：**单个标记的兜底也必须"可用"** ★★★
+                                --   原兜底（`my_mark=spread`）是无条件的 ⇒ **已取消/过期**的
+                                --   标记照样把雷派过去（用户："无标记时多颗雷追同一个敌人"
+                                --   的一部分根因就是它 —— 队列里那条历史标记成了共同目标）。
+                                --   ★ 仍然保留"单标记多颗一起追"的原设计：标记**可用**
+                                --     （活着/在保留窗内）时兜底照旧生效 ⇒ 行为不变。
+                                if not P.usable(spread,spread.current,true) then
+                                    my_mark=nil
+                                end
                             end
                         end
                         -- ★★ 最后一道硬闸：**让预约成为唯一裁判** ★★
@@ -3044,6 +3325,25 @@ function M.new(env)
                         --     （`my_structure=structure_mark`）—— 那条路没有分配，不该动。
                         local my_structure=structure_mark
                         if reservations then my_structure=my_mark end
+                        -- 无标记改派：把上面算好的候选当成一次的标记交给既有 priority 驱动
+                        if reservations and my_structure==nil and P.spread_pick_row then
+                            my_mark=P.spread_pick_row;my_structure=my_mark
+                            reservations:claim(owner,my_mark.identity)
+                            reservations:keep_only(owner,my_mark.identity)
+                            -- ★★★ 2026-10-16 三次修正：**钉住"这雷是改派发给它的"** ★★★
+                            --   见 `no_mark` 处的实机铁证：标记一过期，瞬时 `old.lock`
+                            --   会被清掉，于是"无标记"判据变真、改派把玩家标记过的雷劫走。
+                            --   ⇒ 需要一条**持久**的归属印记，跨过"锁被清掉"的那几帧。
+                            --   ⚠ 必须挂在 `old` 上（`tracked[m.id]` 生命周期 = 这颗雷的
+                            --     tracked 记录）而不是新建 local：tick 闭包 upvalue 余量为 0
+                            --     （多一个被闭包捕获的 local 会让整份 chunk 编译失败，实机事故）。
+                            --   ⚠ 只写不改：一旦这雷被改派过，就永远是"改派的雷"，
+                            --     玩家后来标记的虫洞/单位仍有更高优先级的既有路径
+                            --     （`structure_mark` 非空 ⇒ `no_mark` 直接为假，改派根本不会跑），
+                            --     所以这条印记**不会**妨碍玩家中途重新标记。
+                            if old then old.spread=true end
+                        end
+                        P.spread_pick_row=nil
                         -- ★★ 2026-10-10 队列审计（用户报「标的是泰坦却打了别的目标」）★★
                         --   要一次分清两种可能：
                         --     (a) 标记的确实是名册重甲（不是泰坦）⇒ 行为按设计走
@@ -3369,8 +3669,42 @@ function M.new(env)
                     --   ⚠ 只清一次 `old.lock` **不够**：priority 每帧会重建它
                     --     （实机 31~83 次 `priority_locked`）⇒ 必须按**手雷**记住"已放手"。
                     --   ⚠ 这正是 A/C/D 路一直缺的那一环（它们接管到底、从不放手）。
+                    -- ★★★ 2026-10-16（用户第四次修正）：**改派给专属链家族的"伪标记"不算持有标记锁** ★★★
+                    --   用户原话：「泰坦的优先级很低，只有附近无其他敌人时才会追踪泰坦」。
+                    --   上一轮（e0f7eb9）把专属链目标整个踢出候选表修好了「锁定泰坦 ⇒ 不走链」，
+                    --   代价是泰坦再也争不过旁边的小怪。现在改派会主动挑链家族目标（rank=-1），
+                    --   于是**必须**同时保证"这条伪标记不会挡死链"，否则就退回到上一轮那个 bug。
+                    --
+                    --   链路（实机可验）：改派挑中泰坦 ⇒ 消费成 `my_mark`/`my_structure`
+                    --   ⇒ `priority:step` 把引擎选择写到泰坦上（`old.lock` 建立、`m.selection_id`=泰坦）
+                    --   ⇒ 若本行仍判"持有标记锁"，则 `titan_selected=false`
+                    --   ⇒ 泰坦段 (`titan:step`) 与点目标段**都不跑** ⇒ 雷撞本体、不能颗秒。
+                    --   ⇒ 判据：**改派出去的那颗雷，锁的是链家族单位**时，视为"没有标记锁"，
+                    --     让 `titan_selected` 成立、由专属链接手（腹点几何 + standoff + 弱点）。
+                    --
+                    --   ⚠ 必须**排除结构**（虫洞/构筑）：`has_weakpoint` 同时也认结构
+                    --     （`claim_profile` 认领虫洞 + 泰坦 + 变体 + 蟑龙）⇒ 若不一并排掉，
+                    --     玩家标记的虫洞会被这条放宽判据害成"没有锁"，正是用户报的
+                    --     ①「优先级功能影响到标记虫洞炸毁」。结构走 `mark_is_wormhole`
+                    --     与结构路，本行一个字都不许碰。
+                    --   ⚠ 只对 `old.spread`（**我们自己改派出去的**雷）放宽：
+                    --     玩家点名标记的雷（`old.spread` 为空）行为**完全不变** ——
+                    --     它们仍走既有的"到 10 m 放手"（`titan_approach`）那条已验证的路。
+                    --   ⚠ 全部内联、**不新增 local**：本闭包 upvalue 余量为 0
+                    --     （多一个被捕获的 local 会让整份 chunk 编译失败，实机事故）。
+                    --   ⚠ 判据用 `m.selection_resource`（**不是** `old.lock.resource`）：
+                    --     `native_priority` 构造的 `track` 表**没有** `resource` 字段
+                    --     （只有 id/identity/unit/raw/score/generic/point…，见其 991/1007 行）
+                    --     ⇒ 读 `old.lock.resource` 恒为 nil ⇒ 这道放宽**静默失效**。
+                    --     而 `m.selection_resource` 正是**同帧**由同一个 `result` 写下的
+                    --     （见上面 `result.kind=='lock'` 分支：`old.lock=result.track` 与
+                    --      `m.selection_resource=result.resource` 同源）⇒ 与 50 行后
+                    --     `titan_selected` 用的是**同一把尺子**，不会出现两套判据打架。
                     local marked_lock_held=old~=nil and old.lock~=nil
                         and not (env.titan_approach_released and env.titan_approach_released(m.id))
+                        and not (old.spread==true and has_weakpoint(m.selection_resource)
+                            and not (env.structure_profiles
+                                and env.structure_profiles[m.selection_resource]~=nil))
                     -- ★★★ 明确的"ping 地面点"压过**引擎自选**的泰坦（2026-10-05 用户报）★★★
                     --
                     -- 现象（用户原话）：「如果我没标记泰坦，标记了泰坦附近的空地，
@@ -3867,6 +4201,110 @@ function M.new(env)
                                                     tostring(e.id),e.resource,blast_lift,tostring(sw_i),
                                                     p[1],p[2],p[3],
                                                     blast_point[1],blast_point[2],blast_point[3]))
+                                            end
+                                        end
+                                    end
+                                    -- ★★★ 2026-10-16（用户要求）：**可调引爆点上下距离** ★★★
+                                    --
+                                    --   用户原话：「能否让战争纵步者的引爆点可以自行调整上下距离？」
+                                    --   目的（用户）：「引爆点偏高的话会打不死」⇒ 要能往下调。
+                                    --
+                                    -- 【为什么不复用上面那段的 `lift`】
+                                    --   `lift` 是相对**实体原点（地表）**的绝对高度。2026-10-14 在
+                                    --   强袭虫上做过一版并被用户整段回退，理由记在 README
+                                    --   「强袭虫家族『抬高引爆点』（已整段回退）」：锚点不同 ⇒
+                                    --   "现状高度 = 引擎 aim + 0.25"与 lift **差多少只能靠试**，
+                                    --   且随姿态漂移 ⇒ 用户判定「没啥收益」。
+                                    --   ⇒ 本条改用**相对引擎瞄准点**的偏移（`env.unit_blast_dz`）：
+                                    --     锚点就是引擎自己那个 `aim` 点 ⇒ **0 精确等于今天的行为**，
+                                    --     不需要试、也不随姿态失准。用户要往下调就给负值。
+                                    --
+                                    -- 【点从哪来】引擎的 `calls.aim` 就是 native_arrival 实体路径
+                                    --   用来定 `goal` 的那个函数（同签名、同 ABI）：
+                                    --     `calls.aim(out, pair, own_position)`，`out` 收三维坐标。
+                                    --   ⇒ 我们调**同一个函数**拿"引擎瞄点"，再加 `unit_blast_dz`
+                                    --     得到要飞去的点，按 `point_target`（已验证的写路径）交给
+                                    --     arrival 段 ⇒ 引擎手里没有实体可撞 ⇒ 由**我们**判引爆
+                                    --     ⇒ 偏移才真的生效（否则引擎会先撞击引爆，偏移白设）。
+                                    --
+                                    -- 【为什么缓存偏移而不是每帧都用引擎瞄点】
+                                    --   一旦我们写成点目标（`invalid_id`），引擎下一帧就看不到
+                                    --   实体目标了 ⇒ `calls.aim` 的前置会间歇失效 ⇒ 只用"能算出来
+                                    --   的那几帧"会变成断续驱动（收敛不了）。
+                                    --   ⇒ 取一次「瞄点 − 实时 motion 位置」的**世界偏移**存进
+                                    --     `P.adz[m.id]`，之后每帧用实时 motion 位置重新落点（点跟着
+                                    --     目标走），引擎再次选中时刷新偏移。
+                                    --   ⚠ 这是**近似**（目标转向后世界系偏移会略旧）⇒ 日志必须能
+                                    --     看出"这颗用的是哪一帧的偏移"（`age=` 字段）。
+                                    --   ⚠ 用 `e.address`（实体）与 `c.state_address`（记录）构造
+                                    --     `pair`，与 native_arrival / native_priority 同款；实体地址
+                                    --     由下方 `blast_site` 分支通过 `TargetData` 拿到。
+                                    local usite=site
+                                    if usite and usite.aim_dz and env.unit_blast_dz then
+                                        local dz=tonumber(env.unit_blast_dz)
+                                        if dz then
+                                            local oka,aim=pcall(function()
+                                                local pair=ffi.new('void *[2]',
+                                                    {ffi.cast('void *',e.address),
+                                                     ffi.cast('void *',scope.prepared.state_address)})
+                                                local out=ffi.new('float[3]')
+                                                local ownb=ffi.new('uint8_t[12]',
+                                                    scope.prepared.own_position_bytes)
+                                                assert(scope.calls.aim(out,pair,ownb)
+                                                    ==ffi.cast('void *',out),'unit aim output')
+                                                return TargetData.vector(ffi.string(out,12),0)
+                                            end)
+                                            if oka and type(aim)=='table' then
+                                                local okm,mp=pcall(d.position,e)
+                                                if okm and mp then
+                                                    -- 偏移 = 引擎瞄点 − 实体 motion 位置（世界系）
+                                                    P.adz[m.id]={aim[1]-mp[1],aim[2]-mp[2],
+                                                        aim[3]-mp[3],frame=frame}
+                                                end
+                                            elseif env.emit and not P.abz[m.id] then
+                                                P.abz[m.id]='noaim'
+                                                env.emit('unit_aim_failed;entity='..m.id
+                                                    ..';resource='..tostring(e.resource)
+                                                    ..';detail='..tostring(aim))
+                                            end
+                                            -- 用**实时 motion 位置 + 偏移**落点（点跟着目标走）
+                                            local off=P.adz[m.id]
+                                            local okp2,p2=pcall(d.position,e)
+                                            if off and okp2 and p2 then
+                                                -- ★★★ **今天的高度** = 引擎 aim **+ 0.25** ★★★
+                                                --   用户选定的锚点是"相对引擎瞄准点"，而"现状"
+                                                --   并不等于 aim 本身：`native_arrival:141` 那句
+                                                --     `goal=Data.vector(...);goal[3]=goal[3]+0.25`
+                                                --   就是**今天**用来引爆的点。
+                                                --   ⚠ 我第一版漏了这个 0.25 ⇒ `dz=0` 会比现状**低
+                                                --     0.25 m**，而文案却说"0 = 与改动前完全一样"
+                                                --     ⇒ 用户会拿到一个自己没要求的静默改动
+                                                --     （本工程最忌讳的一类错）。
+                                                --   ⇒ 基线必须带上它：点 = aim + 0.25 + dz。
+                                                --   ⚠ 0.25 是 `native_arrival` 里的常量（安全层文件，
+                                                --     只按**锚点**比对 ⇒ 那个数不在锚点里，但也**不许**
+                                                --     被我们改）。守门 `test_unit_blast_dz.py` 同时钉住
+                                                --     这两处，哪边单独漂移都会被抓住。
+                                                --     （注意：点目标路径**不会**再加 0.25 ——
+                                                --      `native_arrival:134` 直接 `goal=want_point`，
+                                                --       所以这里必须由我们补上。）
+                                                local aim_base=0.25
+                                                blast_point={p2[1]+off[1],p2[2]+off[2],
+                                                    p2[3]+off[3]+aim_base+dz}
+                                                blast_site=usite
+                                                if env.emit and P.abz[m.id]~='ok' then
+                                                    P.abz[m.id]='ok'
+                                                    env.emit(string.format(
+                                                        'unit_blast;entity=%s;resource=%s;dz=%.2f'
+                                                        ..';base=%.2f;aim_dz=%.2f,%.2f,%.2f;age=%s'
+                                                        ..';origin=%.2f,%.2f,%.2f'
+                                                        ..';point=%.2f,%.2f,%.2f',
+                                                        tostring(m.id),e.resource,dz,aim_base,
+                                                        off[1],off[2],off[3],
+                                                        tostring((off.frame and (frame-off.frame)) or '-'),
+                                                        p2[1],p2[2],p2[3],
+                                                        blast_point[1],blast_point[2],blast_point[3]))
+                                                end
                                             end
                                         end
                                     end

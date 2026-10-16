@@ -8,6 +8,7 @@
     "small_filter": "Filter",
     "target_allowlist": "Allowlist",
     "target_reservations": "Reservations",
+    "spread_priority": "SpreadPriority",
     "selection_veto": "Veto",
     "native_observer": "Observer",
     "native_authority": "Authority",
