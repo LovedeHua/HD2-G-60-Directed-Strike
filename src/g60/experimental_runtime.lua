@@ -174,6 +174,11 @@ function M.new(env)
         --     保证"绕行期间永远有点注入" ⇒ 永不退回实体 aim ⇒ 熔断不再被喂。
         --   ⚠ 复用值必须是**算好的整点**（含 +1.0 抬升），再算一次会每帧累加漂移。
         lastpt={},
+        -- ★★★ 2026-10-14（用户拍板 **B 方案**）：**标记保留窗** ★★★
+        --   `retain`  = 标记 id → `{last=最后一次见到它的帧, age=那次看到的存活秒数, logged=?}`
+        --   `retain_n`= 条目计数（超上限整表清空 —— 这只是「记忆提示」，丢了不影响正确性）
+        --   ⚠ 进 P 而不是新开 local：tick 的 xpcall 闭包已接近 60 upvalue 上限。
+        retain={},retain_n=0,
         -- ★ 2026-10-14：`guide_mismatch` 的节流表（每颗雷 1 条/秒）——
         --   与其它诊断表一样**放进 P**（tick 的 xpcall 闭包已近 60 upvalue 上限）。
         gm={},
@@ -828,7 +833,15 @@ function M.new(env)
     --     · `assigning` = "这是**新分配**"（true）⇒ **不继承**别人的在飞锁；
     --                     `remembered_intent` 不传（nil）⇒ 保持既有语义。
     P.usable=function(mark,live,assigning)
-        if live or (mark and mark.current) then return true end
+        if live or (mark and mark.current) then
+            -- ★ 顺带记下"最后一次见到它"与那一刻的存活秒数（保留窗的判据来源）。
+            if mark and env.mark_retain_seconds and env.mark_retain_seconds>0 then
+                if P.retain_n>128 then P.retain={};P.retain_n=0 end
+                P.retain[mark.id]={last=frame,age=mark.age}
+                P.retain_n=P.retain_n+1
+            end
+            return true
+        end
         if not mark then return false end
         -- ★★ 2026-10-10：**已在飞的锁 = 玩家意图**（用户报"标记泰坦后手雷飞向附近敌人"）★★
         --   判据：该标记的目标 id 正被某颗在飞的 G-60 锁着（`P.locked_ids`）。
@@ -843,10 +856,47 @@ function M.new(env)
         --     置 false ⇒ 回到旧的"长期记忆"行为。
         --   ⚠ **已在飞向它的那颗不受影响**：它持有 `old.lock`，下一帧走
         --     native_priority 的 sticky 复核（按实体 id 重读），不依赖这条记忆。
-        if claim_profile(mark.resource) then
-            return env.structure_mark_live_only==false
+        -- ★★★ 2026-10-14（B 方案）：**标记保留窗** ★★★
+        --   用户要求：「标记远距离目标时增加标记时间 / 残留标记」。
+        --   背景：标记有效期跟着 ping 图标走（槽 `+0x10 duration` = **8.0 秒**），
+        --     而远距离目标的飞行时间可以超过 8 秒 ⇒ 磨蹭几秒再扔就不认了。
+        --   ▸ 语义：图标消失后再认 `env.mark_retain_seconds` 秒（0 = 关闭 = 与旧行为
+        --     **逐字节一致**；600 = 10 分钟，实际等于"整局残留标记"）。
+        --   ▸ **只在"新接管"这条判据上生效**：已经在飞的那颗走上面 `P.locked_ids`
+        --     那条（它本来就追到底）⇒ 本改动不碰它。
+        --   ▸ **取消 vs 过期**（本方案的要点）：图标是**活够了时长才消失**（`age`
+        --     已接近 duration）⇒ 过期 ⇒ 按保留窗继续认；若是**远早于时长**就没了
+        --     （玩家主动取消/被别的 ping 覆盖）⇒ **立即丢弃**，不再认。
+        --     判据用 `mark.age`（标记行自带，来自槽 `+0x14`），阈值留 0.5 秒余量：
+        --     观测本身有节流（忙 4 帧 / 空转 12 帧），最后一眼可能比 8.0 低一点。
+        --   ⚠ 保留期内**仍然**要过下游全部复核（实体存活 / 身份未变 / 距离门 /
+        --     排除表）—— 本判据只决定"这条记忆算不算数"，不替代任何校验。
+        local lk=nil
+        do
+            local rs=tonumber(env.mark_retain_seconds) or 0
+            if rs>600 then rs=600 end
+            if rs>0 then
+                local rec=P.retain[mark.id]
+                if rec then
+                    local expired=(rec.age==nil) or (rec.age>=7.5)
+                    local fresh=(rs>=600) or ((frame-rec.last)<=rs*60)
+                    if expired and fresh then
+                        lk=true
+                        if env.emit and not rec.logged then
+                            rec.logged=true
+                            env.emit('mark_retained;target='..tostring(mark.id)
+                                ..';resource='..tostring(mark.resource)
+                                ..';seen_age='..tostring(rec.age)
+                                ..';window='..tostring(rs)..';frame='..frame)
+                        end
+                    end
+                end
+            end
         end
-        return env.unit_mark_live_only==false
+        if claim_profile(mark.resource) then
+            return env.structure_mark_live_only==false or lk==true
+        end
+        return env.unit_mark_live_only==false or lk==true
     end
     -- ★★ 2026-10-10：**五档档位的唯一实现**（`env.mark_tier`）★★
     --   两处要用它：① `structure_ping` 的队内次序（`options.priority`）
@@ -1040,7 +1090,7 @@ function M.new(env)
     local function release_all()
         for _,t in pairs(tracked) do runner:release(t.ref) end
         tracked={};current=nil
-        retired={};last_ping_queue=nil
+        retired={};last_ping_queue=nil;P.retain={};P.retain_n=0
         if reservations then reservations:reset() end
         if ping then ping:reset() end
         if structure_ping then structure_ping:reset() end

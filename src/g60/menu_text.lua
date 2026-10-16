@@ -112,6 +112,9 @@ M.TEXT = {
         ['other_takeover_distance.label'] = 'Max takeover range: other targets (m)',
         ['other_takeover_distance.desc'] =
             'How far away a marked non-structure target (Titan / Titan variant / Dragonroach / ordinary enemy ...) may be and still be taken over. Titian family and other enemies share this one value. The structure range above is separate. Default 200',
+        ['mark_retain_seconds.label'] = 'Keep marks alive after the icon fades (s)',
+        ['mark_retain_seconds.desc'] =
+            'A marker icon only lives about 8 s, but a G-60 flying to a distant target can take longer than that. With this above 0 the mod keeps remembering the mark for this many seconds after the icon fades, so you can still throw at it. 600 s is effectively the whole match. 0 = off (default). A mark you cancel yourself (icon vanishes long before its 8 s) is dropped immediately',
         -- ★★★ 2026-10-14（用户要求「安全区以引爆点为中心」）★★★
         ['safe_zone_target_radius.label'] = 'Safe zone (around blast point)',
         ['safe_zone_target_radius.desc'] =
@@ -165,6 +168,9 @@ M.TEXT = {
         ['other_takeover_distance.label'] = '接管距离上限：其他目标（米）',
         ['other_takeover_distance.desc'] =
             '标记的**非结构**目标（泰坦 / 泰坦变体 / 蟑龙 / 普通敌人…）离多远之内才接管。**泰坦家族与其他敌人共用这一个值**。上面那个结构距离是**另一档**。默认 200',
+        ['mark_retain_seconds.label'] = '图标消失后仍认标记（秒）',
+        ['mark_retain_seconds.desc'] =
+            '标记图标只活约 8 秒，而 G-60 飞远距离目标可能更久。这个值大于 0 时，图标消失后再保留这么久，你仍然可以扔雷追踪它。**600 秒 ≈ 整局残留标记**。**0 = 关闭（默认）**。⚠ **你主动取消的标记不算数**（图标远早于 8 秒就消失 ⇒ 立即丢弃）；已在飞的那颗不受影响',
         -- ★★★ 2026-10-14（用户要求「安全区以引爆点为中心」）★★★
         ['safe_zone_target_radius.label'] = '安全区半径（以引爆点为中心）',
         ['safe_zone_target_radius.desc'] =

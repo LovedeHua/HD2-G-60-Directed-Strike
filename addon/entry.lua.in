@@ -349,6 +349,16 @@ local state={version='@@VERSION@@-bughole',filter_enabled=false,designed_targets
     --   ⚠ 0 安全（闸门 `if P.idle_skip>0` 会短路），**负数危险**（会让
     --     `frame%N` 恒为 0 ⇒ mod 永远不跑）；runtime 对非数/0/负数一律回默认值。
     scan_every_busy=4,scan_every_idle=12,
+    -- ★★★ 2026-10-14（用户拍板 **B 方案**）：**标记保留窗（秒）** ★★★
+    --   用户要求：「标记远距离目标时增加标记时间 / 残留标记」。
+    --   ▸ 图标消失后再认这么久（标记有效期本身跟着 ping 图标 ≈8 秒）。
+    --   ▸ **0 = 关闭**（默认）⇒ 与改动前**逐字节一致**：新增行为不偷偷改变手感。
+    --   ▸ 600 秒 = 10 分钟 ⇒ 实际等于"整局残留标记"。
+    --   ▸ 它在 runtime 的 `P.usable` 里是**唯一判定点**（与两个
+    --     `*_mark_live_only` 开关同一处，不新增第二套判据）。
+    --   ▸ **主动取消不算数**：图标远早于 8 秒就消失 ⇒ 立即丢弃（判据见 runtime）。
+    --   ▸ 已在飞的那颗不受影响（它持有 `old.lock`，本来就追到底）。
+    mark_retain_seconds=0,
     -- ★★ 单位标记的记忆判据（2026-10-01，用户实机反馈）★★
     --   用户原话：「标记过的单位，即使取消标记，G60 仍会追踪该单位」。
     --
@@ -1374,6 +1384,7 @@ local ok,why=pcall(function()
         point_target_enabled=state.point_target_enabled,
         point_target_ttl_frames=state.point_target_ttl_frames,
         scan_every_busy=state.scan_every_busy,scan_every_idle=state.scan_every_idle,
+        mark_retain_seconds=state.mark_retain_seconds,
         unit_mark_live_only=state.unit_mark_live_only,
         structure_mark_live_only=state.structure_mark_live_only,
         marked_unit_rank_first=state.marked_unit_rank_first,
@@ -1534,6 +1545,13 @@ local ok,why=pcall(function()
             key='other_takeover_distance',
             get=function() return tonumber(host.env.other_takeover_distance) or 200 end,
             set=function(v) host.env.other_takeover_distance=tonumber(v) or 200 end},
+        -- ★★★ 2026-10-14（用户拍板 B 方案）：**标记保留窗（秒）** ★★★
+        --   0 = 关闭（默认，与改动前一致）；600 = 10 分钟 ≈ 整局残留标记。
+        --   ⚠ 范围与 runtime 的夹取**对齐**（0~600），否则是死配置。
+        {id='g60.mark_retain_seconds',kind='slider',min=0,max=600,step=5,
+            key='mark_retain_seconds',
+            get=function() return tonumber(host.env.mark_retain_seconds) or 0 end,
+            set=function(v) host.env.mark_retain_seconds=tonumber(v) or 0 end},
     }
     local function menu_register()
         if menu.host then return end
@@ -1748,6 +1766,8 @@ local ok,why=pcall(function()
         -- ★ 2026-10-03：观测节流周期必须可见 —— "看不到就等于无法确认"（本工程老毛病）
         ..';scan_every_busy='..tostring(state.scan_every_busy)
         ..';scan_every_idle='..tostring(state.scan_every_idle)
+        -- ★ 保留窗必须可见（看不到 = 无法确认，本工程老毛病）
+        ..';mark_retain='..tostring(state.mark_retain_seconds)
     local status_titan='titan_settings;titan_standoff='..state.titan_standoff
         ..';titan_arrival_radius='..state.titan_arrival_region.radius..';titan_arrival_depth='..state.titan_arrival_region.depth
         ..";adaptive_approach="..tostring(state.adaptive_approach)..";blast_regions="..tostring(state.blast_regions)
