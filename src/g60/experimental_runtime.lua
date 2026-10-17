@@ -144,6 +144,11 @@ function M.new(env)
         -- ★ 2026-10-10 安全区：`safehold[id]` = 该手雷最近一次因安全区而**拒爆**的帧。
         --   用于**压制 stalled**（不炸会被判成"卡住" ⇒ 转 search ⇒ 清锁、乱飘）。
         safehold={},
+        -- ★★ 2026-10-18：空ping 点消失后「松手」的去重表 ★★
+        --   `pdl[id]` = 已打过 `point_lost_hold;`（已压住）
+        --   `pdh[id]` = 已打过 `point_lost_released;`（已释放）
+        --   ⚠ 放进 P 而**不是**新开 local：tick 的 xpcall 恰好 60 upvalue。
+        pdt={},
         -- ★ 2026-10-10：安全区"因读不到玩家坐标而放行"的按手雷去重表。
         --   为什么必须有：fail-open 一旦静默，三条路径全不拦时**日志里什么都看不到**
         --   （实机踩过：blast_hold 从 1062 变 0，完全不知道为什么）。
@@ -187,7 +192,7 @@ function M.new(env)
         --     实机计数：entity=954 已经到 **28/30**（差两次就报废）。
         --   ⇒ 修法：圆心解不出来时，**原样复用上一次的绕行点**（不重算、不偏移），
         --     保证"绕行期间永远有点注入" ⇒ 永不退回实体 aim ⇒ 熔断不再被喂。
-        --   ⚠ 复用值必须是**算好的整点**（含 +1.0 抬升），再算一次会每帧累加漂移。
+        --   ⚠ 复用值必须是**算好的整点**（含 +2.0 抬升），再算一次会每帧累加漂移。
         lastpt={},
         -- ★★★ 2026-10-14（用户拍板 **B 方案**）：**标记保留窗** ★★★
         --   `retain`  = 标记 id → `{last=最后一次见到它的帧, age=那次看到的存活秒数, logged=?}`
@@ -297,6 +302,43 @@ function M.new(env)
     local frame_errors={}
     local structure_issue_counts={}
     local last_structure_issue
+    -- ★★★ 2026-10-18（用户要求）：**启动宽限期** ★★★
+    --
+    --   用户原话：「顺便你处理一下启动异常」。
+    --   实机证据（`G60BugholeLock.log` 每次启动都有）：
+    --     L25  selfprobe;err=…:1713: pointer bound;frame=2
+    --     L26  frame_error;detail=…:1713: pointer bound ~~ [C]: in function 'assert' | …
+    --     L27  structure_ping_unavailable;detail=…:4506: local Ping creator unavailable
+    --
+    --   这两类**是"还没准备好"，不是"坏了"** —— 本文件 2026-09-27 的注释（见下面
+    --   `if not ok` 处）早就这么写了，但当时只做了**去重**、没做**归类**
+    --   ⇒ 它们仍被算进 `frame_error`，**污染错误记账**：
+    --     真错误容易被这条每次启动都出现的噪音淹没（那次实机就是这么被带偏的）。
+    --
+    --   ⇒ 宽限期内、且匹配已知"未就绪"签名的 ⇒ 进**独立桶**：
+    --       打一条 `startup_not_ready;`、计入 `startup_not_ready_total`，
+    --       **不动** `frame_errors` / `frame_error_total`。
+    --
+    --   ⚠⚠ 只按**签名**放宽，**不**按"帧号小"放宽 ⇒ 宽限期内的**真错误**照旧计入
+    --     `frame_error`（这是"不许把错误吞掉"的底线，守门有反向断言钉着）。
+    --   ⚠ 宽限期过后一律恢复原判 ⇒ 这些签名**不会**被永久豁免
+    --     （晚出现的、或真正反复出现的仍是真错误）。
+    --   ⚠ 时长可调（`env.startup_grace_frames`，默认 600 帧 ≈ 10 s）：
+    --     与 `structure_issue` 那条"逐帧刷屏"同源问题，故沿用同一思路。
+    -- ⚠⚠ 状态必须挂在 `P` 上，**不能用新的 local** ——
+    --   `host:tick()` 的 xpcall 闭包有 **60 个 upvalue 的硬上限**（Lua 5.1），
+    --   本次刚刚就把它撞爆了（编译门当场报
+    --   `function at line 1363 has more than 60 upvalues`）。
+    --   `P` 本身已是 upvalue ⇒ 把字段挂在它上只占 **1** 个。
+    P.startup_grace_frames=tonumber(env.startup_grace_frames) or 600
+    P.startup_sigs={
+        'pointer bound',                  -- native_observer.lua 的 ptr()
+        'read bound',                     -- native_observer.lua 的 read()
+        'local Ping creator unavailable',  -- native_ping.lua
+        'Ping UI inactive',                -- native_ping.lua
+    }
+    P.startup_not_ready={}
+    P.startup_not_ready_total=0
     -- ★ 竞争态熔断（配合 native_priority 的故障域隔离，见 g60.priority_faults）
     -- 单颗 G-60 的一次 setter 竞争不该杀死整局；但如果同一帧里**多颗** G-60 全部
     -- 竞争态失败，说明是我们对引擎状态的理解出了问题（而不是单点时序），
@@ -315,8 +357,42 @@ function M.new(env)
     --   ⚠ 两个开关是两回事，不要混：前者 = "要不要预约"，后者 = "预约几个名额"。
     --   ⚠ 这里的 cap 只是**初值**；运行期每帧由 `set_cap` 按"场上有几个标记"重设
     --     （见挑选处的说明）⇒ 传什么都不会让"单标记/多标记"两个设置互相干扰。
+    -- ★★★ 2026-10-18（用户要求）：**白名单单位可突破每目标手雷上限** ★★★
+    --   用户原话：「增加白名单，白名单里面的单位可以突破手雷数量上限，
+    --     移动工厂2颗手雷，坦克及其变体接受2颗手雷，噪轰引擎可以接受4颗手雷，
+    --     猎杀器、证真者可以接受2颗手雷」，且「这个白名单对无标记的情况下也起作用」。
+    --   ⚠ 哈希全部**交叉验证**：离线查自 `EntityComponentMap.json`（十进制 resource_id）
+    --     换算成 16 进制后，与 `spread_priority.lua` 里既有的条目**逐字比对**。
+    --   ⚠ 已**排除子部件**（`坦克 轻机枪/加特林/加农炮塔`、`移动工厂 加特林 MK*`、
+    --     `噪轰引擎 加特林*》）—— 名册规则：空格尾段=子部件 ⇒ 不收。
+    --   ⚠ 这张表只放**超过基础上限 1** 的单位；不在表里的一律用基础上限。
+    local GRENADE_CAP_WHITELIST={
+        ['d37e8d120d2836e3']=2,  -- 移动工厂
+        ['30f2dee2333f227a']=2,  -- 移动工厂 带干扰塔
+        ['bc242702fb46b7e7']=4,  -- 噪轰引擎
+        ['53d8919d7b8abd67']=2,  -- 淋灭坦克
+        ['31bae74d2f064d8d']=2,  -- 淋灭坦克 MK2
+        ['c6449ffd9ea3779c']=2,  -- 碎裂坦克
+        ['63df3d07b7424588']=2,  -- 铁幕坦克
+        ['965eae5a51acdd4a']=2,  -- 猎杀器
+        ['d63fcbff0851b7af']=2,  -- 猎杀器 MK2
+        ['20b9c7734daead65']=2,  -- 证真者
+        -- ★★★ 2026-10-18（用户要求）：**泰坦及其变体、蟑龙也纳入**（各 2 颗）★★★
+        --   用户原话：「泰坦及其变体、蟑龙也纳入白名单里面，可以被2颗手雷追踪」。
+        --   哈希来源（都在 `compat/` 里，**不是猜的**）：
+        --     · `9e2e17f2ccccafdd` —— 吐酸泰坦（`titan_profile.lua` 的 `resource`）
+        --     · `ef04cb84d097a497` —— 孢子泰坦（= 泰坦**变体**；`titan_variants.lua`
+        --       说明里写明两者同属 `content/fac_bugs/cha_strider/`，只是叶子名不同）
+        --     · `960b48a421a3faaa` —— 蟑龙（`weakpoint_profiles.lua` 的 `kind="thorax"`）
+        --   ⚠ `titan_variants.lua` 里**还有 3 个 warrior 变体**
+        --     （`7e4c6b45bcc45c3f` / `8c31b749759cbd61` / `b6a181adcf547aeb`）
+        --     —— 那些是**武斗虫**，**不在**用户说的“泰坦及其变体”里 ⇒ **不收**。
+        ['9e2e17f2ccccafdd']=2,  -- 吐酸泰坦
+        ['ef04cb84d097a497']=2,  -- 孢子泰坦（泰坦变体）
+        ['960b48a421a3faaa']=2,  -- 蟑龙
+    }
     local reservations=env.exclusive_targets
-        and Reservations.new(tonumber(env.max_grenades_per_target) or 1)
+        and Reservations.new(tonumber(env.max_grenades_per_target) or 1, GRENADE_CAP_WHITELIST)
     assert(not reservations or (env.priority_catalog and env.fuse_profile),'exclusive allocation requires priority and search cleanup')
     local current,runner
     -- ★★ 2026-10-10 爆炸安全区：统一门函数（**两条引爆路径都必须过这道门**）★★
@@ -430,27 +506,26 @@ function M.new(env)
         end
         return best,bd
     end
-    -- ★★★ 2026-10-14（用户要求）：安全区**以引爆点为中心** + 跟主支（上游）口径 ★★★
+    -- ★★★ 2026-10-14（用户要求）：安全区**以引爆点为中心** + 跟主支口径 ★★★
     --   用户原话：「安全区机制也改成跟主支类似的获取到玩家的坐标不在安全区内才能引爆，
     --   而不是现在的机制，然后安全区是以引爆点为中心，而不是手雷为中心」。
     --
-    --   重构后**两个**半径、判定顺序与上游一致（先手雷、后目标）：
-    --     ① `safe_zone_target_radius`（上游的 `target_safety_radius`，默认 **12**）
+    --   重构后**两个**半径、判定顺序与主支一致（先手雷、后目标）：
+    --     ① `safe_zone_target_radius`（**本 mod 的主判据**，默认 **12**）
     --        玩家离**预期引爆点**在这个半径内 ⇒ 不引爆 —— **这是本 mod 的主判据**
-    --     ② `blast_safe_radius`（上游已移除的 `player_safety_radius`，默认 **0 = 关**）
+    --     ② `blast_safe_radius`（可选的手雷半径判据，默认 **0 = 关**）
     --        玩家离**手雷本体**在这个半径内 ⇒ 不引爆（保留为可选项）
-    --   ⚠ 上游算式（README 1.3.17）：`半径 − 爆点最大偏离 2.5 = 离玩家最小距离`。
-    --     上游发布值 15 是为了 ≥12.5 m（刚好在 12 m 外圈伤害半径之外）；
+    --   ⚠ 半径与「离玩家最小距离」的关系：`半径 − 爆点最大偏离 2.5 = 最小距离`。
+    --     取 15 是为了 ≥12.5 m（刚好在 12 m 外圈伤害半径之外）；
     --     本工程取 12 ⇒ 该下界 9.5 m ⇒ **会吃到 12 m 外圈内的减伤**。
     --     这是知情选择（用户 2026-10-13 在主支拍板 12），不是笔误。
     --
-    --   ★★ fail-safe（**跟上游**，`env.safe_zone_failsafe`）★★
-    --   上游 1.3.13 原话：`If player positions cannot be read, no grenade detonates
-    --   until they can (fail-safe).`
+    --   ★★ fail-safe（`env.safe_zone_failsafe`）★★
+    --   语义：**玩家坐标读不到时，一颗都不引爆**（fail-safe），直到能读到为止。
     --     判据 = "**一个玩家坐标都读不到**"（手雷距离与目标距离**同时**为 nil），
     --     **不是**"读不到自己" —— 旧代码是后者，那是个真 bug：
     --     `self()` 失败但队友扫描成功时，旧代码 fail-open 放行，而手里明明有队友坐标。
-    --   ⚠ 与上游的一处**刻意差异**：上游把"玩家读不到"和"手雷读不到"当成同一件事；
+    --   ⚠ 一处**刻意差异**：原来把"玩家读不到"和"手雷读不到"当成同一件事；
     --     本工程分开 —— 手雷坐标读不到时，只要**目标半径**还有效就仍然按爆点判，
     --     两边都判不了才走 fail-safe。
     --   ⚠ 工程史警告：fail-open 是"静默失效"的温床 —— 实机出现过 `blast_hold` 从
@@ -513,7 +588,7 @@ function M.new(env)
         -- ★★ fail-safe：**一个玩家坐标都读不到**才走这里（gd2 与 td2 同时为 nil）★★
         if gd2==nil and td2==nil then
             if env.safe_zone_failsafe~=false then
-                -- 按上游：不引爆。⚠ 必须登记 `P.safehold`，否则 arrival 段会把
+                -- 按此语义：不引爆。⚠ 必须登记 `P.safehold`，否则 arrival 段会把
                 -- "故意等着"判成 stalled 并清锁（同绕行那一处豁免）。
                 P.safehold[ident]=frame
                 local key='fs:'..tostring(ident)
@@ -555,10 +630,9 @@ function M.new(env)
             end
             return true
         end
-        -- ★★★ 判据顺序**照上游**：先手雷，后目标 ★★★
-        --   上游 `PlayerProximity.hold`：`if radius and g…then 'grenade' end`
-        --   然后才 `if t and t.distance<=target_radius then 'target' end`。
-        --   保持这个顺序 ⇒ 日志 `about=` 与上游语义逐字对得上。
+        -- ★★★ 判据顺序：**先手雷，后目标** ★★★
+        --   先看手雷半径（`about='grenade'`），不成立才看目标半径（`about='target'`）。
+        --   两个半径互不覆盖 ⇒ 日志里的 `about=` 能直接说出「是哪个半径拦下的」。
         local about,dist
         if safe_grenade>0 and gd2 and gd2<=safe_grenade*safe_grenade then
             about,dist='grenade',gd2
@@ -659,7 +733,7 @@ function M.new(env)
     local titan=env.titan_profile and Titan.new(env)
     -- ★ 本 mod 接管的目标 = 玩家标记的虫洞 + 吐酸泰坦，其余全交还引擎 ★
     --
-    -- 历史（2026-09-27）：这里曾经是"裁剪 C"，把上游的三类
+    -- 历史（2026-09-27）：这里曾经是"裁剪 C"，把那三类
     -- （titan_profile / weakpoint_profiles / structure_profiles）收窄成
     -- **只认 structure_profiles**，理由是"只用 9 个虫洞"。
     -- ⇒ 泰坦 profile 虽在 compat/titan_profile.lua 里、titan_route/titan_aim
@@ -707,7 +781,7 @@ function M.new(env)
         --   · weakpoint_route 的 thorax 分支不查地面：
         --         goal={p[1],p[2],p[3]-profile.standoff}
         --     只有 Impaler 的 underside 分支才有 `transit<origin[3]+0.3` 的检查。
-        --   · 上游源码里有一句注释直接说明了这一点：
+        --   · 原始源码里有一句注释直接说明了这一点：
         --         -- Dragonroach can be airborne; its root is not a terrain-height sample.
         --   ⇒ 爆点由"瞄准点 − standoff"得出，与地面高度无关 ⇒ 天生适配飞行单位。
         --   · titan_context 也是通用的：它的断言里写着 "weakpoint scenegraph
@@ -1069,31 +1143,45 @@ function M.new(env)
     local world,last_time,last_ping_issue,last_ping_queue,last_link_status
     -- G-60 的 state 停留追踪（见下面的链路诊断）
     local state_key,state_age,saw_state4={},{},false
-    local state3_blocked=false
-    local state3_driven={}          -- 被 state-3 路径设过目标的 G-60
-    -- 自毁保护要**连续**几次危险信号才退回：单次抖动（例如刚好撞上引擎自己的
-    -- 状态切换）不该把这条实验路径永久关掉。
-    local STATE3_DANGER_LIMIT=3
-    local state3_danger=0
-    -- priority_skipped 的去重集合（同一 G-60 + 同一 reason 只打首条）
-    local skipped_probe={}
-    -- 观测失败计数（见下面 with_observation 调用处的 ★ 注释）
-    local OBSERVE_FAIL_LIMIT=8
-    local observe_fail={}
-    -- ★ 引导失败计数（2026-09-29）：与 OBSERVE_FAIL_LIMIT 同一思路，但管的是
-    -- **引导本身反复失败**（titan:step / runner:step 返回 nil），而不是观测拿不到窗口。
-    -- 实机 entity=1257 的 titan:step 持续抛 `Titan selection changed`，失败后
-    -- old.titan 保留 ⇒ 下一帧再试 ⇒ 无限循环 ⇒ G-60 挂在泰坦底下不动直到寿命耗尽。
-    -- 阈值取 30 帧（约 0.5 秒）：足够容忍偶发竞争，又能及时收手。
-    -- 只放弃该实体，不做全局禁用（2026-09-28 的教训）。
-    local GUIDE_FAIL_LIMIT=30
-    local guide_fail={}
-    -- selection_resource 缺失只提示一次（它可能连续很多帧发生）
-    local selection_resource_warned=false
-    -- 只读诊断去重：按**资源**去重（不是按实体）⇒ 条数受场上敌人种类数约束。
-    --   用途：确认"运输船"这个哈希在实机里真的作为 G-60 的引擎选择出现过。
-    local veto_seen={}
-    local EARLY_MIN_AGE=15       -- 至少飞够这么多帧才在早期 state 设目标
+    -- ★★★ 2026-10-18（用户要求「减少upvalue数量」）：**归组进一张表** ★★★
+    --   为什么：`host:tick` 的 upvalue 上限是 Lua 5.1 的 **60**，而它当时**已用 58**
+    --   （离限只剩 2）⇒ 任何新增 local 都会立刻把整份 chunk 编译掉
+    --   （2026-09-30 与 2026-10-18 已两次实机/构建事故）。
+    --   这 10 个名字**同时被 tick 捕获** ⇒ 合并成一张表只占 **1** 个 upvalue（省 9）。
+    --   ⚠ 它们都是“状态/计数/上限”，**互不依赖声明顺序** ⇒ 归组是安全的。
+    local S3={
+        -- 下面每行的语义与注释与归组前**逐字一致**。
+        state3_blocked=false,
+        state3_driven={},          -- 被 state-3 路径设过目标的 G-60
+        -- 自毁保护要**连续**几次危险信号才退回：单次抖动（例如刚好撞上引擎自己的
+        -- 状态切换）不该把这条实验路径永久关掉。
+        STATE3_DANGER_LIMIT=3,
+        state3_danger=0,
+        -- priority_skipped 的去重集合（同一 G-60 + 同一 reason 只打首条）
+        skipped_probe={},
+        -- 观测失败计数（见下面 with_observation 调用处的 ★ 注释）
+        OBSERVE_FAIL_LIMIT=8,
+        observe_fail={},
+        -- ★ 引导失败计数（2026-09-29）：与 OBSERVE_FAIL_LIMIT 同一思路，但管的是
+        -- **引导本身反复失败**（titan:step / runner:step 返回 nil），而不是观测拿不到窗口。
+        -- 实机 entity=1257 的 titan:step 持续抛 `Titan selection changed`，失败后
+        -- old.titan 保留 ⇒ 下一帧再试 ⇒ 无限循环 ⇒ G-60 挂在泰坦底下不动直到寿命耗尽。
+        -- 阈值取 30 帧（约 0.5 秒）：足够容忍偶发竞争，又能及时收手。
+        -- 只放弃该实体，不做全局禁用（2026-09-28 的教训）。
+        GUIDE_FAIL_LIMIT=30,
+        guide_fail={},
+        -- 至少飞够这么多帧才在早期 state 设目标
+        EARLY_MIN_AGE=15,
+        -- ⚠⚠ 2026-10-18：这两个**原本就在本区间里**（归组时被我**误删**）——
+        --   编译不报错（它们变成了**全局变量**），但语义变了。
+        --   守门 `veto_diag_deduped_by_resource` 把它抓出来的。
+        --   现一并归组进本表（同样省 upvalue）。
+        -- selection_resource 缺失只提示一次（它可能连续很多帧发生）
+        selection_resource_warned=false,
+        -- 只读诊断去重：按**资源**去重（不是按实体）⇒ 条数受场上敌人种类数约束。
+        --   用途：确认“运输船”这个哈希在实机里真的作为 G-60 的引擎选择出现过。
+        veto_seen={},
+    }
     local host={applied=0,aimed=0,skipped=0,disabled=false,native_lifetime_verified=false}
     -- ⚠ `local function pointer` 已**上移**到文件更早处（见下方 players_scan 之前）。
     --   原因：2026-10-10 实机 `safe_players;n=0;reason=…:7297: attempt to call global
@@ -1185,7 +1273,7 @@ function M.new(env)
         scope.snapshot={ref=ref,resource='8e325c933e55bf62',behavior_id=4,state=4,
             active=true,expired=false,selection_complete=true,selection_cleared=c.selection.cleared}
         if c.selection.has_target then
-            -- ★ 上游这里是 `assert(current.match.selection_resource,
+            -- ★ 这里原本是 `assert(current.match.selection_resource,
             --   'selected resource unavailable')`，实机把整条接管链打死了。
             --
             --   entity_resource() 读不到目标实体的资源哈希时返回 nil
@@ -1209,16 +1297,16 @@ function M.new(env)
             scope.snapshot.selected={ref={id=tostring(c.selection.id),scene=ref.scene,
                 generation='observed-target-only'},resource=sel_res,
                 resource_unknown=sel_res==nil}
-            if sel_res==nil and not selection_resource_warned then
-                selection_resource_warned=true
+            if sel_res==nil and not S3.selection_resource_warned then
+                S3.selection_resource_warned=true
                 env.emit('selection_resource_unknown;entity='..current.match.id
                     ..';selected='..tostring(c.selection.id)
                     ..';detail=treated_as_untrusted_target')
             end
         end
-        -- ★★★ 认出"这个自定义航点是我们自己写的"（2026-10-05，移植上游 runtime 6407-6416）★★★
+        -- ★★★ 认出"这个自定义航点是我们自己写的"（2026-10-05）★★★
         --
-        -- 上游原文注释一句话说清用途：
+        -- 原始注释一句话说清用途：
         --   `Permit priority to recognize the custom waypoint it already owns.
         --    It must still revalidate the target and current native observation.`
         --
@@ -1232,7 +1320,7 @@ function M.new(env)
         --   · `0x1d..0x28` == 持有者自己的 `point_bytes`
         --   · `+0x64 == 0` 类别掩码已清（原生 proximity 关着）
         -- 两个持有者都要看：
-        --   ① `track.titan`（泰坦/航点路径；上游只有这一种）
+        --   ① `track.titan`（泰坦/航点路径；原本只有这一种）
         --   ② `track.lock`（早期接管 state 2/3 的点目标路径 —— 本工程特有，见 native_priority 504-563）
         -- ⚠ 两者都要求 `point_bytes` 非 nil：没有点的锁（普通实体锁）不参与，
         --   否则会误判成"已拥有自定义航点"，把正常的实体选择写入也一起跳过。
@@ -2266,12 +2354,30 @@ function M.new(env)
                         r=math.sqrt(dx*dx+dy*dy+dz*dz)
                     end
                 end
+                -- ★★★ 2026-10-18（用户要求）：**下限 2 -> 0，且去掉 3.5 m 硬下限** ★★★
+                --   用户原话：「安全区绕行半径可以改为0，现在最低只能到2」。
+                --   `0` 的含义（用户确认）= **悬停在目标上方 1 m**：
+                --     绕行点本来就是 `{c[1]+R*cosθ, c[2]+R*sinθ, c[3]+LIFT}`
+                --     ⇒ `R=0` 时正好是 `(目标中心, 高度+LIFT)`。不需要新增机制。
+                --   ⚠ 原来这里有 `if Rm<3.5 then Rm=3.5 end`（实测引信 ~2.2 m + 余量）
+                --     —— 于是**菜单拖到 2、实际跑的是 3.5**：滑块在骗人。用户知情后选择放开。
+                --   ⚠⚠ **代价（必须记住）**：`Rm` 小于引信距离（实测 1.76/2.22/2.25 m）时，
+                --     手雷会真的贴近目标 ⇒ **引擎自己点火** ⇒ 安全区失效、可能挨炸。
+                --     这不是 bug，是这个取值的必然结果（用户自选）。
                 local Rm=tonumber(env.blast_safe_orbit) or 5.0
-                if Rm<2 then Rm=2 elseif Rm>20 then Rm=20 end
-                if Rm<3.5 then Rm=3.5 end    -- 硬下限：实测引信 ~2.2 m + 余量
+                if Rm<0 then Rm=0 elseif Rm>20 then Rm=20 end
                 -- 太近（比设定半径近 0.5 m 以上）⇒ **必须写**（往外推），
                 -- 否则只要我们的点还在，就一帧都不用写。
-                local need_write=(r==nil) or (r<Rm-0.5)
+                -- ★★★ 2026-10-18（用户拍板方案 B）：推离阈值改成**基于引信距离** ★★★
+                --   旧阈值是 `R-0.5`（**基于半径**）。`R` 小的时候它会**晚于引信**：
+                --     R=3.5 ⇒ 阈值 3.0 m（早于引信 2.2 m ⇒ 救得回来）
+                --     R=2   ⇒ 阈值 1.5 m（**晚于**引信 ⇒ 已经炸了）
+                --   ⇒ 引信不管半径多小都在 ~2.2 m 点火（实测 1.76/2.22/2.25 m）
+                --     ⇒ 阈值必须与 `R` **解耦**，取引信 + 余量 = **3.0 m**。
+                --   实证：2026-10-18 实机 5 次 `safe_engine_exploded` 的 dist =
+                --     2.17 / 2.28 / 2.53 / 2.67 / 2.95 —— **全部 < 3.0** ⇒ 3.0 能覆盖全部 5 次。
+                --   ⚠ 用**字面量**而不新增 local：tick 的 xpcall 恰好 60 upvalue。
+                local need_write=(r==nil) or (r<Rm-0.5) or (r<3.0)
                 -- ★★ 贴脸取消（用户拍板 2026-10-10，默认关）★★
                 --   ⚠⚠ **实测这条取消防不了爆**（2026-10-10 三次实机）：
                 --     `native_disposal` 的移除只对"**寿命已到期**"的雷兑现（那句
@@ -2459,7 +2565,15 @@ function M.new(env)
                 local okz,zres,zwhy=pcall(with_observation,ref,function(scope)
                     if not c then return {kind='no_center'} end
                     local R=Rm
-                    if r and r<Rm-0.5 then
+                    -- ★★ 2026-10-18（用户要求）：**悬停高度可自定义** ★★
+                    --   点 = `(目标中心水平偏移 R, 高度 +LIFT)`。原来是硬编码 2.0。
+                    --   ⚠ 实用区间：`R=0`（悬停）时手雷到中心的 3D 距离就是 `LIFT`，
+                    --     而推离安全网的阈值是 **3.0 m** ⇒ `LIFT<3` 会被推走（变缓振）。
+                    --     想真正悬停在目标上方，`LIFT` 需 ≥ 3。
+                    local LIFT=tonumber(env.blast_safe_lift) or 2.0
+                    if LIFT<0 then LIFT=0 elseif LIFT>20 then LIFT=20 end
+                    -- ★ 2026-10-18：阈值同样与 `R` 解耦（取 3.0）—— 理由见 `need_write` 处
+                    if r and (r<Rm-0.5 or r<3.0) then
                         R=r+2.5                      -- 命令它往外飞（追杀曲线切不进来）
                         if R<Rm then R=Rm end
                         if R>20 then R=20 end
@@ -2470,7 +2584,7 @@ function M.new(env)
                     --   （我们写的是**非自有** G-60，竞争概率比自有路径高得多）。
                     return arrival:step(scope,nil,nil,'vanilla',false,nil,nil,
                         {region=env.point_arrival_region,point=true,
-                         point_target={ox,oy,c[3]+1.0},early=true})
+                         point_target={ox,oy,c[3]+LIFT},early=true})
                 end)
                 current=nil
                 if not P.ehp[match.id] then
@@ -2505,10 +2619,18 @@ function M.new(env)
                     P.szw[match.id]=frame
                 end
             end
-            -- ★ 开关 + 半径 >0 才算"打开"。关着时**一次都不调用** run_safe_hold
+            -- ★ 开关 + **任一半径 >0** 才算"打开"。关着时**一次都不调用** run_safe_hold
             --   ⇒ 不开这个开关 = 与改动前逐字节一致，且**零额外读取**（perf 门盯着）。
+            -- ★★★ 2026-10-18 修正：原来只认 `blast_safe_radius`（**手雷**半径）>0，
+            --   而安全区的**主判据是目标半径** `safe_zone_target_radius`（默认 12）。
+            --   ⇒ 用户只开目标半径、手雷半径保持默认 0 时，这条路**静默关闭**，
+            --     而 `blast_safe_hold_at` 明明会用目标半径判 ⇒ 「开关开了没效果」。
+            --   ⚠ 必须认两个半径（任一 > 0 就算开着）：
+            --   否则那个预设对默认配置是**静默空转**（本工程反复栽的坑）。
+            --   ⚠ 默认 `engine_hold=false` ⇒ 对本条未开启的用户**零行为差异、零额外读取**。
             local safe_engine_hold=env.safe_zone_engine_hold==true
-                and (tonumber(env.blast_safe_radius) or 0)>0
+                and ((tonumber(env.blast_safe_radius) or 0)>0
+                     or (tonumber(env.safe_zone_target_radius) or 0)>0)
             for _,m in ipairs(observed.matches) do
                 local retired_key=m.identity_bytes..m.flight_start
                 -- ★★ 爆炸已触发 ⇒ 视为"完成"（2026-09-29）★★
@@ -2628,7 +2750,7 @@ function M.new(env)
                     return true
                 end
                 if retired[m.id] and retired[m.id]~=retired_key then retired[m.id]=nil end
-                -- ★ 裁剪 H：上游此处只判 `disposal and m.behavior_id==4 and state in {3,4,5}`
+                -- ★ 裁剪 H：此处原本只判 `disposal and m.behavior_id==4 and state in {3,4,5}`
                 --   且到期 —— 对**所有** G-60 生效，包括引擎原生锁定敌人的那些。
                 --   日志里 5 次 `arrival_retired;delivery=native_queue` 就是敌人在飞的 G-60
                 --   被本 mod 主动引爆（原生行为是让它自然过期）。同样属于"影响其他地方"。
@@ -2762,16 +2884,16 @@ function M.new(env)
                     end
                 end
                 local early_fp=m.identity_bytes..m.flight_start
-                local drive3=env.allow_state3 and not state3_blocked
+                local drive3=env.allow_state3 and not S3.state3_blocked
                     and (m.state==2 or m.state==3)
-                    and (state_age[early_fp] or 0)>=EARLY_MIN_AGE
-                if drive3 then diag.state3=diag.state3+1;state3_driven[m.id]=true end
+                    and (state_age[early_fp] or 0)>=S3.EARLY_MIN_AGE
+                if drive3 then diag.state3=diag.state3+1;S3.state3_driven[m.id]=true end
                 -- ★ 关键证据：我们只在 state 3 设目标，**从不直接改 state**。
                 --   所以如果之后这颗 G-60 出现在 state 4，就证明"设置 selection
                 --   能让引擎自己推进到 state 4" —— 这正是"无敌人可锁也能直飞虫洞"
                 --   能否成立的分水岭。没有这条日志就说明引擎不理我们的 selection。
-                if m.state==4 and state3_driven[m.id] then
-                    state3_driven[m.id]=nil
+                if m.state==4 and S3.state3_driven[m.id] then
+                    S3.state3_driven[m.id]=nil
                     env.emit('early_promoted;entity='..m.id..';from='..tostring(m.state)
                         ..';frames='..tostring(state_age[early_fp] or 0))
                 end
@@ -2811,7 +2933,9 @@ function M.new(env)
                         held.point_sticky=true
                         if env.emit then
                             env.emit('point_held;entity='..m.id..';frame='..frame
-                                ..';note=ping_gone_keep_flying')
+                                ..';note=ping_gone_keep_flying')  -- ⚠ 2026-10-18：这只是**诊断行**。
+                            --   真正的动作是点目标段里的 `old.point=nil` + `P.tpos=nil`
+                            --   （用户改要求：不再飞到底，改为**松手转追敌人**）。
                         end
                     end
                     -- ★ 门控判定已抽到 g60.take_gate（纯函数，可真跑测试）★
@@ -2835,8 +2959,8 @@ function M.new(env)
                     --   就看追运输船时这里有没有出现它。
                     --   必须进日志节流白名单（诊断被节流掉 = 诊断不存在）。
                     if m.behavior_id==4 and m.state==4 and veto_resource
-                        and not veto_seen[veto_resource] and env.emit then
-                        veto_seen[veto_resource]=true
+                        and not S3.veto_seen[veto_resource] and env.emit then
+                        S3.veto_seen[veto_resource]=true
                         env.emit('enemy_selection;entity='..m.id..';resource='..veto_resource
                             ..';vetoed='..tostring(veto_selected))
                     end
@@ -2888,12 +3012,16 @@ function M.new(env)
                                 if q and P.usable(q,q.current,true) then n=n+1 end
                             end
                         end
+                        -- ★ 2026-10-18（用户要求）：多标记的自定义已去除
+                        --   ⇒ **基础上限固定 1**（单标记/多标记一样）；
+                        --   能突破 1 的只有**白名单单位**（按目标资源取，见 `GRENADE_CAP_WHITELIST`）。
+                        --   ★★ 无标记（n=0）仍然**硬性 1** ★★
+                        --     —— 这是用户 2026-10-16 的要求，本轮**不能因为新功能而回退**：
+                        --     无标记时不读用户的“每目标手雷数”设置。
+                        --     白名单是叠在**这个基础上限之上**的（见 `limit(resource)`）⇒
+                        --     无标记时白名单单位照样能拿 2/4 颗（用户本轮要求）。
                         local c=1
-                        if n>1 then
-                            c=tonumber(env.multi_mark_grenades_per_target) or 1
-                        elseif n==1 then
-                            c=tonumber(env.max_grenades_per_target) or 1
-                        end
+                        if n>=1 then c=tonumber(env.max_grenades_per_target) or 1 end
                         if c<1 then c=1 end
                         reservations:set_cap(c)
                         if P.alloc_cap~=c or P.alloc_n~=n then
@@ -3014,7 +3142,7 @@ function M.new(env)
                                         and env.structure_profiles[ent.resource]~=nil
                                     if ent and ent.identity and ent.resource
                                         and not is_structure
-                                        and reservations:available(owner,ent.identity) then
+                                        and reservations:available(owner,ent.identity,ent.resource) then
                                         local rank=9999
                                         if env.spread_rank then
                                             local r=env.spread_rank(ent.resource)
@@ -3062,7 +3190,7 @@ function M.new(env)
                         structure_mark=structure_mark,allow_early=drive3,
                         selection_vetoed=veto_selected,
                         state_age=state_age[early_fp] or 0,
-                        early_min_age=EARLY_MIN_AGE,
+                        early_min_age=S3.EARLY_MIN_AGE,
                         point_armed=ping_take,
                         spread_armed=P.spread_pick_row~=nil}
                     if not gate.drive and structure_mark and old then
@@ -3185,7 +3313,7 @@ function M.new(env)
                         --   （实机铁证：包内确有该逻辑、mod 确实加载，而日志 `spread_pick` 0 条）。
                         --   ⇒ 候选计算已**上移到门控之前**（见 `local gate=TakeGate.decide{` 之前），
                         --     本处只保留 `owner`。
-                        local available=reservations and function(identity) return reservations:available(owner,identity) end
+                        local available=reservations and function(identity,resource) return reservations:available(owner,identity,resource) end
                         -- ★★ 2026-10-10 多标记分流（用户要求）★★
                         --   事故：场上标了 2 个敌人、扔了 2 颗 G-60 时，**两颗都飞向
                         --   优先级最高的那个标记** ⇒ 伤害溢出。
@@ -3216,11 +3344,12 @@ function M.new(env)
                         --     ② 多个标记也可自定义分配手雷数量
                         --     ③ 标记按照**时间顺序**分配手雷
                         --
-                        --   规则（两个上限分工）：
-                        --     · 队列只有 **1** 个标记 → 上限 = `env.max_grenades_per_target`
-                        --       ⇒ 那个目标能被"自定义数量"的雷一起追
-                        --     · 队列有 **2+** 个标记 → 上限 = `env.multi_mark_grenades_per_target`
-                        --       （缺省 1 = 每个目标各一颗）
+                        --   ★ 2026-10-18（用户要求）：**两个上限分工已取消**。
+                        --     现在基础上限固定 = `env.max_grenades_per_target`（默认 1），
+                        --     **单/多标记一样**；能突破的只有白名单单位
+                        --     （`GRENADE_CAP_WHITELIST`，按**目标资源**取上限）。
+                        --     ⚠ 白名单在 `available`/`claim` 里生效 ⇒
+                        --       **有标记与无标记两条路都覆盖**（同一套 reservations）。
                         --   ⚠ 每帧按 `#spread.queue` 调一次 `set_cap`；`available` 与 `claim`
                         --     读的是**同一份** cap ⇒ 判定与登记永远一致
                         --     （不会出现"判可用却 claim 断言失败"）。
@@ -3259,7 +3388,7 @@ function M.new(env)
                                     or (env.is_enemy and env.is_enemy(q.resource))
                                     or Filter.marked_allowed(q.resource)
                                 if eng and P.usable(q,q.current,true)
-                                    and reservations:available(owner,q.identity) then
+                                    and reservations:available(owner,q.identity,q.resource) then
                                     local at=tonumber(q.marked_at) or 0
                                     local ord=tonumber(q.order) or 0
                                     if not best or at<best_at
@@ -3271,7 +3400,7 @@ function M.new(env)
                             if best then
                                 my_mark=best
                                 -- ★ 选中即登记（预约 = "分配"，不是"锁定成功"）。
-                                reservations:claim(owner,best.identity)
+                                reservations:claim(owner,best.identity,best.resource)
                                 -- ★ 一颗雷只持有**当前分到的**这一个标记：
                                 --   否则它会**囤积预约**（见 target_reservations:keep_only 的说明）。
                                 reservations:keep_only(owner,best.identity)
@@ -3306,7 +3435,7 @@ function M.new(env)
                         --   ⚠ 单标记 + cap≥1 时 `available` 对本人恒真
                         --     ⇒ "单标记多颗一起追"不受影响。
                         if reservations and my_mark
-                            and not reservations:available(owner,my_mark.identity) then
+                            and not reservations:available(owner,my_mark.identity,my_mark.resource) then
                             my_mark=nil
                         end
                         -- 结构路径的入口参数：挑中的若是**结构**就用它（否则保持帧级
@@ -3328,7 +3457,7 @@ function M.new(env)
                         -- 无标记改派：把上面算好的候选当成一次的标记交给既有 priority 驱动
                         if reservations and my_structure==nil and P.spread_pick_row then
                             my_mark=P.spread_pick_row;my_structure=my_mark
-                            reservations:claim(owner,my_mark.identity)
+                            reservations:claim(owner,my_mark.identity,my_mark.resource)
                             reservations:keep_only(owner,my_mark.identity)
                             -- ★★★ 2026-10-16 三次修正：**钉住"这雷是改派发给它的"** ★★★
                             --   见 `no_mark` 处的实机铁证：标记一过期，瞬时 `old.lock`
@@ -3383,9 +3512,8 @@ function M.new(env)
                                     ..';tiers='..table.concat(tiers,',')
                                     ..';current='..table.concat(cur,',')
                                     ..';loads='..table.concat(loads,',')
-                                    ..';cap='..tostring(#spread.queue>1
-                                        and (tonumber(env.multi_mark_grenades_per_target) or 1)
-                                        or (tonumber(env.max_grenades_per_target) or 1))
+                                    ..';cap='..tostring(tonumber(env.max_grenades_per_target) or 1)
+                                    ..';wcap='..tostring(reservations:load(my_mark and my_mark.identity or ''))
                                     ..';picked='..tostring(my_mark and my_mark.id or '-')
                                     ..';engine_sel='..tostring(m.selection_id or '-')
                                     ..';frame='..frame)
@@ -3439,31 +3567,31 @@ function M.new(env)
                         -- 不做全局禁用：其他 G-60 可能观测正常（identity 不同）。
                         if not good then
                             local key=m.id
-                            observe_fail[key]=(observe_fail[key] or 0)+1
-                            if observe_fail[key]==1 then
+                            S3.observe_fail[key]=(S3.observe_fail[key] or 0)+1
+                            if S3.observe_fail[key]==1 then
                                 env.emit('observe_failed;entity='..m.id
                                     ..';detail='..tostring(result))
                             end
-                            if observe_fail[key]>=OBSERVE_FAIL_LIMIT then
+                            if S3.observe_fail[key]>=S3.OBSERVE_FAIL_LIMIT then
                                 env.emit('observe_give_up;entity='..m.id
-                                    ..';after='..observe_fail[key]
+                                    ..';after='..S3.observe_fail[key]
                                     ..';detail='..tostring(result))
                                 if tracked[m.id] then runner:release(tracked[m.id].ref) end
                                 tracked[m.id]=nil
-                                observe_fail[key]=nil
+                                S3.observe_fail[key]=nil
                             end
                         else
-                            observe_fail[m.id]=nil
+                            S3.observe_fail[m.id]=nil
                         end
                         -- ★ 早期接管失败（v2 点目标模式）：priority 返回 kind='state3_fail'，
                         --   计入 danger 熔断（连续 STATE3_DANGER_LIMIT 次退回 state-4-only），
                         --   不牵连全局。
                         if good and type(result)=='table' and result.kind=='state3_fail' then
-                            state3_danger=state3_danger+1
-                            env.emit('state3_danger;entity='..m.id..';count='..state3_danger
+                            S3.state3_danger=S3.state3_danger+1
+                            env.emit('S3.state3_danger;entity='..m.id..';count='..S3.state3_danger
                                 ..';detail='..tostring(result.detail))
-                            if state3_danger>=STATE3_DANGER_LIMIT then
-                                state3_blocked=true
+                            if S3.state3_danger>=S3.STATE3_DANGER_LIMIT then
+                                S3.state3_blocked=true
                                 env.emit('state3_takeover_disabled;entity='..m.id
                                     ..';detail='..tostring(result.detail))
                             end
@@ -3475,11 +3603,11 @@ function M.new(env)
                         --   破坏了引擎状态（安全层警告过的那件事）。
                         --   此时**永久退回 state-4-only**，不牵连其余功能。
                         if drive3 and not good and Faults.STATE3_DANGER[tostring(result)] then
-                            state3_danger=state3_danger+1
-                            env.emit('state3_danger;entity='..m.id..';count='..state3_danger
+                            S3.state3_danger=S3.state3_danger+1
+                            env.emit('S3.state3_danger;entity='..m.id..';count='..S3.state3_danger
                                 ..';detail='..tostring(result))
-                            if state3_danger>=STATE3_DANGER_LIMIT then
-                                state3_blocked=true
+                            if S3.state3_danger>=S3.STATE3_DANGER_LIMIT then
+                                S3.state3_blocked=true
                                 env.emit('state3_takeover_disabled;entity='..m.id
                                     ..';detail='..tostring(result))
                             end
@@ -3495,7 +3623,7 @@ function M.new(env)
                         if good and result then
                             if result.kind=='quarantine' then
                                 -- ★ 一颗 G-60 放弃：清掉它的锁/航点/预约，本局不再写它。
-                                --   其余 G-60 与本局剩余的标记照常接管 —— 上游在这里是
+                                --   其余 G-60 与本局剩余的标记照常接管 —— 原版在这里是
                                 --   整个 mod 一起死，实机日志第 132–133 行就是那个后果。
                                 old.quarantined=true;old.lock=nil;old.titan=nil;old.force_search=nil
                                 old.blocked=nil
@@ -3508,7 +3636,7 @@ function M.new(env)
                                 end
                             elseif result.kind=='lock' then
                                 diag.locked=diag.locked+1
-                                if reservations then reservations:claim(owner,result.track.identity) end
+                                if reservations then reservations:claim(owner,result.track.identity,result.track.resource) end
                                 if not old.lock or old.lock.identity~=result.track.identity then
                                     -- ★ 2026-10-14：**换了目标** ⇒ 丢弃上一只目标的绕行点缓存。
                                     --   否则安全区绕行时会拿旧目标的点，把雷引向错误位置
@@ -3545,7 +3673,7 @@ function M.new(env)
                                 env.emit('early_detonated;entity='..m.id..';target='..result.target
                                     ..';distance='..result.distance)
                             -- ★ 裁剪 G（实机"标记虫洞时灵时不灵"的另一半）★
-                            -- 上游原文是 `elseif result.released or reservations then`，那个
+                            -- 原版是 `elseif result.released or reservations then`，那个
                             -- `or reservations` 建立在"keep == 候选全被否掉"的前提上，所以要
                             -- 强制重搜。但裁剪后本 mod 的 priority 对**敌人**永远返回
                             -- {kind='keep',released=false}（自动挑敌人那段已删），于是每一帧
@@ -3564,8 +3692,8 @@ function M.new(env)
                             -- （逐帧刷屏曾导致过两次误诊）。
                             local sk_reason=tostring(good and reason or result)
                             local sk_key=m.id..'|'..sk_reason
-                            if skipped_probe[sk_key]==nil then
-                                skipped_probe[sk_key]=true
+                            if S3.skipped_probe[sk_key]==nil then
+                                S3.skipped_probe[sk_key]=true
                                 local spent=time>=m.flight_start
                                     and ArrivalPolicy.elapsed(time,m.flight_start) or 0
                                 env.emit('priority_skipped;entity='..m.id
@@ -3624,7 +3752,7 @@ function M.new(env)
                     -- ★ 2026-10-10 性能（审查项 #2）：invalid 哨兵**帧内恒定** ⇒ 用缓存值
                     --   （原来这里每颗雷一次 `read(base+0x3483c20,4)`）。
                     local selected=m.selection_flag~=0 and m.selection_id~=P.inv_invalid
-                    -- ★ 裁剪 A：原上游在此判 excluded —— 被 small_filter 列入的小怪、或不在
+                    -- ★ 裁剪 A：原本在此判 excluded —— 被 small_filter 列入的小怪、或不在
                     --   allowlist(泰坦+弱点) 里的敌人，都会触发"清掉引擎选择 + 强制搜索"。
                     --   那是 mod 的"只打指定敌人"行为。恒置 false 后，没有本 mod 认领的
                     --   目标时，G-60 的敌人选择完全交给引擎原生 TargetLock。
@@ -3725,7 +3853,7 @@ function M.new(env)
                     --     "长期存活的结构标记把能力挡死"那个老坑（不按"有无标记"判，按"是不是它"判）
                     --   · 不是虫洞标记（虫洞优先级更高，早已由 `mark_is_wormhole` 处理）
                     --   · 这颗 G-60 **还没在跑泰坦航路**（`not (old and old.titan)`）——
-                    --     上游原则「已在执行任务的手雷保留其分配」，半路改向等于浪费一颗
+                    --     原则「已在执行任务的手雷保留其分配」，半路改向等于浪费一颗
                     -- ★★ 2026-10-10 用户要求：**标记的泰坦必须赢过空白 ping** ★★
                     --   用户原话：「现在标记的泰坦单位的优先级比空 ping 的优先级低，
                     --   泰坦的优先级理论上应该只比虫洞低」。
@@ -3873,7 +4001,7 @@ function M.new(env)
                         local titan_yield=false
                         if reservations and my_mark and m.selection_id~=P.inv_invalid then
                             titan_yield=my_mark.id~=m.selection_id
-                                and reservations:available(titan_owner,my_mark.identity)
+                                and reservations:available(titan_owner,my_mark.identity,my_mark.resource)
                         end
                         if titan_yield then
                             P.titan_yield=P.titan_yield+1
@@ -3925,8 +4053,8 @@ function M.new(env)
                                 --     **断言失败**（会抛），不能直接调
                                 if reservations and my_mark and my_mark.identity
                                     and result.kind=='aim'
-                                    and reservations:available(titan_owner,my_mark.identity) then
-                                    reservations:claim(titan_owner,my_mark.identity)
+                                    and reservations:available(titan_owner,my_mark.identity,my_mark.resource) then
+                                    reservations:claim(titan_owner,my_mark.identity,my_mark.resource)
                                 end
                                 if result.kind=='aim' then
                                     self.aimed=self.aimed+1
@@ -3985,6 +4113,38 @@ function M.new(env)
                             local src=point_marker or old.point
                             old.point={x=src.x,y=src.y,z=src.z,
                                 token=src.token,frame=frame}
+                            -- ★★★ 2026-10-18（可选开关 `dead_point_drop`）★★★
+                            --   开关**关着**（默认）⇒ 这里一个字节都不影响，行为与 2026-10-14 版**逐字一致**（「承诺后就飞到底」）。
+                            --   开关**打开** ⇒ 空 ping 点消失时打 `old.point_dead`，
+                            --   由 guide 段压住（绕行、不引爆），直到出现新标记/敌人。
+                            --   ⚠ 为什么做成开关：这与 2026-10-14 的「远距离空 ping
+                            --     要飞到底」是**同一信号上的相反要求** —— ping 自然过期
+                            --     与远距离飞行中途过期在代码里**不可区分**
+                            --     （用户 2026-10-18 选择「加开关、默认保持现状」）。
+                            --   ⚠ 为什么保留 `old.point` 不清：清掉会让 `gate.drive` 变假
+                            --     ⇒ 手雷交还引擎 ⇒ **引擎可能自己引爆**（更不可控）。
+                            -- ★★★ 2026-10-18（用户要求）：空 ping 点**消失 ⇒ 松手** ★★★
+                            --   用户原话：「空ping接管的雷如果空ping标记过期或者取消了只会在原空ping点
+                            --   绕圈不会追踪附近的敌人」。
+                            --   机理（实机取证）：`point_taken;entity=982;pos=90.57,295.15`
+                            --     而 `blast_detour;entity=982;center=90.57,295.15` —— **绕行中心就是那个死点**。
+                            --   两件事叠加：① 死点承诺在 ⇒ `gate.drive` 恒真 ⇒
+                            --     **本 mod 一直在驾驶** ⇒ 引擎没法重新索敌；
+                            --     ② 安全区的绕行圆心取的是那个承诺点（`P.tpos`）。
+                            --   ⇒ 清掉**两者**才能真正松手：`old.point=nil`（让出驾驶权）
+                            --     + `P.tpos[m.id]=nil`（不让安全区拿死点当圆心绕圈）。
+                            --   ⚠ 这**反转了 2026-10-14 的决定**（当时用户要「远距离空ping飞到底」）
+                            --     —— 两者是同一信号上的相反要求，用户 2026-10-18 选了**追敌人**。
+                            --   ⚠ 代价：远距离 ping 飞到一半 ping 过期 ⇒ 也会松手（用户知情）。
+                            if not point_marker then
+                                old.point=nil
+                                P.tpos[m.id]=nil
+                                if not P.pdt[m.id] then
+                                    P.pdt[m.id]=true
+                                    env.emit('point_lost_released;entity='..m.id
+                                        ..';reason=DEAD_PING_DROPPED;frame='..frame)
+                                end
+                            end
                             runner:release(old.ref)
                             if starting and env.emit then
                                 env.emit(string.format(
@@ -4017,7 +4177,7 @@ function M.new(env)
                         -- 标记 retired + 清持有，停止逐帧重试。
                         -- 不做全局禁用：别的 G-60 可能一切正常（2026-09-28 的教训）。
                         if result then
-                            guide_fail[m.id]=nil
+                            S3.guide_fail[m.id]=nil
                         else
                             self.skipped=self.skipped+1
                             -- ★★ 净空/腹部过低的拒绝 = **等待**，不是"引导失败"（2026-10-02）★★
@@ -4061,16 +4221,16 @@ function M.new(env)
                             --   ⚠ 它在 `if result then` 之后、真失败计数之前 —— 顺序即语义：
                             --     放到后面就等于"已经记了一次失败"。
                             if note_already_exploded(tostring(status or detail)) then
-                                guide_fail[m.id]=nil
+                                S3.guide_fail[m.id]=nil
                             elseif waiting then
-                                if guide_fail[m.id]==nil then
+                                if S3.guide_fail[m.id]==nil then
                                     env.emit('skipped;entity='..m.id..';reason='..tostring(status)
                                         ..';detail=WAITING_FOR_SAFE_BLAST;fail_count=0')
                                 end
-                                guide_fail[m.id]=0
+                                S3.guide_fail[m.id]=0
                             else
-                                local n=(guide_fail[m.id] or 0)+1
-                                guide_fail[m.id]=n
+                                local n=(S3.guide_fail[m.id] or 0)+1
+                                S3.guide_fail[m.id]=n
                                 env.emit('skipped;entity='..m.id..';reason='..tostring(status)
                                     ..';detail='..tostring(detail)..';fail_count='..n
                                     -- ★ 2026-10-10：标明是**哪条路**失败的。
@@ -4080,8 +4240,8 @@ function M.new(env)
                                     ..';via='..((old and old.point and 'point')
                                         or (old and old.titan and 'titan') or 'runner')
                                     ..';frame='..tostring(frame))
-                                if n>=GUIDE_FAIL_LIMIT then
-                                    guide_fail[m.id]=nil
+                                if n>=S3.GUIDE_FAIL_LIMIT then
+                                    S3.guide_fail[m.id]=nil
                                     retired[m.id]=retired_key
                                     release_hold(m.id)
                                     env.emit('guide_give_up;entity='..m.id..';after='..n
@@ -4092,7 +4252,7 @@ function M.new(env)
                         if runner:disabled() or (titan and titan:disabled()) then self.disabled=true;error('native operation disabled after partial failure') end
                     end
                     -- ★ 裁剪 F（实机反馈"打不了中小型敌人"的真凶）★
-                    -- 原上游在这里只判 `arrival and old`：`old` 是 priority 段为**每个**
+                    -- 原本在这里只判 `arrival and old`：`old` 是 priority 段为**每个**
                     -- state-4 G-60 建的记录，所以**敌人 G-60 也会走进 arrival:step**。
                     -- 而 arrival:step 在 target=nil 且 mask_only='search' 时会执行
                     --   scope.calls.clear(pair,nil)   ← 清掉引擎的原生目标选择
@@ -4475,8 +4635,9 @@ function M.new(env)
                                     --     这里实际用的值（三段验证的"真正生效"那一段）。
                                     --   ⚠ 夹到 [2,20]（与菜单滑杆同界）；再抬到**硬下限
                                     --     3.5 m** —— 见下面的站定距离说明。
+                                    -- ★ 2026-10-18：下限 2 -> 0（与上面同一改动，详见那里的说明）
                                     local R=tonumber(env.blast_safe_orbit) or 5.0
-                                    if R<2 then R=2 elseif R>20 then R=20 end
+                                    if R<0 then R=0 elseif R>20 then R=20 end
                                     -- ★★ 2026-10-10 站定距离（standoff）★★
                                     --   实机实测：引擎的引信是**物理接近目标**（不是"记录里
                                     --   选中的是谁"）—— 两次独立取证都在 ~2.2 m 点火：
@@ -4489,32 +4650,38 @@ function M.new(env)
                                     --   近，就把目标点放到 `r+2.5`：**命令它往外飞**，
                                     --   曲线就再也切不进去。
                                     --   ⚠ 坐标免费：`own_position_bytes` 本来就读过。
-                                    if R<3.5 then R=3.5 end
+                                    -- ★ 2026-10-18：**删掉 3.5 m 硬下限** —— 它会静默把 R=0 夹回 3.5，
+                                    --   滑块就等于在骗人。代价（引信 ~2.2 m）见上面 Rm 处的说明。
                                     local okv,v=pcall(TargetData.vector,scope.prepared.own_position_bytes,0)
                                     if okv and v then
                                         local dx,dy,dz=v[1]-c[1],v[2]-c[2],v[3]-c[3]
                                         local r=math.sqrt(dx*dx+dy*dy+dz*dz)
-                                        if r<R-0.5 then
+                                        -- ★ 2026-10-18：阈值与 `R` 解耦（取 3.0 = 引信 2.2 + 余量）
+                                        --   —— 理由与实证见上面 `need_write` 处。旧阈值 `R-0.5` 在 R 小时**晚于引信**。
+                                        if r<R-0.5 or r<3.0 then
                                             local push=r+2.5
                                             if push>R then R=push end
                                             if R>20 then R=20 end
                                         end
                                     end
+                                    -- ★ 2026-10-18：悬停高度可自定义（详见站点 1 处的说明）
+                                    local LIFT=tonumber(env.blast_safe_lift) or 2.0
+                                    if LIFT<0 then LIFT=0 elseif LIFT>20 then LIFT=20 end
                                     local ox,oy=c[1]+R*math.cos(ang),c[2]+R*math.sin(ang)
                                     arr_opts={region=env.point_arrival_region,point=true,
-                                        point_target={ox,oy,c[3]+1.0},
+                                        point_target={ox,oy,c[3]+LIFT},
                                         early=(arr_opts and arr_opts.early) or nil}
                                     -- ★★ 记住这个点：圆心下一帧可能就解不出来了（见 P.lastpt 定义处）。
-                                    --   ⚠ 存**算好的整点**（含 +1.0 抬升）：复用分支不再重算，
-                                    --     否则每帧 +1.0 会累积漂移。
-                                    P.lastpt[m.id]={ox,oy,c[3]+1.0}
+                                    --   ⚠ 存**算好的整点**（含 +LIFT 抬升）：复用分支不再重算，
+                                    --     否则每帧 +LIFT 会累积漂移。
+                                    P.lastpt[m.id]={ox,oy,c[3]+LIFT}
                                     -- 绕行点必须**允许写入**（mask_all 分支会把点写整段跳过）
                                     mask_only=nil
                                     if frame-(P.dg[m.id] or -100000)>=60 then
                                         P.dg[m.id]=frame
                                         env.emit('blast_detour;entity='..m.id
                                             ..';center='..string.format('%.2f,%.2f,%.2f',c[1],c[2],c[3])
-                                            ..';point='..string.format('%.2f,%.2f,%.2f',ox,oy,c[3]+1.0)
+                                            ..';point='..string.format('%.2f,%.2f,%.2f',ox,oy,c[3]+LIFT)
                                             ..';radius='..string.format('%.1f',R)
                                             ..';src='..(blast_point and 'blast'
                                                 or (point and 'point') or 'target')
@@ -4661,11 +4828,11 @@ function M.new(env)
                         --   （实机证据：`point_taken` 一条都没有）。提升现在放在**门之前**，
                         --   见 `ping_early` 之后那段。**这里不要再放回去。**
                         if not ok_arr and early_drive then
-                            state3_danger=state3_danger+1
-                            env.emit('state3_danger;entity='..m.id..';count='..state3_danger
+                            S3.state3_danger=S3.state3_danger+1
+                            env.emit('S3.state3_danger;entity='..m.id..';count='..S3.state3_danger
                                 ..';stage=arrival;detail='..tostring(ok_arr and reason or result))
-                            if state3_danger>=STATE3_DANGER_LIMIT then
-                                state3_blocked=true
+                            if S3.state3_danger>=S3.STATE3_DANGER_LIMIT then
+                                S3.state3_blocked=true
                                 env.emit('state3_takeover_disabled;entity='..m.id
                                     ..';detail=arrival early-state repeated failure')
                             end
@@ -4675,7 +4842,7 @@ function M.new(env)
                                 -- ★ 竞争态（2026-09-30，判定见 g60.priority_faults）★
                                 --   与 priority 段同一套语义：**只放弃这一颗** G-60 ——
                                 --   清掉它的锁/航点/进度并置 old.quarantined，交回引擎原生
-                                --   逻辑；其余 G-60 与后续标记照常接管（上游在这里是整个
+                                --   逻辑；其余 G-60 与后续标记照常接管（原版在这里是整个
                                 --   mod 一起死，22:10 那局就是那个后果）。
                                 --   ⚠ 不置 abandoned：本段在 structure/titan 写入**之后**
                                 --     才跑，那两个写入本帧已经发生，置了也没有效果。
@@ -4697,9 +4864,9 @@ function M.new(env)
                                 -- ★★ 把"我们刚写进记录的那个点"记到锁上（2026-10-05）★★
                                 --   为什么要记：`with_observation` 要判"记录里这个点是不是我们自己写的"，
                                 --   而**体内爆点**（`blast_point`）是 runtime 每帧现算的，
-                                --   锁表里本来没有它的字节 ⇒ 不记的话上游那套
+                                --   锁表里本来没有它的字节 ⇒ 不记的话那套
                                 --   `guidance_observation` / `continued` 在我们这里永不触发。
-                                --   上游靠 `track.titan.point_bytes` 承载，我们靠这里补上。
+                                --   原版靠 `track.titan.point_bytes` 承载，我们靠这里补上。
                                 --   ⚠ `result.point_bytes` 只在该帧真的写了点目标时非 nil
                                 --     ⇒ 走实体 `aim` 路径时这里会把它**清成 nil**（语义正确：
                                 --      "当前记录里没有我们的点"）⇒ priority 下一帧照常写实体选择，
@@ -4814,7 +4981,7 @@ function M.new(env)
                 ..';saw4='..(saw_state4 and '1' or '0')
                 ..';sig=['..diag.sig..']'
                 ..';g60='..diag.state4..';eligible='..diag.eligible
-                ..';e3='..diag.state3..';blocked3='..(state3_blocked and 1 or 0)
+                ..';e3='..diag.state3..';blocked3='..(S3.state3_blocked and 1 or 0)
                 ..';entered='..diag.entered..';locked='..diag.locked
                 ..';held='..diag.held..';quarantined='..diag.blocked
             if status~=last_link_status then
@@ -4863,10 +5030,30 @@ function M.new(env)
                 --   而且**注释里也不许写它的字面量**（本工程为此栽过两次，本次又一次）。
                 if #tb>0 then detail=detail..' ~~ '..table.concat(tb,' | ') end
             end
+            -- ★★★ 2026-10-18（用户要求）：**启动宽限期归类** ★★★
+            --   见文件上方 `STARTUP_GRACE_FRAMES` 的完整说明。
+            --   只放宽**签名匹配**的那几类；宽限期内其余错误照旧计入 `frame_error`。
+            -- ⚠ 签名循环**写在这里、不抽函数** —— 抽函数又会多一个 upvalue。
+            local _nr=false
+            if frame<=P.startup_grace_frames then
+                for _i=1,#P.startup_sigs do
+                    if string.find(detail,P.startup_sigs[_i],1,true) then _nr=true;break end
+                end
+            end
+            if _nr then
+                P.startup_not_ready_total=P.startup_not_ready_total+1
+                local seen=(P.startup_not_ready[detail] or 0)+1
+                P.startup_not_ready[detail]=seen
+                if seen==1 then
+                    env.emit('startup_not_ready;detail='..detail
+                        ..';frame='..frame..';grace='..P.startup_grace_frames)
+                end
+            else
             local seen_before=frame_errors[detail] or 0
             frame_errors[detail]=seen_before+1
             self.frame_error_total=(self.frame_error_total or 0)+1
             if seen_before==0 then env.emit('frame_error;detail='..detail) end
+            end
         end
     end
     function host:stop() self.disabled=true;release_all() end
@@ -4878,8 +5065,15 @@ function M.new(env)
         local ping={}
         for detail,n in pairs(structure_issue_counts) do ping[#ping+1]=tostring(n)..'x '..detail end
         table.sort(parts);table.sort(ping)
+        -- ★ 2026-10-18：启动宽限期的"未就绪"单独汇总 —— **不计入** frame_error。
+        --   ⚠ 必须仍然报出来（"看不到 = 无法确认"）：只是换个桶，不是丢弃。
+        local startup={}
+        for detail,n in pairs(P.startup_not_ready) do startup[#startup+1]=tostring(n)..'x '..detail end
+        table.sort(startup)
         return {kinds=#parts,total=self.frame_error_total or 0,details=table.concat(parts,' | '),
-            ping_kinds=#ping,ping_total=#ping>0 and table.concat(ping,' | ') or ''}
+            ping_kinds=#ping,ping_total=#ping>0 and table.concat(ping,' | ') or '',
+            startup_kinds=#startup,startup_total=P.startup_not_ready_total,
+            startup_details=#startup>0 and table.concat(startup,' | ') or ''}
     end
     -- ★ 2026-10-10：把 env **暴露给宿主**（`host.env`）。
     --   为什么需要：Mod Options Menu 的回调要改运行期开关（如安全区半径），

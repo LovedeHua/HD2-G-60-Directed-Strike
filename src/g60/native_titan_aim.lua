@@ -5,7 +5,7 @@ local Context=require('g60.titan_context')
 local Route=require('g60.titan_route')
 local WeakRoute=require('g60.weakpoint_route')
 local StructureRoute=require('g60.structure_route')
--- ★ 2026-10-05（用户拍板「泰坦方面全部改成上游 1.1」）：泰坦链的后两段。
+-- 泰坦链的后两段（爆区与会跟姿态的爆点）。
 --   别名故意不叫 `Navigation`：build.py 的 require 替换会让
 --   `local Navigation=require('g60.navigation')` 变成自引用的
 --   `local Navigation=Navigation`（右值取外层 nil）。
@@ -41,7 +41,7 @@ function M.new(env)
                 and ffi.istype(valid,calls.target_valid),'Titan call ABI mismatch')
             local resource=c.selection.has_target and scope.snapshot.selected and scope.snapshot.selected.resource
             -- ★ 查找顺序：泰坦优先（2026-09-29）
-            -- 原上游顺序是 weakpoint → structure → titan，最后判泰坦。
+            -- 判定顺序是 weakpoint → structure → titan，泰坦最后判。
             -- 那个顺序有个隐患：`env.weakpoint_profiles` 里登记着 7 个**敌人**
             -- （head/rear/thorax/underside），一旦本函数拿到敌人目标，
             -- 就会用敌人的弱点几何去引导 G-60。
@@ -67,7 +67,7 @@ function M.new(env)
             if not (previous and previous.cancelled and not fresh) then
                 local id=fresh and c.selection.id or previous.target.id
                 local same=previous and previous.target and previous.target.id==id and previous.target or nil
-                -- ★ follow_animation（2026-10-04 整合上游 1.1.0 的 animated_belly）：
+                -- ★ follow_animation（2026-10-04 的 animated_belly 接线）：
                 --   为真时 capture 会读 `belly` 骨骼的**真实姿态**并据此修正爆点。
                 --   ⚠ **只在泰坦主路径传** —— `structure_mark` 分支与「通用位置查询」那两处
                 --   处理的是结构（profile 里没有 `animated_belly`），传了是空转；
@@ -97,7 +97,7 @@ function M.new(env)
                 assert(target.validate(),'Titan target changed')
                 -- ★ 裁剪 K（第三处，也是最关键的一处）：`target_valid` 硬否决 → 软信号。
                 --
-                -- 上游这里是 `if not alive then target=nil;reason='Titan no longer alive' end`，
+                -- 这里原本是 `if not alive then target=nil;reason='Titan no longer alive' end`，
                 -- 而它**每个飞行帧都会跑**。虫巢没有 HealthComponent ——
                 -- 原生 target_valid（game.dll+0x8858a0，索敌系统的函数）可能对
                 -- "实际存在但引擎不认"的巢返回 false ⇒ target 每帧被置 nil
@@ -133,9 +133,8 @@ function M.new(env)
             if target then
                 local prior=previous and not previous.cancelled and previous.target.id==target.id
                     and previous.route or nil
-                -- ★★★ 2026-10-05：本段按用户拍板**改为上游 1.1 的泰坦链**（上游 3398-3433）★★★
+                -- ★★★ 2026-10-05：本段为泰坦链的**三段串联**（此前只有第一段 + 一个手工区域）★★★
                 --
-                -- 上游泰坦链是**三段**，我们以前只有第一段 + 一个手工区域：
                 --   ① `TitanRoute.step`（绕行五阶段）
                 --   ② **`BlastRoute.refine`** —— 圆柱爆区 `center = 腹点-(0,0,2.5)`、`radius=2`、
                 --      `depth=min(0.8, …)`；置 `terminal/arrival_point/arrival_region`
@@ -143,10 +142,10 @@ function M.new(env)
                 --      `c = 腹点 + 腹法线×2.5`、`surface` 到达区域、并用 `Navigation`
                 --      规划一条不穿身的航路；姿态不可靠 / 爆点低于地板 ⇒ `terminal=false`
                 --   ⇒ 我们自研的 `titan_standoff` 自适应（1.5~2.5 / `titan_standoff_min`）
-                --     **整段移除**：上游不做这件事（它宁可拒绝也不把爆点往腹部压，有测试钉住），
-                --     现在直接用上游的 `env.titan_standoff`（2.5）。
-                --   ⚠ 上游在 `Adaptive` 里对"姿态不可靠"的处理是 **`terminal=false`（不授权引爆）**，
-                --     并明确写着 `No unsafe direct fallback` —— 本工程照上游，不再回落到竖直爆点。
+                --     **整段移除**：本链不做这件事（宁可拒绝也不把爆点往腹部压，有测试钉住），
+                --     现在直接用一个固定的 `env.titan_standoff`（2.5）。
+                --   ⚠ `Adaptive` 对"姿态不可靠"的处理是 **`terminal=false`（不授权引爆）**，
+                --     即 `No unsafe direct fallback` —— 不再回落到竖直爆点。
                 local now=(env.damage_regions or env.adaptive_approach or profile.kind=='charger_front'
                     or profile.factory)
                     and ArrivalPolicy.elapsed(c.time_hex,c.flight_start)/1000000 or nil
@@ -161,9 +160,17 @@ function M.new(env)
                         env.titan_standoff,env.titan_arrival_region and env.titan_arrival_region.radius)
                 end
                 if planned and value and env.blast_regions and not profile.structure then
+                    -- ★ 2026-10-17（用户「前后没必要调整，去掉相关设置」）：**签名回到 6 参**。
+                    --   本轮曾给这一段多传一个 `env.titan_standoff`（当时要做"上下可调"），
+                    --   但窗口最终内化为 `adaptive.lua` 的 BAND_LO/BAND_HI 常量
+                    --   ⇒ 这个入参已无消费者，`blast_route.lua` 也一并还原成 5 参。
+                    --   ⚠ 留着它就是死配置（传了没人读），本工程最忌讳这种半成品。
                     planned,value=pcall(BlastRoute.refine,own_position,target,prior,profile,value)
                 end
                 if planned and value and env.adaptive_approach and not profile.structure then
+                    -- ★ 2026-10-17（用户「前后没必要调整」）：**签名回到 5 参**。
+                    --   上下窗口已写死在 `adaptive.lua`（`BAND_LO/BAND_HI`），前后不再有判据
+                    --   ⇒ 这里不需要再传任何窗口参数（原来那三个入参已随设置一起撤掉）。
                     planned,value=pcall(Adaptive.refine,own_position,target,prior,profile,value,now)
                 end
                 if planned then route,reason=value,detail else reason=tostring(value) end
@@ -193,7 +200,7 @@ function M.new(env)
                     --
                     -- 数值在这里（调用方）补，**不是**去改 titan_route.lua ——
                     -- 那个文件属于"安全层逐字节不可变"（tests/test_bughole_scope.py 的
-                    -- `untouched:` 守卫）。上游还有一条测试明令
+                    -- `untouched:` 守卫）。另有一条测试明令
                     -- "refuses instead of moving the blast back against the belly"，
                     -- 所以 `standoff` 不能缩、爆点不能往腹部压，可动的只有判定余量。
                     --
@@ -223,12 +230,12 @@ function M.new(env)
             if target and env.arrival then
                 local stage=(profile.kind and 'weakpoint/'..profile.kind or 'titan')..'/'..route.route.stage
                 local options=profile.kind and {point=true,below=not profile.structure and profile.kind~='head' and profile.kind~='rear',region=route.arrival_region or profile.region}
-                -- ★ 上游 3443-3445：泰坦 baseline（无 `kind` / 非 robot）**使用 route 自带的区域**
+                -- ★ 泰坦 baseline（无 `kind` / 非 robot）**使用 route 自带的区域**
                 --   —— 那是 `BlastRoute`（圆柱）或 `Adaptive`（`surface`，法线=腹法线）留下的。
                 --   `below=true`：`surface` 自带"从外侧靠近 + 地板"判定、圆柱也由 Policy 自行处理
                 --   ⇒ 这里不再叠加"必须在目标点下方"（native_arrival 侧有同义放行）。
-                -- ⚠ 本工程原有一条 `titan_belly_above`（"腹部提前引爆"余量）—— **已按上游移除**：
-                --   上游没有这个量，且它只在"竖直爆点"几何下才有意义（现在爆点由 Adaptive 决定）。
+                -- ⚠ 本工程原有一条 `titan_belly_above`（"腹部提前引爆"余量）—— **已移除**：
+                --   本链没有这个量，且它只在"竖直爆点"几何下才有意义（现在爆点由 Adaptive 决定）。
                 if not profile.kind and route.arrival_region then
                     options={point=true,below=true,region=route.arrival_region}
                 end
@@ -291,11 +298,17 @@ function M.new(env)
                 if value and value.kind=='detonate' and env.emit
                     and not standoff_logged['blast:'..tostring(target.id)] then
                     standoff_logged['blast:'..tostring(target.id)]=true
+                    -- ★ 2026-10-16：`standoff` 现在**真的**决定爆点（以前只喂接近航路，
+                    --   爆点公式在 adaptive.lua 里写死 2.5）。⇒ 这行是用户验证
+                    --   "我调的值生效了没有"的**唯一直接证据**，必须报准。
+                    --   ⚠ 原来是 `or 0`：值缺失时会打 `standoff=0.00`，看着像"爆距被设成 0"
+                    --     （那是完全不同的几何）⇒ 改成报**实际生效值**（缺失时即模块内默认 2.5）。
+                    local eff_so=tonumber(env.titan_standoff) or 2.5
                     env.emit(string.format(
                         'titan_blast;target=%s;stage=%s;p_z=%.2f;own_z=%.2f;belly_dz=%.2f;standoff=%.2f',
                         tostring(target.id),tostring(route.route.stage),
                         target.point[3],own_position[3],own_position[3]-target.point[3],
-                        env.titan_standoff or 0))
+                        eff_so))
                 end
                 if profile.structure and value.kind=='search' and env.emit then
                     env.emit('structure_stalled;entity='..L.u32(c.identity_bytes,8)..';target='..target.id

@@ -56,6 +56,21 @@ function M.max_distance2(env, resource)
         if m<50 then m=50 elseif m>1000 then m=1000 end
         return m*m
     end
+    -- ★★★ 2026-10-18（用户要求）：**被点名的雕像目标走结构档** ★★★
+    --   实机证据：雕像放行后**不再** `NOT_ENEMY_RESOURCE`，但仍被
+    --     `structure_mark;…;resource=7c9455fcef107e41;reason=OUTSIDE_RANGE` 拒 ——
+    --     因为它不在 `structure_profiles` 里 ⇒ 落到下面"其他目标"那一档
+    --     （`other_takeover_distance`，用户当时设 **150**）。
+    --   用户原话（选定方案 A）：「雕像改走结构档」。
+    --   ⚠ 用 `Filter.statue_target`（**单一数据源**，表在 `small_filter.lua`）——
+    --     不在这里抄哈希，也不去翻 `marked_allowed`（那里面运输船/构筑/泰坦
+    --     都不该跟着改距离）。
+    --   ⚠ 夹取与滑块范围**对齐**（50~1000），与上面那档同规则。
+    if Filter.statue_target(resource) then
+        local m=tonumber(env.max_takeover_distance) or 250
+        if m<50 then m=50 elseif m>1000 then m=1000 end
+        return m*m
+    end
     -- ② **非结构**的标记目标 ⇒ 一档（菜单 `other_takeover_distance`，默认 200）。
     --
     --   ★★★ 2026-10-14（第二轮，用户要求）：**泰坦与其他敌人合并成这一档** ★★★
@@ -67,7 +82,7 @@ function M.max_distance2(env, resource)
     --           这三条判据**已从本函数删除**；家族名单仍活在它该在的地方
     --           （`titan_approach.is_titan`、`small_filter.marked_allowed`）。
     --     ⚠ 默认 **200**：泰坦保持改动前的值（用户反复强调泰坦不该被 100 m 卡住）；
-    --       代价是"其他敌人"从 100 → 200（= 0.1.22 上游对一切标记目标的 200 m）。
+    --       代价是"其他敌人"从 100 → 200（= 0.1.22 对一切标记目标的 200 m）。
     --       要反过来（都按 100）只需改这一处默认与菜单滑块的默认。
     --     ⚠ 夹取与滑块范围**对齐**（50~1000，**步长 5**），否则就是"界面够得着却被夹掉"
     --       或"代码允许但界面到不了"的死配置 —— 本工程明令忌讳。

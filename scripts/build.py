@@ -20,12 +20,12 @@ CONFIG = json.loads((ROOT / 'compat/build.json').read_text())
 #   为什么不放 compat/build.json：
 #     · 它的顶层 key 被 tests/test_bughole_scope.py 的 `build_json_no_new_top_key` 钉死
 #       （只允许 `aliases` 增加条目）⇒ 加不了我们自己的键；
-#     · 它的 `public_version` 是**上游基线**版本，被 `build_json_pinned:*` 钉死
-#       （必须与上游 0.1-beta.1 逐值相同）⇒ 不能拿它当我们的版本号。
+#     · 它的 `public_version` 是**最初基线**版本，被 `build_json_pinned:*` 钉死
+#       （必须与 0.1-beta.1 逐值相同）⇒ 不能拿它当我们的版本号。
 #
 #   事故背景：发 Release v0.1.2 时成品包还叫 `G60-BugHole-Lock-0.1.0.zip`
 #   —— 因为 TITLE / ZIP_NAME 把 '0.1.0' 硬编码在代码里，与 Release 标签完全脱节。
-RELEASE_VERSION = '0.1.25'
+RELEASE_VERSION = '0.1.26'
 
 # ★★★ 2026-10-16：**构建指纹**（`entry_build;id=…` 启动日志行）★★★
 #   同一天同版本号改了两次 ⇒ 实机日志分不清构建（见 addon/entry.lua.in 的说明）。
@@ -372,25 +372,25 @@ ENTRY_BUILD = _entry_build()
 #   · 改名 G-60 Bug Hole Lock → G-60 Directed Strike；清理研究脚手架。
 #   ⚠ v0.1.7 是本工程第一次绕过引擎 API 直接写游戏状态；`force_lock_enabled=false` 一键回退。
 VERSION = RELEASE_VERSION
-# ★ 裁剪版身份：独立 GUID + 独立资源名 + 独立标题，与上游官方包互不覆盖(管理器槽位二选一)。
+# ★ 裁剪版身份：独立 GUID + 独立资源名 + 独立标题，与完整版包互不覆盖（管理器槽位二选一）。
 # ★ 2026-10-09 改名（用户拍板）：**G-60 Bug Hole Lock → G-60 Directed Strike**。
 #   旧名（Bug Hole Lock）是 v0.1.6 之前的能力写照；v0.1.7 之后它不只打虫洞，而是
-#   「**只打玩家点的目标**」（虫洞 / 构筑 / 泰坦 / ping 空地）—— 这也正是它与上游
-#   `Smart Targeting` 的本质区别。三处名字（资源名 / 显示名 / 包名）一起改，
+#   「**只打玩家点的目标**」（虫洞 / 构筑 / 泰坦 / ping 空地）—— 这正是它与
+#   完整版智能选靶的本质区别。三处名字（资源名 / 显示名 / 包名）一起改，
 #   归档槽位 `ARCHIVE` 与 `GUID` **不动** ⇒ 加载器那边是原地升级，不是新 mod。
 NAME = 'mods/hd2test/g60_directed_strike'
 GUID = '9c1d4e77-2b83-4f6a-91e5-0d7b3a6c8f42'
 TITLE = f'G-60 Directed Strike {VERSION}'
 # ★ ZIP_NAME / TITLE 都从 `release_version` 派生（见文件头注释）。
-#   `derived_from` 里的 'etxp/HD2-G60-Smart-Targeting 0.1-beta.1' 指的是**上游基线**，
-#   与我们的版本号无关，**不要**跟着改。
+#   `derived_from` 里的 'etxp/HD2-G60-Smart-Targeting 0.1-beta.1' 指的是**最初基线**（0.1-beta.1），
+#   与我们的版本号无关，**不要**跟着改 —— 那是署名与血统记录。
 ZIP_NAME = f'G60-Directed-Strike-{VERSION}.zip'
 ARCHIVE = 'Addon/9ba626afa44a3aa3.patch_0'
 
 
 def resource_hash(name):
     """MurmurHash64A —— 换资源名后必须重算 archive 里的 nameHash。
-    已对上游校验：resource_hash('mods/etxp/g60_small_filter') == tested-payload.resource_id。"""
+    已对基线校验：resource_hash('mods/etxp/g60_small_filter') == tested-payload.resource_id。"""
     data = name.encode('utf-8')
     mask, mix = (1 << 64) - 1, 0xC6A4A7935BD1E995
     value = len(data) * mix & mask
@@ -521,8 +521,8 @@ def assemble():
     text = text.replace('@@ENTRY_BUILD@@', ENTRY_BUILD)
     # ★ 两个占位符语义不同，别混（2026-10-01）：
     #   @@VERSION@@          = **本裁剪版的发布版本**（RELEASE_VERSION）—— "这是哪一版 mod"
-    #   @@RUNTIME_BASELINE@@ = **上游运行时基线**（build.json 的 runtime_version，0.5.20）
-    #                          —— "基于哪一版上游运行时"
+    #   @@RUNTIME_BASELINE@@ = **加载器运行时基线**（build.json 的 runtime_version，0.5.20）
+    #                          —— "基于哪一版加载器运行时"
     #   以前 @@VERSION@@ 填的是 runtime_version，日志写 `version=0.5.20-bughole`，
     #   与本 mod 的版本（当时已到 0.1.2）完全不是一回事，排查时容易误判。
     text = text.replace('@@RUNTIME_BASELINE@@', CONFIG['runtime_version'])
@@ -551,7 +551,7 @@ def assemble():
 
 
 def archive(body):
-    # ★ 不再从上游 evidence/tested-payload.json 取 resource_id —— 那个值属于上游资源名。
+    # ★ 不再从基线 evidence/tested-payload.json 取 resource_id —— 那个值属于基线资源名。
     #   这里按本工程的 NAME 现算，避免"换了名字却还用旧 hash"导致 loader 认不出资源。
     resource_id = resource_hash(NAME)
     lua_type = 0xA14E8DFA2CD117E2
@@ -587,13 +587,19 @@ def package_files():
                    '(enable one or the other, not both).')
     files['manifest.json'] = json_bytes({'Version': 1, 'Guid': GUID, 'Name': title,
         'Description': description, 'Options': [{'Name': title, 'Description': description, 'Include': ['Addon']}]})
-    # ★ 只打"仍然成立"的文档。上游 README / docs / CHANGELOG 描述的是完整功能
+    # ★ 只打"仍然成立"的文档。完整版的 README / docs / CHANGELOG 描述的是完整功能
     #   (自动敌人优先级、弱点、尖啸者巢、任务虫卵)，与本裁剪版不符，打进去会误导使用者。
     for pattern in ('LICENSE', 'THIRD_PARTY_NOTICES.md', 'README.md'):
         for path in ROOT.glob(pattern):
             if path.is_file():
                 files[path.relative_to(ROOT).as_posix()] = path.read_bytes()
-    files['Source/' + NAME.rsplit('/', 1)[-1] + '.lua'] = body
+    # ★★ 2026-10-18（用户要求）：**不再把源码打进包** ★★
+    #   用户原话：「打包不要把源码也打包进去」。
+    #   旧行为：额外放一份 `Source/<name>.lua`（= 构建后的 body）。
+    #   ⚠ 真正发货的代码在 `Addon/*.patch_0` 里，两者**同源**
+    #     ⇒ 打两份只是重复（包体约 +1.1 MB），且多一个 `.lua`。
+    #   ⚠ 相关守门已改为改查 `patch`（见 tests/test_bughole_scope.py），
+    #     并新增一道“**包内不得有 Source/**”的门。
     files['BUILD-INFO.json'] = json_bytes({'version': VERSION, 'runtime_baseline': CONFIG['runtime_version'],
         'derived_from': 'etxp/HD2-G60-Smart-Targeting 0.1-beta.1',
         'entry_sha256': sha(entry), 'resource_name': NAME, 'resource_id': f'{resource_hash(NAME):016X}',
@@ -616,7 +622,7 @@ def main():
     files = package_files()
     (ROOT / 'build').mkdir(exist_ok=True)
     (ROOT / 'build/entry.lua').write_bytes(assemble())
-    # ★ 本工程基线：上游 check.py 那套"产物必须与 release 逐字节一致"的断言对裁剪版
+    # ★ 本工程基线：基线 check.py 那套"产物必须与 release 逐字节一致"的断言对裁剪版
     #   必然不成立（我们就是来改的）。这里记录本工程自己的 entry / addon 哈希，
     #   供 check.py 与之后的改动做回归比对。
     derived = {'derived_from': 'etxp/HD2-G60-Smart-Targeting 0.1-beta.1',

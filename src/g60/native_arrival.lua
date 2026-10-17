@@ -107,9 +107,9 @@ function M.new(env)
             local want_point=options and options.point_target
             -- ★ 本帧"我们自己写进去的那个点"的原始字节（12 B）。
             --   2026-10-05：为了让 runtime 能把它记到锁上，从而让 priority 下一帧认出
-            --   "记录里这个点是我们写的"（上游 `continued` / `guidance_observation`）。
-            --   上游靠 `track.titan.point_bytes` 承载，我们的**体内爆点**是 runtime 现算的
-            --   ⇒ 必须由写入者（本段）把字节交出去，否则上游那套机制在我们这里永不触发。
+            --   "记录里这个点是我们写的"（`continued` / `guidance_observation`）。
+            --   原版靠 `track.titan.point_bytes` 承载，我们的**体内爆点**是 runtime 现算的
+            --   ⇒ 必须由写入者（本段）把字节交出去，否则那套机制在我们这里永不触发。
             --   ⚠ 只在该分支内赋值 ⇒ 走实体 `aim` 路径时它保持 nil（= "没有点"，语义正确）。
             local written_point
             if mask_only=='search' then action='search' end
@@ -153,7 +153,7 @@ function M.new(env)
                 --   ★ 余量由**调用方**按当前 standoff 约束（`≤ standoff-0.25`）⇒
                 --     引爆点最高 = `腹点 - 0.25 m`，**仍在腹部下方**，
                 --     不会退化成"在头顶炸"。
-                --   ⚠ 缺省 0 ⇒ 与上游行为**逐字节等价**（只有泰坦路径显式传值时才放宽）。
+                --   ⚠ 缺省 0 ⇒ 与加这个字段之前**逐字节等价**（只有泰坦路径显式传值时才放宽）。
                 local titan_stage=stage:sub(1,6)=='titan/'
                 local titan_above=0
                 if titan_stage and options and type(options.titan_belly_above)=='number'
@@ -163,7 +163,7 @@ function M.new(env)
                 local region=options and options.region or titan_stage and env.titan_arrival_region or nil
                 local below=not (titan_stage or options and options.below)
                     or own[3]<=goal[3]+titan_above
-                -- ★ 上游 4012：`surface` 区域**自带**"从外侧靠近 + 地板"的判定
+                -- ★ `surface` 区域**自带**"从外侧靠近 + 地板"的判定
                 --   ⇒ `below` 交给 Policy，不再叠加"必须在目标点下方"。
                 --   没有这一句时，`surface` 区域会同时被两条互相矛盾的判据约束
                 --   （法线要求从外侧来、`below` 要求低于点）⇒ 永远判不到 arrival。

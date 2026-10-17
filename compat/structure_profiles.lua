@@ -14,7 +14,7 @@ profiles["3a2cef12ed32a088"]={resource="3a2cef12ed32a088",kind="structure_hole",
 --
 -- 离线核对（generated_entities.dl_bin 全表 + 107,744 条资源名）发现 8 个实体
 --   SpottableComponent.markerType 都是 EnemyMassive(3)、findable/startActive 都开
---   ⇒ **玩家能正常打点标记它们**，但不在上游的 9 条 profile 里 ⇒ mod 报
+--   ⇒ **玩家能正常打点标记它们**，但不在那 9 条 profile 里 ⇒ mod 报
 --   RESOURCE_NOT_SUPPORTED 不接管。这就是"有些虫洞不能标记炸毁"的直接原因。
 --
 -- 复用基线参数的依据（不是猜）：逐条对比组件集与碰撞参数
@@ -46,7 +46,7 @@ profiles["d666aa61d804d311"]={resource="d666aa61d804d311",kind="structure_hole",
 --       ⇒ 现在恢复接管，并用**主支（g60-bughole-lock）已实机验证过**的 `kind="structure_tower"`。
 --
 --   ★ 为什么用 `structure_tower` 而不是 `structure_hole`：
---     上游本来把它归为 **structure_tower**（巢体，长在高处），
+--     原本把它归为 **structure_tower**（巢体，长在高处），
 --     `src/g60/structure_route.lua` 已有该分支：瞄准**主干旁 2.5 m**，
 --     靠**伤害**拆而不是靠"进入洞口"的距离判定 —— 这对有生命值的巢体才成立。
 --     ⚠ 它现在仍然进 `structure_profiles` ⇒ `env.mark_tier` 自动给**档位 0**
@@ -64,7 +64,7 @@ profiles["688949109126ece4"]={resource="688949109126ece4",kind="structure_hole",
 profiles["5cf84155e60c6e4d"]={resource="5cf84155e60c6e4d",kind="structure_hole",nodes=77,structure=true,boss_hash=0x4a182741,belly_hash=0x8ea852c8,aim_hash=0x4a182741,offset={-0.5,3.0999999046325684,0.6000000238418579},forward_local={0.04377192001860948,0.9990415501959288,0.0},getters=common.getters,alive_rva=common.alive_rva}
 -- bug_spawner_base（虫巢基类，通常不直接生成在地图上；登记以防漏网）
 profiles["0df874e208040d2f"]={resource="0df874e208040d2f",kind="structure_hole",nodes=86,structure=true,boss_hash=0x4a182741,belly_hash=0x8ea852c8,aim_hash=0x4a182741,offset={-0.4000000059604645,3.0,0.3499999940395355},forward_local={0.013470103975976559,0.9999092740338378,0.0},getters=common.getters,alive_rva=common.alive_rva}
--- ★ 裁剪：上游此处还有 1 条 structure_egg(embryo_01 任务虫卵)。
+-- ★ 裁剪：此处原本还有 1 条 structure_egg(embryo_01 任务虫卵)。
 --   虫卵不属于用户点名的 6 类，按需求不接管，标记它时本 mod 保持游戏原生行为。
 
 -- ★★★ 2026-10-14（用户要求）：**远距离追踪名单** —— 只加这几类，其他不弄 ★★★

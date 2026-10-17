@@ -105,9 +105,6 @@ M.TEXT = {
         --     上面那个开关撤出菜单后，光看"Release distance"看不出对象是谁。
         --     ⇒ label 里**点名对象**（Titan approach），desc 里补全机制。
         -- ★★★ 2026-10-14（用户最终方案）：接近标记的泰坦后放手 ★★★
-        ['titan_approach_dist.label'] = 'Titan approach: let-go distance (m)',
-        ['titan_approach_dist.desc'] =
-            'Only for a marked Titan / Titan variant / Dragonroach. The G-60 is first driven toward it like any other marked target; once it is this close we let go, so the engine selects the Titan and its own chain guides it (that is what keeps the blast point correct). 3 to 60 m, default 10',
         -- ★★★ 2026-10-14（第二轮，用户要求：泰坦与其他敌人合并成一档）★★★
         ['other_takeover_distance.label'] = 'Max takeover range: other targets (m)',
         ['other_takeover_distance.desc'] =
@@ -115,22 +112,30 @@ M.TEXT = {
         ['mark_retain_seconds.label'] = 'Keep marks alive after the icon fades (s)',
         ['mark_retain_seconds.desc'] =
             'A marker icon only lives about 8 s, but a G-60 flying to a distant target can take longer than that. With this above 0 the mod keeps remembering the mark for this many seconds after the icon fades, so you can still throw at it. 600 s is effectively the whole match. 0 = off (default). A mark you cancel yourself (icon vanishes long before its 8 s) is dropped immediately',
+        -- ★★★ 2026-10-16 → 2026-10-17：泰坦爆点窗口 —— **两侧文案都已撤掉** ★★★
+        --   用户最终要求：「前后没必要调整，去掉相关设置」⇒ 上下（固定 2.4~2.6）与
+        --   前后（不做）都**没有菜单项** ⇒ 这里也不能有对应文案。
+        --   ⚠ 留着文案会被 `menu_text` 自检判为「有文案、无对应菜单项」（双语守门的既有判据）。
         -- ★★★ 2026-10-14（用户要求「安全区以引爆点为中心」）★★★
-        ['safe_zone_target_radius.label'] = 'Safe zone (around blast point)',
+        ['blast_safe_lift.label'] = 'Safe zone orbit height',
+        ['blast_safe_lift.desc'] =
+            'Vertical lift (metres) of the orbit/hold point above the target. With orbit radius 0 the grenade sits directly above the target at this height. NOTE: below 3 m the fuse keep-out pushes it away, so it drifts instead of hovering',
+        ['mark_priority_enabled.label'] = 'Priority reassignment',
+        ['mark_priority_enabled.desc'] = 'Reassign spare grenades by the priority roster when nothing is marked',
+        ['point_target_enabled.label'] = 'Empty-ping point target',
+        ['point_target_enabled.desc'] = 'Take over grenades aimed at an empty ping (ground point)',
+        ['titan_family.label'] = 'Titan family blast-point tuning',
+        ['titan_family.desc'] = 'Blast-point tuning for Bile/Spore Titans, Titan variants and the Dragonroach. One switch for all three chains (Titan, variants, Dragonroach)',
+        ['safe_zone_group.label'] = 'Safe zone enforcement',
+        ['safe_zone_group.desc'] = 'Engine-aimed grenade hold + clearing the engine selection. WARNING: turning this off removes the fallback for grenades the mod does not drive',
+        ['structure_group.label'] = 'Structure takeover',
+        ['structure_group.desc'] = 'Long-range takeover for marked structures (bugholes, fabs, nests, landed ships) and their calibrated blast sites',
+        ['safe_zone_target_radius.label'] = 'Safe zone radius',
         ['safe_zone_target_radius.desc'] =
-            'No detonation while a player is within this radius (metres) of the EXPECTED BLAST POINT; this is the main check. 0 = off',
-        ['blast_safe_radius.label'] = 'Safe zone (around grenade)',
-        ['blast_safe_radius.desc'] =
-            'Optional extra check: no detonation while a player is within this radius (metres) of the G-60 itself. 0 = off (default)',
+            'One radius for the whole safe zone (metres): no detonation while a player is within it of the EXPECTED BLAST POINT, of the G-60 itself, or (for point-blank cancellation) close enough that the blast would hit you. 0 = safe zone off',
         ['blast_safe_orbit.label'] = 'Safe zone orbit radius',
         ['blast_safe_orbit.desc'] =
-            'While the safe zone holds the grenade it orbits the target at this radius (metres); larger keeps it further away',
-        ['safe_zone_engine_hold.label'] = 'Hold engine-aimed G-60s',
-        ['safe_zone_engine_hold.desc'] =
-            'Experimental: also hold G-60s the engine aimed at enemies while a player is in the safe zone (see safe_engine_* in the log)',
-        ['safe_zone_veto_selection.label'] = 'Clear engine selection',
-        ['safe_zone_veto_selection.desc'] =
-            'Experimental: while a player is in the zone and the grenade is inside the cancel line, clear the engine\'s selected target so the fuse has nothing to hit (see safe_veto_* in the log)',
+            'While the safe zone holds the grenade it orbits the target at this radius (metres); larger keeps it further away. 0 = no horizontal orbit: it hovers 2 m above the target (the point carries a +2 m lift)',
         ['friendly_veto_enabled.label'] = 'Clear friendly locks',
         ['friendly_veto_enabled.desc'] =
             'When the engine is locked onto a friendly or neutral unit, clear it so the grenade can be taken over. The ping marker itself cannot be removed',
@@ -144,61 +149,60 @@ M.TEXT = {
         ['max_grenades_per_target.label'] = 'Grenades per target (one mark)',
         ['max_grenades_per_target.desc'] =
             'With a single mark on the field, how many G-60s may track that one target at the same time (1 = old behaviour)',
-        ['multi_mark_grenades_per_target.label'] = 'Grenades per target (many marks)',
-        ['multi_mark_grenades_per_target.desc'] =
-            'With two or more marks, how many G-60s each target may take (1 = one grenade each). Marks are assigned in the order they were pinged',
     },
     ['zh-Hans'] = {
-        ['mod'] = 'G-60 定向打击',
+        ['mod'] = 'G-60定向打击',
         -- ★★★ 2026-10-14（用户要求）：远距离追踪的接管距离上限 ★★★
         --   ⚠ 2026-10-14 用户实机修正：**只保留结构目标的说明**（泰坦等不由本项控制）。
         --   ⚠ 同日第二轮：距离**合并成两档**后，两个滑块名字太像 ⇒
         --     这条**点名"结构目标"**，与下面那条"其他目标"对称（否则看不出在说谁）。
         ['max_takeover_distance.label'] = '接管距离上限：结构目标（米）',
         ['max_takeover_distance.desc'] =
-            '标记的**结构目标**（虫洞/构筑/尖啸巢/孢子喷涌虫/落地穿梭舰/广播台）离多远之内才接管。**只影响这些结构目标**（默认 250）。非结构目标见**下面那一项**',
+      '标记的结构目标（虫洞/构筑/尖啸巢/孢子喷涌虫/落地穿梭舰/广播台）离多远之内才接管。只影响这些结构目标（默认250）。非结构目标见下面那一项',
         -- ★★★ 2026-10-14（用户最终方案）：接近标记的泰坦后放手 ★★★
         --   ⚠ 用户同日报「现在的都不知道在说**谁的**放手距离」⇒
         --     上一个开关撤出菜单后，光看"放手距离"看不出对象 ⇒ label 点名对象、
         --     desc 补全"先驱动过去、再放手让链接管"这条机制。
-        ['titan_approach_dist.label'] = '接近泰坦的放手距离（米）',
-        ['titan_approach_dist.desc'] =
-            '**只对**标记的 泰坦 / 泰坦变体 / 蟑龙 生效。G-60 先像普通标记目标一样被驱动过去，靠到这个距离就**放开接管**，让引擎自己选中它、由它自己的链引导（这样爆点才准）。3~60 米，默认 10',
         -- ★★★ 2026-10-14（第二轮，用户要求：泰坦与其他敌人合并成一档）★★★
         ['other_takeover_distance.label'] = '接管距离上限：其他目标（米）',
         ['other_takeover_distance.desc'] =
-            '标记的**非结构**目标（泰坦 / 泰坦变体 / 蟑龙 / 普通敌人…）离多远之内才接管。**泰坦家族与其他敌人共用这一个值**。上面那个结构距离是**另一档**。默认 200',
+      '标记的非结构目标（泰坦/泰坦变体/蟑龙/普通敌人等）离多远之内才接管。泰坦家族与其他敌人共用这一个值。上面那个结构距离是另一档。默认200',
         ['mark_retain_seconds.label'] = '图标消失后仍认标记（秒）',
         ['mark_retain_seconds.desc'] =
-            '标记图标只活约 8 秒，而 G-60 飞远距离目标可能更久。这个值大于 0 时，图标消失后再保留这么久，你仍然可以扔雷追踪它。**600 秒 ≈ 整局残留标记**。**0 = 关闭（默认）**。⚠ **你主动取消的标记不算数**（图标远早于 8 秒就消失 ⇒ 立即丢弃）；已在飞的那颗不受影响',
+      '标记图标只活约8秒，而G-60飞远距离目标可能更久。这个值大于0时，图标消失后再保留这么久，你仍然可以扔雷追踪它。600秒约等于整局残留标记。0 =关闭（默认）。注意：你主动取消的标记不算数（图标远早于8秒就消失，立即丢弃）；已在飞的那颗不受影响',
+        -- ★★★ 2026-10-16 → 2026-10-17：泰坦爆点窗口 —— **两侧文案都已撤掉** ★★★
+        --   用户最终要求「前后没必要调整，去掉相关设置」⇒ 与上方英语侧同理，
+        --   没有菜单项就不能有文案（否则 menu_text 自检报错）。
         -- ★★★ 2026-10-14（用户要求「安全区以引爆点为中心」）★★★
-        ['safe_zone_target_radius.label'] = '安全区半径（以引爆点为中心）',
+        ['blast_safe_lift.label'] = '安全区绕行高度',
+        ['blast_safe_lift.desc'] = '绕行/压住点在目标上方的抬升高度（米）。绕行半径为0时，手雷就在这个高度悬停于目标正上方。注意：低于3米会被引信保护推走（实际变成缓振）',
+        ['mark_priority_enabled.label'] = '优先级改派',
+        ['mark_priority_enabled.desc'] = '无标记时按名册优先级主动改派手雷',
+        ['point_target_enabled.label'] = '空ping点目标',
+        ['point_target_enabled.desc'] = '空ping（地面点）接管：把手雷引到该点',
+        ['titan_family.label'] = '泰坦族引爆点调整',
+        ['titan_family.desc'] = '吐酸/孢子泰坦、泰坦变体、蟑龙的引爆点调整。一个开关同时管泰坦、变体、蟑龙三条链',
+        ['safe_zone_group.label'] = '安全区压制组',
+        ['safe_zone_group.desc'] = '引擎自瞄雷的兜底闸+清掉引擎自己的选中。注意：关掉本组会失去对本mod没接管的雷的兜底',
+        ['structure_group.label'] = '结构接管组',
+        ['structure_group.desc'] = '标记结构（虫洞/构筑者/尖啸巢/落地飞船）的远距离接管+它们的标定炸点',
+        ['safe_zone_target_radius.label'] = '安全区半径',
         ['safe_zone_target_radius.desc'] =
-            '玩家离**预期引爆点**在这个半径（米）内时不引爆 —— 这是主判据；0=关闭',
-        ['blast_safe_radius.label'] = '安全区半径（以手雷为中心）',
-        ['blast_safe_radius.desc'] =
-            '可选的附加判据：玩家离**手雷本体**在这个半径（米）内时不引爆；0=关闭（默认）',
+      '整个安全区共用的唯一半径（米）：玩家在此半径内时不引爆。判据包括离预期引爆点、离手雷本体、以及贴脸取消的危险距离（取半径与7的较小值）；0 =整个安全区关闭',
         ['blast_safe_orbit.label'] = '安全区绕行半径',
-        ['blast_safe_orbit.desc'] = '安全区生效时手雷绕目标盘旋的半径（米）；越大离目标越远',
-        ['safe_zone_engine_hold.label'] = '安全区管引擎自瞄的雷',
-        ['safe_zone_engine_hold.desc'] = '实验：玩家在安全区内时，连引擎自己瞄敌人的 G-60 也一起压住（看 safe_engine_* 日志判读）',
-        ['safe_zone_veto_selection.label'] = '安全区清引擎的选择',
-        ['safe_zone_veto_selection.desc'] = '实验：玩家在圈内且手雷已贴到取消线以内时，清掉引擎选中的目标（引信就没有可撞的对象）。看 safe_veto_* 日志判读',
+        ['blast_safe_orbit.desc'] = '安全区生效时手雷绕目标盘旋的半径（米）；越大离目标越远。0 =不水平绕行，改为悬停在目标正上方（高度由安全区绕行高度那一项决定）',
         ['friendly_veto_enabled.label'] = '清除友方锁定',
-        ['friendly_veto_enabled.desc'] = '引擎锁着友方/中性单位时把它清掉（手雷才能被接管）—— 无法抹掉游戏里那个 ping 标记本身',
+        ['friendly_veto_enabled.desc'] = '引擎锁着友方/中性单位时把它清掉（手雷才能被接管），无法抹掉游戏里那个ping标记本身',
         ['allow_state3.label'] = '早期接管',
-        ['allow_state3.desc'] = '允许在 state 2/3 早期接管 G-60',
+        ['allow_state3.desc'] = '允许在state 2/3早期接管G-60',
         -- ★★★ 2026-10-14（用户要求）：自机探针**并进**诊断日志开关 ★★★
         ['diagnostics_enabled.label'] = '诊断日志（含自机探针）',
         ['diagnostics_enabled.desc'] =
-            '把高频诊断写进 mod 日志（perf、sel_probe、link、mark_queue、takeover_probe、自机探针 等）。关掉 = 日志安静。⚠ 判断成败所需的证据行**永远保留**',
+      '把高频诊断写进mod日志（perf、sel_probe、link、mark_queue、takeover_probe、自机探针等）。关掉=日志安静。注意：判断成败所需的证据行永远保留',
         -- ★★★ 2026-10-14（用户要求）：分配机制的两个上限 ★★★
         ['max_grenades_per_target.label'] = '单标记：每目标手雷数',
         ['max_grenades_per_target.desc'] =
-            '场上只有 1 个标记时，允许几颗 G-60 同时追它（1 = 维持原行为）',
-        ['multi_mark_grenades_per_target.label'] = '多标记：每目标手雷数',
-        ['multi_mark_grenades_per_target.desc'] =
-            '场上有 2 个及以上标记时，每个目标各接受几颗（1 = 每个目标一颗）。手雷按标记的先后顺序分配',
+            '场上只有1个标记时，允许几颗G-60同时追它（1 =维持原行为）',
     },
 }
 

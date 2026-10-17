@@ -1,19 +1,14 @@
--- ★★★ 2026-10-05：本文件已**逐字恢复为上游 1.1.0 的 TitanRoute**（用户拍板"泰坦方面全部改成上游"）★★★
+-- 泰坦的**接近航路规划**（泰坦链第一段）：从当前位置规划一条绕到腹部下方爆点的折线。
 --
--- 历史（我们曾有两处偏离上游，都带注释与实测依据，本次按用户要求**全部撤回**）：
---   ① 高度门槛从上游的 `under` 加 0.5 抬到加 2.5（2026-09-30，为让"腿间侧带捷径"命中，
---      避免每次绕 12 m 外圈）
---   ② `forward` 门槛从上游的 2.5 放宽到 `RADIUS`（2026-10-02 用户明确授权，
---      取消"必须从腿间侧带进"）
---   ★ 现在回到上游原值（两个门槛都是上游的），且该捷径**只在接管首帧**评估
---     （上游就把它写在 `else` 分支里，见 1233-1251）。
---   ⚠ 上面两处旧写法**不得再出现**在代码里 —— 由 tests/test_bughole_scope.py 的
---     `TITAN_ROUTE_FORBIDDEN` 硬性禁止（那两处都会改变接近姿态与引爆时机）。
+-- 两个门槛（高度 `under` 余量、`forward` 侧带宽度）都取**实机标定过的原值**：
+-- 历史上我们曾各放宽一次，两次都改变了接近姿态与引爆时机 ⇒ 已全部撤回。
+-- ⚠ 那两处旧写法**不得再出现**在代码里 —— 由 `tests/test_bughole_scope.py` 的
+--   `TITAN_ROUTE_FORBIDDEN` 硬性禁止。
+-- 捷径②（腿间侧带）**只在接管首帧**评估：它写在 `else` 分支里，与既有语义一致。
 --
--- 上游对应位置：`_refs/upstream-g60st-1.1.0-body.lua` 第 1205-1293 行，逐字节可对。
--- ⚠ 唯一保留的**非行为**差异：返回值多带 `under` / `forward` / `distance` 三个**诊断**字段
---   （供 `native_titan_aim` 的 `titan_probe;` 打印，不参与任何决策）。
---   为此把 `forward` 提到函数顶部计算 —— 纯函数、与上游在 `else` 分支里的同名计算**同值**。
+-- ⚠ 本文件返回值多带 `under` / `forward` / `distance` 三个**诊断**字段
+--   （供 `native_titan_aim` 的 `titan_probe;` 打印，**不参与任何决策**）。
+--   为此 `forward` 提到函数顶部计算 —— 纯函数、与被替代的 `else` 分支内同名计算**同值**。
 --
 -- Geometric experimental approach, not a collision query or terrain navigation.
 -- Route state belongs to one grenade/target identity; all points follow the body.
@@ -40,7 +35,7 @@ function M.step(own,target,previous,standoff,terminal_radius)
     rx,ry=rx/norm,ry/norm
     local dx,dy=own[1]-p[1],own[2]-p[2]
     local radius=math.sqrt(dx*dx+dy*dy)
-    -- ★ 诊断用（上游在 else 分支内计算，值相同；提到此处只为让它能进返回值）
+    -- ★ 诊断用（原实现写在 `else` 分支内，值相同；提到此处只为让它能进返回值）
     local forward=math.abs(-dx*ry+dy*rx)
     local under=math.max(p[3]-math.max(2,standoff+1),floor)
     if under>p[3]-0.6 then return nil,'Titan has insufficient observed belly clearance' end
@@ -99,7 +94,7 @@ function M.step(own,target,previous,standoff,terminal_radius)
         point={p[1],p[2],blast_z}
     else error('unknown Titan route stage') end
     vector(point)
-    -- ⚠ `under` / `forward` / `distance` 为**诊断增量**（上游只返回前三个字段）。
+    -- ⚠ `under` / `forward` / `distance` 为**诊断增量**（原实现只返回前三个字段）。
     --   `distance` = 到 `target.point` 的平面距离 —— 与调用方自己算的"到本帧目标点的距离"
     --   是两回事，日志里必须分开标，否则会误读成"贴着泰坦"。
     return {point=point,route=route,terminal=route.stage=='attack',under=under,forward=forward,

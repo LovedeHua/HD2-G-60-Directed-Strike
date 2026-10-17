@@ -28,7 +28,7 @@ M.DEFAULT_EARLY=false
 M.OBSERVE_FAIL_LIMIT=8
 
 -- 结构性致命消息：出现即永久停手。
---   注意这里必须是**完整消息**。上游按裸字符串精确比对，而 pcall 捕获的
+--   注意这里必须是**完整消息**。原版按裸字符串精确比对，而 pcall 捕获的
 --   error 带 `chunkname:line: ` 前缀 ⇒ 比对失败 ⇒ 竞争态被误当结构漂移
 --   ⇒ 单颗 G-60 的瞬时竞争杀死整局（2026-09-27 实机事故）。
 M.STRUCTURAL=nil   -- 由 native 模块负责分类，本模块不重复定义

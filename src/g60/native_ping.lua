@@ -22,7 +22,7 @@ function M.new(env,options)
     -- ★ 稳健性改进（不是"完全没生效"的原因 —— 那是我 2026-09-27 引入的
     --   `old.quarantined` nil 崩溃；用户明确指出上一版是"压根没生效"而非"时灵时不灵"）★
     --
-    -- 上游的收尾是 `if not ok then memory:reset(); return nil, ... end` ——
+    -- 原本的收尾是 `if not ok then memory:reset(); return nil, ... end` ——
     -- **任何一次读取失败就把整个标记记忆清空**。而 `local Ping creator unavailable`
     -- （第 42 行的 assert：在 actors 表里没找到本地拥有的 Ping creator）在实机里
     -- 会连续失败很多帧（23:28 那版日志里它刷了几百条）。
@@ -31,7 +31,7 @@ function M.new(env,options)
     -- 只要 UI 的标记还在 ring 里未过期，下一帧成功时会重新记住 —— 所以它不至于
     -- 让功能完全失效，只会让标记"断断续续"。真正的"压根没生效"是别的原因。
     --
-    -- 但这里的上游写法与设计意图相悖：这个 memory 存在的意义恰恰是
+    -- 但这种写法与设计意图相悖：这个 memory 存在的意义恰恰是
     -- "UI 的标记到期后**仍然记住**玩家的意图"（ping_memory.lua 文件头：
     -- `UI expiry does not expire remembered intent`），一次读失败就清掉它是错的。
     --
@@ -352,7 +352,7 @@ function M.new(env,options)
             --   就成了"取消不掉"：标记从画面上消失之后，记忆里那条还在 ⇒
             --   之后每一颗 G-60 仍会照它去追那个单位。
             --
-            --   ⚠ 这里**不修改 ping_memory**（它在"上游原样"清单里，见
+            --   ⚠ 这里**不修改 ping_memory**（它在"原样保留"清单里，见
             --     tests/test_bughole_scope.py 的 UNTOUCHED）—— 改为在**返回给上层的
             --     队列上过滤**：`queue` 每一项的 `current` 由 ping_memory 算好
             --     （= 本帧 ping 环里确实还看得到它，即 UI 的 8 秒窗口内），

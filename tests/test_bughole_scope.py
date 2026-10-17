@@ -251,7 +251,7 @@ TITAN_ROUTE_ANCHORS = (
     "'Titan has insufficient observed belly clearance'",
     "'unknown Titan route stage'",
     # 捷径②：上游意图注释 + forward 条件
-    # ★ 2026-10-05（用户拍板「泰坦方面全部改成上游 1.1」）：锚点回到**上游原值** `forward<=2.5`。
+    # ★ 2026-10-05（用户拍板「泰坦方面全部改成三段链」）：锚点回到**原值** `forward<=2.5`。
     #   我们 2026-10-02 授权放宽成的 `forward<=RADIUS` 已撤回（见 REQUIRED/FORBIDDEN）。
     "Already below the belly and inside the side corridor: go inward,",
     "local forward=math.abs(-dx*ry+dy*rx)",
@@ -271,8 +271,8 @@ TITAN_ROUTE_FORBIDDEN = (
     "own[3]<=under+2.5",          # 2026-09-30 放宽的安全上限，2026-10-05 撤回
 )
 
-# ★★ 2026-10-04：泰坦模板整合（上游 1.1.0 的 `animated_belly`）★★
-#   为什么两个文件从"逐字节等于上游"改成**锚点比对**：
+# ★★ 2026-10-04：泰坦模板整合（`animated_belly`）★★
+#   为什么两个文件改为**锚点比对**（而不是整文件逐字节一致）：
 #     整合必须动 `compat/titan_profile.lua`（补 3 个字段）与 `src/g60/titan_context.lua`
 #     （加 belly 姿态读取 + 蜷曲判定）—— 这两个文件原本在 `SAFETY_LAYER` 里要求逐字节一致。
 #   锚点保留的是**安全关键**那部分（身份 / exe 签名守卫 / 骨骼哈希 / accessor 白名单 /
@@ -285,7 +285,7 @@ TITAN_PROFILE_ANCHORS = (
     'alive_rva=0x1feeb0',                  # Unit-alive 分派 RVA（下游断言用）
     'engine_guards={',                     # exe 签名守卫（5 条，一条都不能少）
     'getters={',                           # 场景图 accessor 白名单（1573 条）
-    # 整合新增的三个字段：值必须与上游 1.1.0 **逐值一致**（抄错 = 爆点算错）
+    # 整合新增的三个字段：值是**实机标定出来的**，必须逐值保留（抄错 = 爆点算错）
     'right_local={2.8311353636991863e-16,-1.0,1.2790338951424682e-17}',
     'forward_local={0.9994231462478638,2.833846133828196e-16,0.0339609794318676}',
     'animated_belly={normal_local=',
@@ -372,7 +372,7 @@ def check_build_json(up, cur):
         'priority_faults',   # 竞争态 vs 结构漂移的分类（治"一颗 G-60 杀死整局"）
         'geometry',           # 只读几何诊断（零 ffi，可在测试里真跑）
         'take_gate',          # 接管门控纯函数（治"runtime 一行都测不到"）
-        # ★ 2026-10-05：用户拍板"泰坦方面全部改成上游 1.1"⇒ 把上游泰坦链缺的三段补回来。
+        # ★ 2026-10-05：用户拍板"泰坦方面全部改成三段链"⇒ 把缺失的三段补回来。
         #   三者都是**上游模块名**（不是我们的新发明），逐字移植：
         'navigation',         # 上游 2577-2753：泰坦专用可见性图导航
                               #   ⚠ 别名取 `Nav`（不是 `Navigation`）—— build.py 的 require 替换
@@ -669,7 +669,7 @@ def main():
     check('belly_above_not_a_new_upvalue',
           arr_src.count('local titan_above=0') == 1 and arr_src.count('local titan_stage=') == 1,
           '★ 收成 pcall 内的 local（Lua 5.1 每函数 upvalue 上限 60）')
-    # ★★ 2026-10-05（用户拍板「泰坦方面全部改成上游 1.1」）★★
+    # ★★ 2026-10-05（用户拍板「泰坦方面全部改成三段链」）★★
     #   我们自研的两项 —— `titan_standoff_min`（standoff 自适应 1.5~2.5）与
     #   `titan_belly_above`（腹部提前引爆余量）—— **已整段移除**：上游没有这两个量，
     #   而且它们只在"竖直爆点"（`blast_z = 腹点 - standoff`）几何下才有意义，
@@ -684,17 +684,24 @@ def main():
           and 'titan_standoff_min' not in _entry_code,
           '★ 自研的 standoff 自适应（`titan_standoff_min` / `titan_standoff_adapted` / '
           '`route_standoff`）必须从泰坦路径与配置里**整段消失**')
-    # ★★★ 2026-10-14：爆距浮动带已**整段回退** ★★★
+    # ★★★ 2026-10-14：爆距**浮动带**已整段回退 ★★★
     #   用户报「泰坦引爆点不太对，能还原到 0.1.22 版本吗」⇒ 泰坦链三个文件
     #   （`adaptive.lua` / `native_titan_aim.lua` / `compat/titan_variants.lua`）
-    #   已 `git checkout v0.1.22` **逐字节还原**，浮动带的配置/菜单/状态行/文案
-    #   一并清掉。这条门防的是"浮动带死灰复燃"（它会让爆点偏离 0.1.22 的行为）。
+    #   已 `git checkout v0.1.22` **逐字节还原**。
+    # ★★★ 2026-10-16：用户又要求「引爆点现在是 2.5，想能调」⇒ 加了**单一定值**滑块 ★★★
+    #   ⇒ 判据收窄到"**浮动带**"（`_min`/`_max` 两端自动挑）这个具体机制；
+    #     `titan_standoff`（一个由玩家定死、默认 2.5 的值）是允许的。
+    #   两者不是一回事：浮动带同一发雷每帧可能不同（用户就是因此报"不太对"）；
+    #   定值全程恒定、可复现。
     check('titan_blast_band_fully_reverted',
-          'titan_blast_standoff' not in entry_src
-          and 'titan_blast_standoff' not in aim_src
-          and 'titan_blast_standoff' not in _adapt_code,
-          '★★ 泰坦爆距浮动带必须**整段消失**（用户要求还原到 0.1.22：'
-          '`local c={p[1]+n[1]*2.5,…}` 是唯一的爆点公式）')
+          'titan_blast_standoff_min' not in entry_src
+          and 'titan_blast_standoff_max' not in entry_src
+          and 'titan_blast_standoff_min' not in aim_src
+          and 'titan_blast_standoff_max' not in aim_src
+          and 'titan_blast_standoff_min' not in _adapt_code
+          and 'titan_blast_standoff_max' not in _adapt_code,
+          '★★ 泰坦爆距**浮动带**（`_min`/`_max`）必须整段消失（用户要求还原到 0.1.22：'
+          '爆点 = 腹点 + 腹法线 × standoff，standoff 缺省 2.5）')
     check('titan_belly_above_removed',
           'titan_belly_above' not in _aim_code and 'titan_belly_above' not in _entry_code,
           '★ 腹部提前引爆余量 `titan_belly_above` 已按上游移除（配置 / 透传 / 状态行三处都要没）')
@@ -710,10 +717,14 @@ def main():
     check('titan_chain_is_upstream_three_stages',
           "local BlastRoute=require('g60.blast_route')" in aim_src
           and "local Adaptive=require('g60.adaptive')" in aim_src
+          # ★ 2026-10-17（用户「前后没必要调整，去掉相关设置」）：泰坦爆点窗口最终
+          #   定为「上下固定 2.4~2.6、前后不动、两侧无菜单项」⇒ 后两段的窗口入参
+          #   已撤掉，签名**回到上游**（`BlastRoute.refine` 5 参 / `Adaptive.refine` 6 参）。
           and 'pcall(BlastRoute.refine,own_position,target,prior,profile,value)' in aim_src
           and 'pcall(Adaptive.refine,own_position,target,prior,profile,value,now)' in aim_src,
           '★ 泰坦链必须是上游的三段：`TitanRoute.step` → `BlastRoute.refine` → '
-          '`Adaptive.refine`（签名与 v0.1.22 逐字一致 —— 浮动带已整段回退）')
+          '`Adaptive.refine`，**三段签名都与上游一致**'
+          '（窗口配置已内化为 `adaptive.lua` 的 BAND_LO/BAND_HI 常量，不再走参数）')
     check('titan_upstream_arrival_region',
           'titan_arrival_region={radius=1.75,depth=0.8},' in entry_src,
           '★ 到达区域回到上游原值 `{radius=1.75,depth=0.8}`（我们曾收到 1.5/1.2 并加 `above`）')
@@ -722,7 +733,7 @@ def main():
           and "not line:match('^titan_refine_failed;')" in entry_src,
           '★ `Adaptive`/`BlastRoute` 的断言在实机抛错时，表现是"泰坦**一整局**都不接管" '
           '⇒ 必须有日志且必须进白名单（否则等于没测）')
-    # ★★ 2026-10-04：泰坦模板整合（上游 1.1.0 的 `animated_belly`）★★
+    # ★★ 2026-10-04：泰坦模板整合（`animated_belly`）★★
     #   为什么必须有守门：逻辑分布在 `titan_context`（锚点只管"安全断言齐全"，
     #   不管"这段还在不在跑"）+ `native_titan_aim` 的传参 —— 任一被删就**静默**退回旧行为，
     #   而日志里 `titan_animated_belly=true` 照样显示为真（本工程老毛病：承诺了却看不到）。
@@ -739,10 +750,10 @@ def main():
           and 'belly_outward=belly_outward' in titan_ctx_src,
           '★★ **接线必须真的在**：主路径传 `env.titan_animated_belly` + context 读 `belly_pose` '
           '+ 返回 `belly_outward`（只留开关不接线 ⇒ 测了等于没测）')
-    check('animated_belly_follows_upstream_values',
+    check('animated_belly_values_are_the_calibrated_ones',
           'right_local={2.8311353636991863e-16,-1.0,1.2790338951424682e-17}' in titan_profile_src
           and 'max_offset=3.0' in titan_profile_src,
-          '★★ 三个新字段的值必须与上游 1.1.0 **逐值一致**（抄错 = 爆点算错；锚点只查了前缀）')
+          '★★ 三个新字段的值是实机标定值，必须逐值保留（抄错 = 爆点算错；锚点只查了前缀）')
     check('animated_belly_really_was_the_fix',
           'pose_unreliable=delta>profile.animated_belly.max_offset^2' in titan_ctx_src
           and 'if pose_unreliable then point=predicted;' in titan_ctx_src,
@@ -765,7 +776,7 @@ def main():
     check('titan_route_forward_defined_once',
           route_src.count('local forward=math.abs(-dx*ry+dy*rx)') == 1,
           '★ `forward` 只定义一次（提到函数顶部）⇒ 不会有两个同名变量互相遮蔽')
-    # ★★ 2026-10-05（用户拍板「泰坦方面全部改成上游 1.1」）：捷径② 回到上游的
+    # ★★ 2026-10-05（用户拍板「泰坦方面全部改成三段链」）：捷径② 回到原有的
     #   **首帧评估**（写在下游 `else` 分支里）+ `forward<=2.5`。
     #   ⚠ 判据用 `strip_comments`：文件头的"历史"注释会描述旧写法，
     #     只有**代码**里不许再出现（`TITAN_ROUTE_FORBIDDEN` 走原文比对，
@@ -828,7 +839,7 @@ def main():
           "standoff_logged['blast:'..tostring(target.id)]" in aim_src,
           '★ 复用已有的 `standoff_logged` 表（键加 `blast:` 前缀）—— 不给 `api:step` '
           '的 pcall 匿名函数新增 upvalue（余量已紧张，多一个就整 chunk 编译失败）')
-    # ★★ 2026-10-05（用户拍板「泰坦方面全部改成上游 1.1」）★★
+    # ★★ 2026-10-05（用户拍板「泰坦方面全部改成三段链」）★★
     #   原 `standoff_min_is_200_not_085` / `standoff_no_shrink_below_floor` 两条
     #   钉的是**我们自研的 standoff 自适应**（0.85→1.75→2.0 的试错结论）。
     #   该机制已随"改用上游"**整段移除** ⇒ 这两条不变量不再适用；
@@ -840,7 +851,9 @@ def main():
           and 'max(lo,max_standoff)' not in strip_comments(aim_src)
           and 'titan_standoff=2.5,' in entry_src,
           '★ `titan_standoff_min`（含 0.85/1.75/2.0 那串试错值）必须**已不存在**；'
-          'standoff 直接取上游的 `titan_standoff=2.5`')
+          '`titan_standoff` 的**默认值**取上游的 2.5'
+          '（⚠ 2026-10-16 起它可被菜单滑块改 —— 用户要求"自己慢慢调"，'
+          '但**默认仍是 2.5 = 与改动前逐字节一致**）')
     # 净空拒绝 = **等待**，不是引导失败（否则 0.5 秒就把手雷退休 ⇒ 白扔）
     check('clearance_refusal_is_wait_not_failure',
           "local waiting=type(status)=='string'" in _rt_src
@@ -859,10 +872,10 @@ def main():
     #   根因：`note_already_exploded` 只接在 disposal / arrival 两段，本段没接。
     _rt_code = strip_comments((ROOT / 'src/g60/experimental_runtime.lua').read_text(encoding='utf-8'))
     _i_ae = _rt_code.find('note_already_exploded(tostring(status or detail))')
-    _i_fail = _rt_code.find('local n=(guide_fail[m.id] or 0)+1')
+    _i_fail = _rt_code.find('local n=(S3.guide_fail[m.id] or 0)+1')
     check('already_exploded_is_done_not_failure',
           _i_ae >= 0 and _i_fail > _i_ae
-          and 'guide_fail[m.id]=nil' in _rt_code[_i_ae:_i_fail],
+          and 'S3.guide_fail[m.id]=nil' in _rt_code[_i_ae:_i_fail],
           '★ 引导失败分支先调 `note_already_exploded` 并清零计数 ⇒ 已爆=**完成**，'
           '不计 `fail_count`。⚠ 顺序即语义：放到计数之后就等于"已经记了一次失败"')
     check('already_exploded_single_helper',
@@ -875,11 +888,11 @@ def main():
           '★ 已爆（**终态**）判定排在净空等待（**瞬态**）之前 —— 终态优先，'
           '不必再等腹部抬起')
     check('clearance_wait_not_counted_as_failure',
-          _rt_src.index("if waiting then") < _rt_src.index('guide_fail[m.id]=0')
-          < _rt_src.index('local n=(guide_fail[m.id] or 0)+1'),
+          _rt_src.index("if waiting then") < _rt_src.index('S3.guide_fail[m.id]=0')
+          < _rt_src.index('local n=(S3.guide_fail[m.id] or 0)+1'),
           '★ 等待分支**不累加** `guide_fail`（顺序即语义：必须在真正的失败计数之前 return 掉）')
     check('real_failure_still_retires',
-          'if n>=GUIDE_FAIL_LIMIT then' in _rt_src and 'guide_give_up;entity=' in _rt_src,
+          'if n>=S3.GUIDE_FAIL_LIMIT then' in _rt_src and 'guide_give_up;entity=' in _rt_src,
           '★ **真正的**引导失败照旧计数并在 GUIDE_FAIL_LIMIT 后退休 —— '
           '等待分支不得绕过那条熔断（2026-09-29 为"无限循环挂住"加的）')
 
@@ -1265,7 +1278,9 @@ def main():
         names = z.namelist()
         manifest = json.loads(z.read('manifest.json'))
         build_info = json.loads(z.read('BUILD-INFO.json'))
-        packaged_source = z.read(SOURCE_IN_ARCHIVE).decode('utf-8', 'replace')
+        # ★ 2026-10-18：包内**不再有 Source/** ⇒ 改查真正发货的 patch（两者同源）。
+        # ⚠ 不能引用 `patch`：它在**本行之后**才赋值（实踩 UnboundLocalError）。
+        packaged_source = z.read('Addon/9ba626afa44a3aa3.patch_0').decode('utf-8', 'replace')
         patch = z.read('Addon/9ba626afa44a3aa3.patch_0')
 
     check('manifest_guid', manifest['Guid'] == GUID, manifest['Guid'])
@@ -1326,6 +1341,10 @@ def main():
     check('no_unsubstituted_placeholder',
           '@@' not in packaged_source,
           '★ 产物里不得残留 @@ 占位符（build.py 也有同名断言）')
+    # ★★ 2026-10-18（用户要求）：**包内不得打包源码** ★★
+    check('source_not_packaged',
+          not any(n.startswith('Source/') for n in names),
+          '★ 包内不应有 Source/（发货代码在 Addon/*.patch_0，打两份只是重复）')
 
     check('manifest_mentions_bughole_only', 'bug hole' in manifest['Description'].lower())
     check('manifest_warns_mutually_exclusive',

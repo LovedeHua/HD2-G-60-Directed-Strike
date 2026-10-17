@@ -60,7 +60,7 @@ local valid=ffi.typeof('bool (*)(void *, uint32_t, const void *)')
 -- 其余（结构性版本漂移）→ 仍然永久停手。
 --
 -- 判定必须从 g60.priority_faults 走（tests/test_priority_fault_isolation.py 真跑它），
--- 不能就地硬编码表 —— 上游那种"无差别永久停手"就是没有这一步。
+-- 不能就地硬编码表 —— 原版那种"无差别永久停手"就是没有这一步。
 -- ★★ 目标字段探针（2026-10-08）★★
 --   把"被标记目标"的三个关键字段 + 引擎自己的 target_valid 结论打一行出来。
 --   目的：对比「引擎拒绝的虫洞」与「引擎接受的敌人」到底差在哪个字段 ——
@@ -137,7 +137,7 @@ end
 --   背景（完整因果链见工作日志）：引擎**只在"候选分数 > 0"时**才置 state 4 ——
 --   seek 函数 0xbafb0 里：阈值 `xorps xmm9,xmm9`(=0.0)、取最大分、
 --   `0xbbc2e test ebx,ebx; js 0xbbc49` 无候选就**直接返回、不置 4**；
---   而**建筑/虫洞从来不在引擎的自动候选列表里**（上游原话
+--   而**建筑/虫洞从来不在引擎的自动候选列表里**（原始说明
 --   `Never discover structures from the automatic candidate list`）
 --   ⇒ 无敌人时永远进不去 state 4 ⇒ 引导不跑 ⇒ 我们写的点被每 0.25 s 一次的
 --   orbit（state-3 转换，重置飞行计时器）冲掉 ⇒ 手雷原地飘走、超时自爆。
@@ -276,7 +276,7 @@ function M.new(env)
                 if not row or Filter.excluded(row.entity.resource)
                     or (not row.marked_structure and env.target_allowed and not env.target_allowed(row.entity.resource)) then return false end
                 local e=row.entity
-                if available and not available(e.identity) then return false end
+                if available and not available(e.identity,e.resource) then return false end
                 if blocked_now and e.identity==blocked.identity then return false end
                 if prior and e.identity~=prior.identity then return false end
                 local ok_unit,unit=pcall(d.unit,e)
@@ -355,7 +355,7 @@ function M.new(env)
                 -- ⚠ 顺序：放在 `target_valid` 查询**之前** —— 它是纯 Lua 表查找，零内存读；
                 --   被别 G-60 预约的目标不值得再为它花一次原生调用。
                 -- ⚠ 同 owner 幂等：`available` 对"自己已持有"返回 true ⇒ sticky 复用不受影响。
-                if available and not available(e.identity) then return nil,'TARGET_RESERVED' end
+                if available and not available(e.identity,e.resource) then return nil,'TARGET_RESERVED' end
                 -- ★★★ 敌阵营硬门槛（2026-10-10，用户第三次报"标记友方被炸"）★★★
                 --
                 --   用户原话：「现在mod会让标记的友方也有候选分数，导致变成可炸毁目标」。
@@ -528,7 +528,7 @@ function M.new(env)
             -- Never discover structures from the automatic candidate list.
             --
             -- ★ 裁剪 I（实机"有的虫洞标记后不会飞过去炸"的真凶）★
-            -- 上游注释写的是"structure mark 可以打断已有锁定"，但代码**没有区分**
+            -- 原始注释写的是"structure mark 可以打断已有锁定"，但代码**没有区分**
             -- previous 是「敌人锁」还是「已在飞行中的虫洞锁」—— 只要来了新标记就抢占。
             -- 实机日志的三条铁证（同一颗 G-60 服务多个 target）：
             --     #1083: 锁定562 -> 锁定559            (562 永久报废)
@@ -658,7 +658,7 @@ function M.new(env)
                     local profile=e and env.structure_profiles[e.resource]
                     -- ★ 显式白名单：profile 表里没有的对象**绝不接管**，交回原生。
                     --
-                    --   上游这里只是 `if not profile then return end`（第 176 行），
+                    --   这里原本只是 `if not profile then return end`（第 176 行），
                     --   行为上已经是"不接管"，但**完全静默** ——
                     --   日志里既看不到拒绝了谁，也看不到为什么。
                     --   实机 13:50 的日志里 5 个被标记的资源哈希全部命中白名单，
@@ -726,7 +726,7 @@ function M.new(env)
                     --     "引擎怎么看它"的证据 —— 只记成功的样本会漏掉关键对照。
                     probe_target_fields(scope,env,e,'structure')
                     if e.identity~=structure_mark.identity or d.unit(e)~=structure_mark.unit then return end
-                    if available and not available(e.identity) then return end
+                    if available and not available(e.identity,e.resource) then return end
                     if blocked_now and e.identity==blocked.identity then return end
                     -- ★★★ 2026-10-14（用户要求远距离追踪）：**免几何 profile** 走 motion 位置 ★★★
                     --   `motion_point=true` 的 profile（构筑 / 巨型构筑 / 飞船）没有锚点几何
@@ -834,7 +834,7 @@ function M.new(env)
             -- 另一份没有，而"看起来哪个是主路径"很容易判断错。
             --
             -- ★ 裁剪(本工程只接管"标记虫洞") ★
-            -- 原上游在这里用 Candidates.capture + Policy.choose 从引擎候选列表里按 rank
+            -- 原本在这里用 Candidates.capture + Policy.choose 从引擎候选列表里按 rank
             -- 自动挑敌人(Bile Titan / Impaler / Spore Charger / Charger…)，把 G-60 从
             -- 引擎的原生 TargetLock 上抢过来。那是"只打指定敌人"的功能，与本工程无关，
             -- 整段删除。删除后 mod 不再改写敌人的选择，引擎原生逻辑保持不变。
@@ -1012,12 +1012,10 @@ function M.new(env)
             local same_selection=c.selection.has_target and c.selection.id==chosen.entity.id
             -- ★★★ 认出"这个自定义航点是我们自己写的" ⇒ **不重写实体选择**（2026-10-05）★★★
             --
-            -- 【移植自上游 1.1.0 的 `continued`，其 priority 第 4383-4389 行】
-            --   上游原话两句，就是这条判断的全部理由：
-            --     · `Continue our already observed custom point without temporarily
-            --        restoring an entity selection.`
-            --     · `Do not briefly re-enable native proximity between priority
-            --        acquisition and the separate route/arrival observation.`
+            -- 【这条判断的理由，两条】
+            --     · 已经观测到的自定义航点要**继续沿用**，不要在中间把实体选择恢复回去；
+            --     · 在"优先级获取"与随后的"航路/到达观测"之间，**不要短暂地重新打开
+            --       原生 proximity**（那会让两套选择互相打断）。
             --
             -- 【不写这段会怎样】
             --   下面那个 setter 的判据是 `same_selection`，而 `same_selection` 要求
@@ -1029,11 +1027,11 @@ function M.new(env)
             --
             -- 【谁会写这个点】两条路，都要认：
             --   ① `old.titan`（泰坦/航点路径，native_titan_aim 每帧写 point_bytes）——
-            --      与上游同款；
+            --      与原版同款；
             --   ② `old.lock` **自己**（本工程的**体内爆点**：runtime 每帧从已锁目标
             --      现算 `blast_point`，由 native_arrival 的 `options.point_target` 写进去，
-            --      再把写下的 12 字节回记到这把锁上）。上游用 `track.titan` 承载结构航点，
-            --      我们是在 runtime 现算的 ⇒ 不认这一条，上游这套机制在本工程**永不触发**。
+            --      再把写下的 12 字节回记到这把锁上）。原版用 `track.titan` 承载结构航点，
+            --      我们是在 runtime 现算的 ⇒ 不认这一条，那套机制在本工程**永不触发**。
             --   runtime 的 `with_observation` 负责挑出匹配的那个塞进 `scope.guidance_observation`。
             --
             -- 【判据全部来自只读观测，不做任何推断】（与 runtime 那侧同源）
@@ -1041,7 +1039,7 @@ function M.new(env)
             --   · 记录里 `0x1d..0x28` == 我们自己的 `point_bytes`（真的是我们写的那个点）
             --   · `+0x64 == 0`（类别掩码已清 ⇒ 原生 proximity 是关的）
             --   · `previous` 非 nil 且 `previous.unit/identity` 与 `chosen` **是同一个目标**
-            --     —— 上游写的是"`previous` 与 `guidance.target` 两对都要等于 `chosen`"，
+            --     —— 原版写的是"`previous` 与 `guidance.target` 两对都要等于 `chosen`"，
             --     在本工程里 `guidance` 要么就是 `previous` 本身（②），要么是 `old.titan`
             --     （①，此时才需要单独比 `.target`）。语义一致：**只对同一个目标续点**。
             --   ⇒ 仍然由下面的 sticky 分支逐帧复核目标实体（identity/unit/白名单）与
@@ -1091,7 +1089,7 @@ function M.new(env)
                 mark_yield_candidate=yield_candidate,
                 record=scope.read(c.state_address-8,0x1f8),resource=chosen.entity.resource,
                 -- ★ marked_structure 必须显式为 true，否则不返回 lock ★
-                -- 上游写的是 `marked_structure=chosen.marked_structure`，可为 nil。
+                -- 原版写的是 `marked_structure=chosen.marked_structure`，可为 nil。
                 -- 而 runtime 的门控判的是 `old.lock or old.titan` —— nil 的
                 -- marked_structure 不会阻止它被存进 old.lock，于是这个"锁"
                 -- 既不受 take_gate 的 no_mark_no_hold 保护，也不受白名单保护

@@ -120,6 +120,41 @@ def main():
           '构建器的 assemble 会直接断言失败（本工程的高危面硬边界）；'
           ' 这里查的是**能力**（ffi 调用），不是注释里提没提名字')
 
+    # ---------- ★★ 2026-10-18：不得使用游戏字体缺字形的符号 ★★ ----------
+    #   用户实机截图：说明里的 `「」` 渲染成 **`?`**
+    #     （「判据包括?离预期引爆点?…」）。
+    #   ⇒ MOM 用的那个字体**没有**这些字形：「」 “” … ≈ —
+    #   安全集：ASCII 可打印 + CJK 汉字 + 中文标点（，。、：；！？（））。
+    #   ⚠ 这道门是“看不到的字形问题”的唯一防线 ——
+    #     它能编译、能渲染，只是显示成 `?`，不看截图发现不了。
+    _offend = {}
+    for _m in re.finditer(r"\['[\w.]+'\]\s*=\s*((?:'[^']*'\s*\n?\s*)+)", src):
+        _val = "".join(re.findall(r"'([^']*)'", _m.group(1)))
+        _bad = sorted({c for c in _val if ord(c) >= 128
+                       and not (0x4E00 <= ord(c) <= 0x9FFF)
+                       and c not in '\uff0c\u3002\u3001\uff1a\uff1b\uff01\uff1f\uff08\uff09'})
+        if _bad:
+            _offend[_val[:24]] = "".join(_bad)
+    CHECKS.append(('menu_text_has_no_missing_glyphs', not _offend,
+                   '\u2605\u2605 \u8fd9\u4e9b\u7b26\u53f7\u5728\u6e38\u620f\u5b57\u4f53\u91cc\u7f3a\u5b57\u5f62\u3001\u4f1a\u6e32\u67d3\u6210 ? : %s'
+                   % ('\u65e0' if not _offend else str(_offend))))
+
+    # ---------- ★★ 2026-10-18：中文说明里不得夹 ASCII 空格 ★★ ----------
+    #   用户实机截图：「场上有 2」↵「个及以上标记时…」、
+    #     「（1 =」↵「每个目标一颗）」
+    #   ⇒ 渲染器**按空格折行**，但它算不准 CJK 的双倍宽度
+    #     ⇒ 中文里夹一个空格就会**提前断行**（换行很突然）。
+    #   修法：中文说明里**不要空格**（中文排版本就不需要）。
+    #   ⚠ 英文说明必须保留空格（英文靠空格分词）⇒ 只管含 CJK 的值。
+    _spaced = {}
+    for _m in re.finditer(r"\['[\w.]+'\]\s*=\s*((?:'[^']*'\s*\n?\s*)+)", src):
+        _val = "".join(re.findall(r"'([^']*)'", _m.group(1)))
+        if re.search(r"[\u4e00-\u9fff][ \t]|[ \t][\u4e00-\u9fff]", _val):
+            _spaced[_val[:20]] = True
+    CHECKS.append(('menu_text_cjk_has_no_ascii_spaces', not _spaced,
+                   '\u2605\u2605 中文说明里夹 ASCII 空格 ⇒ 渲染器会提前断行'
+                   '（换行很突然）：%d 条' % len(_spaced)))
+
     # ---------- 输出 ----------
     passed = sum(1 for _, ok, _ in CHECKS if ok)
     for name, ok, detail in CHECKS:

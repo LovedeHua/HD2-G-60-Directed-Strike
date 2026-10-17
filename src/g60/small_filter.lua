@@ -1,7 +1,7 @@
 -- Exact resources only. Unknown variants retain vanilla eligibility.
 local U = require('g60.util')
 local M = {}
--- ★★ 裁剪 E（修 bug 的最后一层）：上游这张表排除了 8 种小虫 + Impaler 触手 + Hive Guard，
+-- ★★ 裁剪 E（修 bug 的最后一层）：原来这张表排除了 8 种小虫 + Impaler 触手 + Hive Guard，
 --   而 selection_veto.plan() 第 23 行的判据是
 --       if not Filter.excluded(r) and (not allowed or allowed(r)) then keep end
 --   即使 designed_targets_only=false 让 allowed 变成 nil，**这半个条件仍会生效**，
@@ -12,11 +12,11 @@ local M = {}
 --
 -- ★★★ 2026-09-29 例外：用户明确要求"G-60 不追踪运输船"，重新启用**一项** ★★★
 --
---   上游那 9 项（8 种小虫 + Impaler 触手 + Hive Guard）**不恢复** ——
+--   原来那 9 项（8 种小虫 + Impaler 触手 + Hive Guard）**不恢复** ——
 --   它们的症状是"G-60 打不了中小型敌人"，正是本工程当初清空该表的原因。
 --   这里只放**用户点名的一个资源**，范围最小化。
 --
---   ⚠️ 与上游用法的关键差别：这张表的**三个调用方**
+--   ⚠️ 与原来用法的关键差别：这张表的**三个调用方**
 --     ① native_priority.lua:120  eligible()   —— 只作用于本 mod 已持有的实体
 --     ② target_policy.lua:7     候选打分      —— 同上
 --     ③ selection_veto.lua:23   选择否决      —— 经 runner 调用，**这才是生效点**
@@ -172,8 +172,76 @@ local marked_allowed = {
     --     加进来会改变蟑龙的行为 —— **不擅自扩张**。
     ['9e2e17f2ccccafdd'] = true,   -- 吐酸泰坦 cha_strider
     ['ef04cb84d097a497'] = true,   -- 幽暗变体 cha_strider_gloom（孢子泰坦）
+    -- ★★★ 2026-10-18（用户报「有一些雕像不能 ping 出来炸毁」，用户选定放行 7 条）★★★
+    --
+    --   实机证据链（`G60BugholeLock.log`）：
+    --     L805  structure_mark;target=437;resource=7c9455fcef107e41;reason=ACCEPTED
+    --           ⚠ 这个 ACCEPTED 是"该标记是活的"，**不是**"该资源已登记" —— 别混。
+    --     L811  mark_queue;…;resources=7c9455fcef107e41;tiers=1500;…;picked=437
+    --     L813  generic_rejected;…;detail=NOT_ENEMY_RESOURCE   ← 手雷永远不去
+    --
+    --   为什么被拒（两道门，缺一不可）：
+    --     ① 结构路要求资源在 `compat/structure_profiles.lua` 里（`native_priority`
+    --        L560/L655）—— 它不在 ⇒ 结构分支被**跳过**；
+    --     ② 落到通用路后撞上 `native_priority` L434 的三选一
+    --        （`enemy_faction` / `marked_allowed` / `blast_sites`）—— 全不中 ⇒ 拒。
+    --   ⇒ 本表是它**唯一**的放行口（与落地运输舰、那 6 类结构**同形**）。
+    --
+    --   它们是什么（离线查 `EntityComponentMap.json`，双源核对）：
+    --     · `DestructibleComponentData`（**可摧毁**）+ `SpottableComponentData`（**可标记**）
+    --     · `UnitComponentData` / `BehaviorComponentData`（是单位、有行为）
+    --     · 其中若干还有 `ShowOnMapComponentData`（地图可见）
+    --       与 `ObjectiveDynamicLinkComponentData`（**任务目标**）
+    --     · `name` / `name_zh` 在数据里就是 **`N/A`** ⇒ 无名道具（用户口语叫"雕像"）
+    --
+    --   ⚠⚠ 范围**三轮收窄**，最终**只剩 1 条**：
+    --     ① 离线筛「无名 + 可摧毁 + 可标记」共 **58** 条，混着**玩家自己的装备**
+    --        （如 `9de2c3a3c9a6353e` 战术摄像机）⇒ 全放行会让 mod 去炸玩家道具。
+    --     ② 用户 2026-10-18：「不知道那 4 条具体是啥东西」⇒ 去掉只有
+    --        `ShowOnMapComponentData`、无 `ObjectiveDynamicLinkComponentData` 的 4 条。
+    --     ③ 用户 2026-10-18 追加：「`3f2c34c69cfc94b2` / `9a1f728716da05b5` 这 2 条也先去除，
+    --        **除非 2 个仓库里能找到相关信息**」。⇒ 用 `Darctor/Helldivers2_RawData`
+    --        的 `Data/entities/FactionComponentData.json` 等**查到了相关信息**，
+    --        而信息说它们**不是雕像** ⇒ 按规则**移除**：
+    --          · `3f2c34c69cfc94b2`：`factions=[FactionType_SuperEarth,…]`
+    --            —— **超级地球阵营 = 友方**！外加 `HellpodPayloadComponentData`
+    --            （空投载荷）+ `LoadoutPackageComponentData`（配装包）
+    --            ⇒ **留着会误炸友方**（这正是本表头"绝不得加入友方资产"那条纪律）。
+    --          · `9a1f728716da05b5`：`DepositComponentData`（capacity 4 / refill 20）
+    --            + `LoadoutPackageComponentData` ⇒ **补给点/装备**，不是可炸目标物。
+    --   ⚠ 判据最终收敛为：**无阵营组件 + 有任务目标组件 + 有本地化名键** 三者同时成立。
+    --     `7c9455fcef107e41` 三条都满足（无 `FactionComponentData`；有
+    --     `ObjectiveDynamicLinkComponentData`；有 `EncyclopediaEntryComponentData.loc_name`）。
+    --   ⚠ 日后要扩，**先按同一判据离线筛**（`RawData/Data/entities/*.json` 可直接查阵营与组件），
+    --     不要凭"地图可见"或名字往里加。守门钉着被移除的 6 条**不得回流**。
+    --   ⚠ 雕像**单独成表**（见下 `statue_targets`）：它除了"要放行"之外，还要
+    --     影响**距离上限**（走结构档），两件事同源 ⇒ 不许在这里再抄一份哈希。
 }
+
+-- ★★★ 2026-10-18（用户要求）：**被点名的雕像目标**（独立表，供距离策略复用）★★★
+--
+--   用户原话：「有些雕像不能 ping 出来炸毁」→ 查日志确认只剩一种资源
+--   （8 个不同 target、`resource` 全是 `7c9455fcef107e41`）。
+--   放行后**不再** `NOT_ENEMY_RESOURCE`，但**仍被 `OUTSIDE_RANGE` 拒** ——
+--   因为它不在 `structure_profiles` 里 ⇒ `target_policy.max_distance2` 走
+--   "其他目标"那一档（`other_takeover_distance`，用户当前设 **150**）。
+--   用户 2026-10-18 选定：**雕像改走结构档**（跟 `max_takeover_distance` 滑块）。
+--
+--   ⚠ 为什么单列一张表、而不是让 `target_policy` 去翻 `marked_allowed`：
+--     `marked_allowed` 里还有运输船/构筑/泰坦等**很多**条目，它们**不该**跟着改距离
+--     （泰坦另有 `titan_approach` 的 10 m 放手逻辑；运输船走的是别的路）。
+--     ⇒ 只有"雕像"这一类要改距离，就必须能单独识别出来。
+--   ⚠ 单一数据源：下面的循环把本表**并进** `marked_allowed` ⇒ 加一条只改这里。
+--   ⚠ 判据（三轮收窄后）：**无阵营组件 + 有任务目标组件 + 有本地化名键**。
+--     被移除的 6 条**不得回流**（守门钉着）。
+local statue_targets = {
+    ['7c9455fcef107e41'] = true,   -- 无名**任务目标**（日志实证；无阵营+任务+本地化名）
+}
+for resource in pairs(statue_targets) do marked_allowed[resource] = true end
+
 function M.marked_allowed(resource) return marked_allowed[resource] == true end
+-- ★ 供 `target_policy.max_distance2` 判断"这一类是否该走结构档距离"。
+function M.statue_target(resource) return statue_targets[resource] == true end
 -- 只读：把排除表如实列出来（**排序后**，保证启动日志稳定可比）。
 --   存在的意义：启动日志的 `enemy_veto_resources=` 必须由这里生成，
 --   而不是在 entry 里再抄一份哈希 —— 2026-09-29 就是因为日志里硬编码了

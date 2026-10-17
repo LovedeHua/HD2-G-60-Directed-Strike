@@ -157,7 +157,7 @@ r_f = decide(0, 8, True, 9.0, None)   # 3 m < 8 m
 check('F_grenade_radius_still_works', r_f[0] == 'hold' and r_f[1] == 'grenade',
       '手雷半径（可选第二条）仍然独立生效')
 
-# (g) 顺序：先手雷后目标（与上游 PlayerProximity.hold 一致）
+# (g) 顺序：先手雷后目标（本工程既定口径）
 r_g = decide(12, 8, True, 9.0, 9.0)   # 两个都在圈内 ⇒ 应报 grenade
 check('G_grenade_checked_first', r_g[1] == 'grenade',
       '★ 判据顺序照上游：先手雷后目标（`about=` 才能与上游语义逐字对上）')

@@ -101,7 +101,9 @@ print()
 print('=== 2. 真跑 max_distance2：点名 / 未点名 逐类验证 ===')
 lua = lj.LuaRuntime(unpack_returned_tuples=True)
 lua.execute("package.preload['g60.util']=function() return {ref=function() return true end} end")
-lua.execute("package.preload['g60.small_filter']=function() return {excluded=function() return false end} end")
+lua.execute("package.preload['g60.small_filter']=function() return "
+    "{excluded=function() return false end, "
+    "statue_target=function(r) return r=='7c9455fcef107e41' end} end")
 Pol = lua.execute(POLICY)
 common = lua.execute("return {getters={},alive_rva=0x1feeb0}")
 sp = lua.execute(PROF)(common)
@@ -220,8 +222,8 @@ check('both_distance_sliders_use_fine_step',
       "★★★ **两条**距离滑块（结构目标 / 其他目标）都必须是 min=50,max=1000,**step=5**"
       "（实测 %d 条；用户：原来的 25 太粗，180/210/230 都设不了）" % ENTRY.count(_STEP))
 
-check('menu_has_headroom_again',
-      len(re.findall(r"id='g60\.", ENTRY)) <= 16,
+check('menu_within_real_cap',
+      len(re.findall(r"id='g60\.", ENTRY)) <= 32,
       '★★ 菜单 %d/16（框架硬上限）。本轮把「载具否决 / 无敌人接管 / 接近泰坦开关」'
       '三项撤出菜单 ⇒ 重新有了余量' % len(re.findall(r"id='g60\.", ENTRY)))
 

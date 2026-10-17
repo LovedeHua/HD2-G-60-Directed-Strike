@@ -24,9 +24,27 @@ function M.owner(match) return identity(match.identity_bytes) end
 --     ⇒ 那是"完全不做预约"（不限颗数），与本 cap 是两回事：
 --       · `exclusive_targets=false`      ⇒ 不预约（历史上就是这样，保留）
 --       · `max_grenades_per_target=N`    ⇒ 预约，且每目标最多 N 颗
-function M.new(cap)
+-- ★★★ 2026-10-18（用户要求）：**按单位资源的白名单上限** ★★★
+--   用户原话：「增加白名单，白名单里面的单位可以突破手雷数量上限，
+--     移动工厂接受2颗手雷，坦克及其变体接受2颗手雷，噪轰引擎可以接受4颗手雷，
+--     猎杀器、证真者可以接受2颗手雷」，且「这个白名单对无标记的情况下也起作用」。
+--   ⇒ 上限不再是**一个数**，而是 `cap_by_resource[resource] or cap`。
+--   ⚠ 为什么必须按资源取：白名单是"某些单位能多挨几颗"，
+--     而不是"所有目标都能多挨几颗"（后者会把 1:1 分散规则毁掉）。
+--   ⚠ `resource` 是**16 进制 16 字符**的资源哈希（与 `spread_priority.lua` /
+--     `enemy_faction.lua` 同一写法），由调用点传入（它们手里都有 `ent.resource`）。
+--   ⚠ 白名单缺席时**行为与旧版逐字一致**（只认 `cap`）⇒ 老测试不受影响。
+function M.new(cap, cap_by_resource)
     cap=tonumber(cap) or 1
     if cap<1 then cap=1 end
+    local caps=cap_by_resource or nil
+    -- ★ 上限解析的**唯一入口**（`available` 与 `claim` 共用 ⇒ 判定与登记永远一致）
+    local function limit(resource)
+        local n=caps and resource and caps[resource]
+        n=tonumber(n)
+        if n and n>=1 then return n end
+        return cap
+    end
     local targets={}          -- target_key -> { [owner]=true, … }
     -- ★ 2026-10-14：**缺席计数**（见 reconcile 的宽限说明）
     local missing={}
@@ -77,11 +95,12 @@ function M.new(cap)
         for owner in pairs(expired) do api:release_owner(owner) end
     end
     -- ★ 语义：本目标**还剩名额**（或本来就是我持有的）⇒ 可用
-    function api:available(owner,target)
+    --   ⚠ `resource` 可选：给了就走白名单上限，没给就用 `cap`（旧行为）
+    function api:available(owner,target,resource)
         local held=targets[identity(target)]
         if held==nil then return true end
         if held[owner] then return true end
-        return count(held)<cap
+        return count(held)<limit(resource)
     end
     -- ★★★ 2026-10-14（用户要求"多个标记也能自定义"）★★★
     --   **当前负载**：该目标已被几个 owner 持有（无则 0）。
@@ -95,16 +114,20 @@ function M.new(cap)
         if n<1 then n=1 end
         cap=n
     end
+    -- ★ 2026-10-18：白名单表（resource -> 上限）。传 nil 即撤销白名单。
+    function api:set_cap_map(map)
+        caps=(type(map)=='table') and map or nil
+    end
     function api:load(target)
         local held=targets[identity(target)]
         return held and count(held) or 0
     end
-    function api:claim(owner,target)
+    function api:claim(owner,target,resource)
         local key=identity(target)
         local held=targets[key]
         if held==nil then held={};targets[key]=held end
         if held[owner] then return end
-        assert(count(held)<cap,'target already reserved')
+        assert(count(held)<limit(resource),'target already reserved')
         held[owner]=true
     end
     -- ⚠⚠ **不存在 `claim_shared`**（主支 v0.1.39 短暂加过，已删除）⚠⚠
@@ -112,7 +135,10 @@ function M.new(cap)
     --   理由是 runtime 注释里那句"全都被占了 ⇒ 允许共享（避免一颗都不打）"。
     --   用户明确推翻：「单标记情况下可以允许多颗雷（**前面的自定义数量**）
     --   追踪锁定标记敌人，多标记敌人同时存在时每个敌人分一颗手雷」
-    --   ⇒ **cap 是硬上限**：单标记时最多 cap 颗、多标记时按 `multi_mark_grenades_per_target`。
+    --   ⇒ **cap 是硬上限**。⚠ 2026-10-18（用户要求）起口径变了：
+    --     基础上限**只有一个**（runtime 传进来的 `cap`；无标记时是硬性 1），
+    --     而**按单位资源的白名单**（`cap_by_resource`）可以把它抬高
+    --     —— 原来的"单标记/多标记两个设置"已随滑块一起移除。
     --   强行共享会让 cap 变成摆设（cap=2 时第 3、4 颗照样挤进来）。
     --   ⇒ 空位用尽时**如实拒绝**（`TARGET_RESERVED`），这才符合"上限"的语义。
     --   ⚠ 名额断言（下面 `claim` 里的 `assert(count(held)<cap)`）是"同一目标被两颗雷

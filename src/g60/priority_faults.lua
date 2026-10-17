@@ -1,6 +1,6 @@
 -- 故障域判定：把「瞬时竞争」和「版本漂移」分开。
 --
--- 2026-09-27 实机事故的根因。上游（以及本工程此前）的收尾只有一句
+-- 2026-09-27 实机事故的根因。原来的收尾（以及本工程此前）只有一句
 --   `if mutated then disabled=true end`
 -- setter 写完回读一旦不符，整个 priority 段永久停手；runtime 紧接着又
 --   `if priority:disabled() then self.disabled=true; error(...)`
@@ -78,7 +78,7 @@ M.COMPETITIVE={
     --   · `arrival source changed` / `arrival behavior changed` / `arrival preflight changed` /
     --     `arrival aim observation changed` —— 两次读之间 record 变了，属于**行为观测**漂移。
     --   · `arrival changed flight timer` / `arrival orbit changed timer` —— 飞行计时器被动，
-    --     是真正的行为异常（上游明确警告过别重置它），必须停手。
+    --     是真正的行为异常（原始说明明确警告过别重置它），必须停手。
     --   · `arrival ABI` / `arrival call ABI` / `arrival source` / `arrival scope unavailable` /
     --     `arrival experimental scope` —— 结构性校验，属于版本漂移。
 }
@@ -112,7 +112,7 @@ end
 --
 -- 风险（安全层的原话必须尊重）：native_minimal 写着
 --   "Never call the state-3 transition, which resets the flight timer."
--- 但那句警告的是**别用 state-3 那组参数**去调 orbit；我们用的仍是上游那组
+-- 但那句警告的是**别用 state-3 那组参数**去调 orbit；我们用的仍是标定过的那组
 -- (10.0, 2.5, 1.2)，而且 priority 的 check() 每次调用都会校验 flight timer
 -- (record:sub(0x189,0x190))——**一旦被重置，断言立刻失败**。
 --

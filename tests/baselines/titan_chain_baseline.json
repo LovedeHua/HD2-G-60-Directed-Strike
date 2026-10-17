@@ -1,0 +1,1385 @@
+{
+ "_project": [
+  0.0,
+  0.0,
+  9.28
+ ],
+ "blast_head_z10_o0": {
+  "arrival_point": [
+   0.0,
+   1.4,
+   10.0
+  ],
+  "ok": true,
+  "region": {
+   "depth": null,
+   "forward": [
+    0.0,
+    1.0
+   ],
+   "height": 0.9,
+   "kind": "ellipsoid",
+   "length": 1.25,
+   "lo": null,
+   "min_z": null,
+   "radius": null,
+   "width": 1.2
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_head_z10_o1": {
+  "arrival_point": [
+   0.0,
+   1.4,
+   10.0
+  ],
+  "ok": true,
+  "region": {
+   "depth": null,
+   "forward": [
+    0.0,
+    1.0
+   ],
+   "height": 0.9,
+   "kind": "ellipsoid",
+   "length": 1.25,
+   "lo": null,
+   "min_z": null,
+   "radius": null,
+   "width": 1.2
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_head_z10_o2": {
+  "arrival_point": [
+   0.0,
+   1.4,
+   10.0
+  ],
+  "ok": true,
+  "region": {
+   "depth": null,
+   "forward": [
+    0.0,
+    1.0
+   ],
+   "height": 0.9,
+   "kind": "ellipsoid",
+   "length": 1.25,
+   "lo": null,
+   "min_z": null,
+   "radius": null,
+   "width": 1.2
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_head_z5_o0": {
+  "arrival_point": [
+   0.0,
+   1.4,
+   5.0
+  ],
+  "ok": true,
+  "region": {
+   "depth": null,
+   "forward": [
+    0.0,
+    1.0
+   ],
+   "height": 0.9,
+   "kind": "ellipsoid",
+   "length": 1.25,
+   "lo": null,
+   "min_z": null,
+   "radius": null,
+   "width": 1.2
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_head_z5_o1": {
+  "arrival_point": [
+   0.0,
+   1.4,
+   5.0
+  ],
+  "ok": true,
+  "region": {
+   "depth": null,
+   "forward": [
+    0.0,
+    1.0
+   ],
+   "height": 0.9,
+   "kind": "ellipsoid",
+   "length": 1.25,
+   "lo": null,
+   "min_z": null,
+   "radius": null,
+   "width": 1.2
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_head_z5_o2": {
+  "arrival_point": [
+   0.0,
+   1.4,
+   5.0
+  ],
+  "ok": true,
+  "region": {
+   "depth": null,
+   "forward": [
+    0.0,
+    1.0
+   ],
+   "height": 0.9,
+   "kind": "ellipsoid",
+   "length": 1.25,
+   "lo": null,
+   "min_z": null,
+   "radius": null,
+   "width": 1.2
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_head_z8_o0": {
+  "arrival_point": [
+   0.0,
+   1.4,
+   8.0
+  ],
+  "ok": true,
+  "region": {
+   "depth": null,
+   "forward": [
+    0.0,
+    1.0
+   ],
+   "height": 0.9,
+   "kind": "ellipsoid",
+   "length": 1.25,
+   "lo": null,
+   "min_z": null,
+   "radius": null,
+   "width": 1.2
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_head_z8_o1": {
+  "arrival_point": [
+   0.0,
+   1.4,
+   8.0
+  ],
+  "ok": true,
+  "region": {
+   "depth": null,
+   "forward": [
+    0.0,
+    1.0
+   ],
+   "height": 0.9,
+   "kind": "ellipsoid",
+   "length": 1.25,
+   "lo": null,
+   "min_z": null,
+   "radius": null,
+   "width": 1.2
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_head_z8_o2": {
+  "arrival_point": [
+   0.0,
+   1.4,
+   8.0
+  ],
+  "ok": true,
+  "region": {
+   "depth": null,
+   "forward": [
+    0.0,
+    1.0
+   ],
+   "height": 0.9,
+   "kind": "ellipsoid",
+   "length": 1.25,
+   "lo": null,
+   "min_z": null,
+   "radius": null,
+   "width": 1.2
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_rear_z10_o0": {
+  "arrival_point": [
+   0.0,
+   -1.3,
+   9.7
+  ],
+  "ok": true,
+  "region": {
+   "depth": null,
+   "forward": [
+    0.0,
+    -1.0
+   ],
+   "height": 0.85,
+   "kind": "ellipsoid",
+   "length": 1.2,
+   "lo": null,
+   "min_z": null,
+   "radius": null,
+   "width": 1.4
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_rear_z10_o1": {
+  "arrival_point": null,
+  "ok": true,
+  "region": null,
+  "stage": "None",
+  "terminal": false
+ },
+ "blast_rear_z10_o2": {
+  "arrival_point": [
+   0.0,
+   -1.3,
+   9.7
+  ],
+  "ok": true,
+  "region": {
+   "depth": null,
+   "forward": [
+    0.0,
+    -1.0
+   ],
+   "height": 0.85,
+   "kind": "ellipsoid",
+   "length": 1.2,
+   "lo": null,
+   "min_z": null,
+   "radius": null,
+   "width": 1.4
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_rear_z5_o0": {
+  "arrival_point": [
+   0.0,
+   -1.3,
+   4.7
+  ],
+  "ok": true,
+  "region": {
+   "depth": null,
+   "forward": [
+    0.0,
+    -1.0
+   ],
+   "height": 0.85,
+   "kind": "ellipsoid",
+   "length": 1.2,
+   "lo": null,
+   "min_z": null,
+   "radius": null,
+   "width": 1.4
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_rear_z5_o1": {
+  "arrival_point": null,
+  "ok": true,
+  "region": null,
+  "stage": "None",
+  "terminal": false
+ },
+ "blast_rear_z5_o2": {
+  "arrival_point": [
+   0.0,
+   -1.3,
+   4.7
+  ],
+  "ok": true,
+  "region": {
+   "depth": null,
+   "forward": [
+    0.0,
+    -1.0
+   ],
+   "height": 0.85,
+   "kind": "ellipsoid",
+   "length": 1.2,
+   "lo": null,
+   "min_z": null,
+   "radius": null,
+   "width": 1.4
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_rear_z8_o0": {
+  "arrival_point": [
+   0.0,
+   -1.3,
+   7.7
+  ],
+  "ok": true,
+  "region": {
+   "depth": null,
+   "forward": [
+    0.0,
+    -1.0
+   ],
+   "height": 0.85,
+   "kind": "ellipsoid",
+   "length": 1.2,
+   "lo": null,
+   "min_z": null,
+   "radius": null,
+   "width": 1.4
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_rear_z8_o1": {
+  "arrival_point": null,
+  "ok": true,
+  "region": null,
+  "stage": "None",
+  "terminal": false
+ },
+ "blast_rear_z8_o2": {
+  "arrival_point": [
+   0.0,
+   -1.3,
+   7.7
+  ],
+  "ok": true,
+  "region": {
+   "depth": null,
+   "forward": [
+    0.0,
+    -1.0
+   ],
+   "height": 0.85,
+   "kind": "ellipsoid",
+   "length": 1.2,
+   "lo": null,
+   "min_z": null,
+   "radius": null,
+   "width": 1.4
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_thorax_z10_o0": {
+  "arrival_point": [
+   0.0,
+   0.0,
+   7.5
+  ],
+  "ok": true,
+  "region": {
+   "depth": 0.8,
+   "forward": null,
+   "height": null,
+   "kind": "None",
+   "length": null,
+   "lo": null,
+   "min_z": null,
+   "radius": 2.0,
+   "width": null
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_thorax_z10_o1": {
+  "arrival_point": [
+   0.0,
+   0.0,
+   7.5
+  ],
+  "ok": true,
+  "region": {
+   "depth": 0.8,
+   "forward": null,
+   "height": null,
+   "kind": "None",
+   "length": null,
+   "lo": null,
+   "min_z": null,
+   "radius": 2.0,
+   "width": null
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_thorax_z10_o2": {
+  "arrival_point": [
+   0.0,
+   0.0,
+   7.5
+  ],
+  "ok": true,
+  "region": {
+   "depth": 0.8,
+   "forward": null,
+   "height": null,
+   "kind": "None",
+   "length": null,
+   "lo": null,
+   "min_z": null,
+   "radius": 2.0,
+   "width": null
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_thorax_z5_o0": {
+  "arrival_point": [
+   0.0,
+   0.0,
+   2.5
+  ],
+  "ok": true,
+  "region": {
+   "depth": 0.8,
+   "forward": null,
+   "height": null,
+   "kind": "None",
+   "length": null,
+   "lo": null,
+   "min_z": null,
+   "radius": 2.0,
+   "width": null
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_thorax_z5_o1": {
+  "arrival_point": [
+   0.0,
+   0.0,
+   2.5
+  ],
+  "ok": true,
+  "region": {
+   "depth": 0.8,
+   "forward": null,
+   "height": null,
+   "kind": "None",
+   "length": null,
+   "lo": null,
+   "min_z": null,
+   "radius": 2.0,
+   "width": null
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_thorax_z5_o2": {
+  "arrival_point": [
+   0.0,
+   0.0,
+   2.5
+  ],
+  "ok": true,
+  "region": {
+   "depth": 0.8,
+   "forward": null,
+   "height": null,
+   "kind": "None",
+   "length": null,
+   "lo": null,
+   "min_z": null,
+   "radius": 2.0,
+   "width": null
+  },
+  "stage": "None",
+  "terminal": false
+ },
+ "blast_thorax_z8_o0": {
+  "arrival_point": [
+   0.0,
+   0.0,
+   5.5
+  ],
+  "ok": true,
+  "region": {
+   "depth": 0.8,
+   "forward": null,
+   "height": null,
+   "kind": "None",
+   "length": null,
+   "lo": null,
+   "min_z": null,
+   "radius": 2.0,
+   "width": null
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_thorax_z8_o1": {
+  "arrival_point": [
+   0.0,
+   0.0,
+   5.5
+  ],
+  "ok": true,
+  "region": {
+   "depth": 0.8,
+   "forward": null,
+   "height": null,
+   "kind": "None",
+   "length": null,
+   "lo": null,
+   "min_z": null,
+   "radius": 2.0,
+   "width": null
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_thorax_z8_o2": {
+  "arrival_point": [
+   0.0,
+   0.0,
+   5.5
+  ],
+  "ok": true,
+  "region": {
+   "depth": 0.8,
+   "forward": null,
+   "height": null,
+   "kind": "None",
+   "length": null,
+   "lo": null,
+   "min_z": null,
+   "radius": 2.0,
+   "width": null
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_titan_z10_o0": {
+  "arrival_point": [
+   0.0,
+   0.0,
+   7.5
+  ],
+  "ok": true,
+  "region": {
+   "depth": 0.8,
+   "forward": null,
+   "height": null,
+   "kind": "None",
+   "length": null,
+   "lo": null,
+   "min_z": null,
+   "radius": 2.0,
+   "width": null
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_titan_z10_o1": {
+  "arrival_point": [
+   0.0,
+   0.0,
+   7.5
+  ],
+  "ok": true,
+  "region": {
+   "depth": 0.8,
+   "forward": null,
+   "height": null,
+   "kind": "None",
+   "length": null,
+   "lo": null,
+   "min_z": null,
+   "radius": 2.0,
+   "width": null
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_titan_z10_o2": {
+  "arrival_point": [
+   0.0,
+   0.0,
+   7.5
+  ],
+  "ok": true,
+  "region": {
+   "depth": 0.8,
+   "forward": null,
+   "height": null,
+   "kind": "None",
+   "length": null,
+   "lo": null,
+   "min_z": null,
+   "radius": 2.0,
+   "width": null
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_titan_z5_o0": {
+  "arrival_point": [
+   0.0,
+   0.0,
+   2.5
+  ],
+  "ok": true,
+  "region": {
+   "depth": 0.8,
+   "forward": null,
+   "height": null,
+   "kind": "None",
+   "length": null,
+   "lo": null,
+   "min_z": null,
+   "radius": 2.0,
+   "width": null
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_titan_z5_o1": {
+  "arrival_point": [
+   0.0,
+   0.0,
+   2.5
+  ],
+  "ok": true,
+  "region": {
+   "depth": 0.8,
+   "forward": null,
+   "height": null,
+   "kind": "None",
+   "length": null,
+   "lo": null,
+   "min_z": null,
+   "radius": 2.0,
+   "width": null
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_titan_z5_o2": {
+  "arrival_point": [
+   0.0,
+   0.0,
+   2.5
+  ],
+  "ok": true,
+  "region": {
+   "depth": 0.8,
+   "forward": null,
+   "height": null,
+   "kind": "None",
+   "length": null,
+   "lo": null,
+   "min_z": null,
+   "radius": 2.0,
+   "width": null
+  },
+  "stage": "None",
+  "terminal": false
+ },
+ "blast_titan_z8_o0": {
+  "arrival_point": [
+   0.0,
+   0.0,
+   5.5
+  ],
+  "ok": true,
+  "region": {
+   "depth": 0.8,
+   "forward": null,
+   "height": null,
+   "kind": "None",
+   "length": null,
+   "lo": null,
+   "min_z": null,
+   "radius": 2.0,
+   "width": null
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_titan_z8_o1": {
+  "arrival_point": [
+   0.0,
+   0.0,
+   5.5
+  ],
+  "ok": true,
+  "region": {
+   "depth": 0.8,
+   "forward": null,
+   "height": null,
+   "kind": "None",
+   "length": null,
+   "lo": null,
+   "min_z": null,
+   "radius": 2.0,
+   "width": null
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_titan_z8_o2": {
+  "arrival_point": [
+   0.0,
+   0.0,
+   5.5
+  ],
+  "ok": true,
+  "region": {
+   "depth": 0.8,
+   "forward": null,
+   "height": null,
+   "kind": "None",
+   "length": null,
+   "lo": null,
+   "min_z": null,
+   "radius": 2.0,
+   "width": null
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_underside_z10_o0": {
+  "arrival_point": [
+   0.0,
+   0.0,
+   9.6
+  ],
+  "ok": true,
+  "region": {
+   "depth": 0.6,
+   "forward": null,
+   "height": null,
+   "kind": "None",
+   "length": null,
+   "lo": null,
+   "min_z": null,
+   "radius": 1.2,
+   "width": null
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_underside_z10_o1": {
+  "arrival_point": [
+   0.0,
+   0.0,
+   9.6
+  ],
+  "ok": true,
+  "region": {
+   "depth": 0.6,
+   "forward": null,
+   "height": null,
+   "kind": "None",
+   "length": null,
+   "lo": null,
+   "min_z": null,
+   "radius": 1.2,
+   "width": null
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_underside_z10_o2": {
+  "arrival_point": [
+   0.0,
+   0.0,
+   9.6
+  ],
+  "ok": true,
+  "region": {
+   "depth": 0.6,
+   "forward": null,
+   "height": null,
+   "kind": "None",
+   "length": null,
+   "lo": null,
+   "min_z": null,
+   "radius": 1.2,
+   "width": null
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_underside_z5_o0": {
+  "arrival_point": [
+   0.0,
+   0.0,
+   4.6
+  ],
+  "ok": true,
+  "region": {
+   "depth": 0.6,
+   "forward": null,
+   "height": null,
+   "kind": "None",
+   "length": null,
+   "lo": null,
+   "min_z": null,
+   "radius": 1.2,
+   "width": null
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_underside_z5_o1": {
+  "arrival_point": [
+   0.0,
+   0.0,
+   4.6
+  ],
+  "ok": true,
+  "region": {
+   "depth": 0.6,
+   "forward": null,
+   "height": null,
+   "kind": "None",
+   "length": null,
+   "lo": null,
+   "min_z": null,
+   "radius": 1.2,
+   "width": null
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_underside_z5_o2": {
+  "arrival_point": [
+   0.0,
+   0.0,
+   4.6
+  ],
+  "ok": true,
+  "region": {
+   "depth": 0.6,
+   "forward": null,
+   "height": null,
+   "kind": "None",
+   "length": null,
+   "lo": null,
+   "min_z": null,
+   "radius": 1.2,
+   "width": null
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_underside_z8_o0": {
+  "arrival_point": [
+   0.0,
+   0.0,
+   7.6
+  ],
+  "ok": true,
+  "region": {
+   "depth": 0.6,
+   "forward": null,
+   "height": null,
+   "kind": "None",
+   "length": null,
+   "lo": null,
+   "min_z": null,
+   "radius": 1.2,
+   "width": null
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_underside_z8_o1": {
+  "arrival_point": [
+   0.0,
+   0.0,
+   7.6
+  ],
+  "ok": true,
+  "region": {
+   "depth": 0.6,
+   "forward": null,
+   "height": null,
+   "kind": "None",
+   "length": null,
+   "lo": null,
+   "min_z": null,
+   "radius": 1.2,
+   "width": null
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "blast_underside_z8_o2": {
+  "arrival_point": [
+   0.0,
+   0.0,
+   7.6
+  ],
+  "ok": true,
+  "region": {
+   "depth": 0.6,
+   "forward": null,
+   "height": null,
+   "kind": "None",
+   "length": null,
+   "lo": null,
+   "min_z": null,
+   "radius": 1.2,
+   "width": null
+  },
+  "stage": "attack",
+  "terminal": true
+ },
+ "floor_edge": {
+  "arrival_point": null,
+  "nav_mode": null,
+  "ok": true,
+  "region": null,
+  "terminal": false
+ },
+ "floor_low": {
+  "arrival_point": null,
+  "nav_mode": null,
+  "ok": true,
+  "region": null,
+  "terminal": false
+ },
+ "navplan0": {
+  "length": 1.673,
+  "mode": "escape",
+  "nodes": 0,
+  "ok": true,
+  "point": [
+   0.0,
+   0.0,
+   1.673
+  ],
+  "terminal": false
+ },
+ "navplan1": {
+  "ok": false,
+  "why": "navigation proxy escape unavailable"
+ },
+ "navplan2": {
+  "length": 4.28,
+  "mode": "direct",
+  "nodes": 0,
+  "ok": true,
+  "point": [
+   0.0,
+   0.0,
+   9.28
+  ],
+  "terminal": true
+ },
+ "unrel0": {
+  "arrival_point": null,
+  "nav_mode": null,
+  "ok": true,
+  "region": null,
+  "terminal": false
+ },
+ "unrel1": {
+  "arrival_point": null,
+  "nav_mode": null,
+  "ok": true,
+  "region": null,
+  "terminal": false
+ },
+ "unrel2": {
+  "arrival_point": null,
+  "nav_mode": null,
+  "ok": true,
+  "region": null,
+  "terminal": false
+ },
+ "unrel3": {
+  "arrival_point": null,
+  "nav_mode": null,
+  "ok": true,
+  "region": null,
+  "terminal": false
+ },
+ "z0_x0_n0": {
+  "arrival_point": [
+   0.0,
+   0.0,
+   7.5
+  ],
+  "nav_mode": "escape",
+  "ok": true,
+  "region": {
+   "depth": 0.95,
+   "kind": "surface",
+   "lo": -0.35,
+   "min_z": 1.25,
+   "normal": [
+    0.0,
+    0.0,
+    -1.0
+   ],
+   "radius": 2.0
+  },
+  "terminal": false
+ },
+ "z0_x0_n1": {
+  "err": "[string \"<python>\"]:43: surface region normal",
+  "ok": false
+ },
+ "z0_x0_n2": {
+  "err": "[string \"<python>\"]:43: surface region normal",
+  "ok": false
+ },
+ "z0_x1_n0": {
+  "arrival_point": [
+   1.5,
+   0.0,
+   7.5
+  ],
+  "nav_mode": "escape",
+  "ok": true,
+  "region": {
+   "depth": 0.95,
+   "kind": "surface",
+   "lo": -0.35,
+   "min_z": 1.25,
+   "normal": [
+    0.0,
+    0.0,
+    -1.0
+   ],
+   "radius": 2.0
+  },
+  "terminal": false
+ },
+ "z0_x1_n1": {
+  "err": "[string \"<python>\"]:43: surface region normal",
+  "ok": false
+ },
+ "z0_x1_n2": {
+  "err": "[string \"<python>\"]:43: surface region normal",
+  "ok": false
+ },
+ "z0_x2_n0": {
+  "arrival_point": [
+   -2.5,
+   0.0,
+   7.5
+  ],
+  "nav_mode": "escape",
+  "ok": true,
+  "region": {
+   "depth": 0.95,
+   "kind": "surface",
+   "lo": -0.35,
+   "min_z": 1.25,
+   "normal": [
+    0.0,
+    0.0,
+    -1.0
+   ],
+   "radius": 2.0
+  },
+  "terminal": false
+ },
+ "z0_x2_n1": {
+  "err": "[string \"<python>\"]:43: surface region normal",
+  "ok": false
+ },
+ "z0_x2_n2": {
+  "err": "[string \"<python>\"]:43: surface region normal",
+  "ok": false
+ },
+ "z1_x0_n0": {
+  "arrival_point": [
+   0.0,
+   0.0,
+   5.5
+  ],
+  "nav_mode": "escape",
+  "ok": true,
+  "region": {
+   "depth": 0.95,
+   "kind": "surface",
+   "lo": -0.35,
+   "min_z": 1.25,
+   "normal": [
+    0.0,
+    0.0,
+    -1.0
+   ],
+   "radius": 2.0
+  },
+  "terminal": false
+ },
+ "z1_x0_n1": {
+  "err": "[string \"<python>\"]:43: surface region normal",
+  "ok": false
+ },
+ "z1_x0_n2": {
+  "err": "[string \"<python>\"]:43: surface region normal",
+  "ok": false
+ },
+ "z1_x1_n0": {
+  "arrival_point": [
+   1.5,
+   0.0,
+   5.5
+  ],
+  "nav_mode": "escape",
+  "ok": true,
+  "region": {
+   "depth": 0.95,
+   "kind": "surface",
+   "lo": -0.35,
+   "min_z": 1.25,
+   "normal": [
+    0.0,
+    0.0,
+    -1.0
+   ],
+   "radius": 2.0
+  },
+  "terminal": false
+ },
+ "z1_x1_n1": {
+  "err": "[string \"<python>\"]:43: surface region normal",
+  "ok": false
+ },
+ "z1_x1_n2": {
+  "err": "[string \"<python>\"]:43: surface region normal",
+  "ok": false
+ },
+ "z1_x2_n0": {
+  "arrival_point": [
+   -2.5,
+   0.0,
+   5.5
+  ],
+  "nav_mode": "escape",
+  "ok": true,
+  "region": {
+   "depth": 0.95,
+   "kind": "surface",
+   "lo": -0.35,
+   "min_z": 1.25,
+   "normal": [
+    0.0,
+    0.0,
+    -1.0
+   ],
+   "radius": 2.0
+  },
+  "terminal": false
+ },
+ "z1_x2_n1": {
+  "err": "[string \"<python>\"]:43: surface region normal",
+  "ok": false
+ },
+ "z1_x2_n2": {
+  "err": "[string \"<python>\"]:43: surface region normal",
+  "ok": false
+ },
+ "z2_x0_n0": {
+  "arrival_point": [
+   0.0,
+   0.0,
+   3.5
+  ],
+  "nav_mode": "escape",
+  "ok": true,
+  "region": {
+   "depth": 0.95,
+   "kind": "surface",
+   "lo": -0.35,
+   "min_z": 1.25,
+   "normal": [
+    0.0,
+    0.0,
+    -1.0
+   ],
+   "radius": 2.0
+  },
+  "terminal": false
+ },
+ "z2_x0_n1": {
+  "err": "[string \"<python>\"]:43: surface region normal",
+  "ok": false
+ },
+ "z2_x0_n2": {
+  "err": "[string \"<python>\"]:43: surface region normal",
+  "ok": false
+ },
+ "z2_x1_n0": {
+  "arrival_point": [
+   1.5,
+   0.0,
+   3.5
+  ],
+  "nav_mode": "escape",
+  "ok": true,
+  "region": {
+   "depth": 0.95,
+   "kind": "surface",
+   "lo": -0.35,
+   "min_z": 1.25,
+   "normal": [
+    0.0,
+    0.0,
+    -1.0
+   ],
+   "radius": 2.0
+  },
+  "terminal": false
+ },
+ "z2_x1_n1": {
+  "err": "[string \"<python>\"]:43: surface region normal",
+  "ok": false
+ },
+ "z2_x1_n2": {
+  "err": "[string \"<python>\"]:43: surface region normal",
+  "ok": false
+ },
+ "z2_x2_n0": {
+  "arrival_point": [
+   -2.5,
+   0.0,
+   3.5
+  ],
+  "nav_mode": "escape",
+  "ok": true,
+  "region": {
+   "depth": 0.95,
+   "kind": "surface",
+   "lo": -0.35,
+   "min_z": 1.25,
+   "normal": [
+    0.0,
+    0.0,
+    -1.0
+   ],
+   "radius": 2.0
+  },
+  "terminal": false
+ },
+ "z2_x2_n1": {
+  "err": "[string \"<python>\"]:43: surface region normal",
+  "ok": false
+ },
+ "z2_x2_n2": {
+  "err": "[string \"<python>\"]:43: surface region normal",
+  "ok": false
+ },
+ "z3_x0_n0": {
+  "arrival_point": [
+   0.0,
+   0.0,
+   1.5
+  ],
+  "nav_mode": "escape",
+  "ok": true,
+  "region": {
+   "depth": 0.25,
+   "kind": "surface",
+   "lo": -0.35,
+   "min_z": 1.25,
+   "normal": [
+    0.0,
+    0.0,
+    -1.0
+   ],
+   "radius": 2.0
+  },
+  "terminal": false
+ },
+ "z3_x0_n1": {
+  "err": "[string \"<python>\"]:43: surface region normal",
+  "ok": false
+ },
+ "z3_x0_n2": {
+  "err": "[string \"<python>\"]:43: surface region normal",
+  "ok": false
+ },
+ "z3_x1_n0": {
+  "arrival_point": [
+   1.5,
+   0.0,
+   1.5
+  ],
+  "nav_mode": "escape",
+  "ok": true,
+  "region": {
+   "depth": 0.25,
+   "kind": "surface",
+   "lo": -0.35,
+   "min_z": 1.25,
+   "normal": [
+    0.0,
+    0.0,
+    -1.0
+   ],
+   "radius": 2.0
+  },
+  "terminal": false
+ },
+ "z3_x1_n1": {
+  "err": "[string \"<python>\"]:43: surface region normal",
+  "ok": false
+ },
+ "z3_x1_n2": {
+  "err": "[string \"<python>\"]:43: surface region normal",
+  "ok": false
+ },
+ "z3_x2_n0": {
+  "arrival_point": [
+   -2.5,
+   0.0,
+   1.5
+  ],
+  "nav_mode": "escape",
+  "ok": true,
+  "region": {
+   "depth": 0.25,
+   "kind": "surface",
+   "lo": -0.35,
+   "min_z": 1.25,
+   "normal": [
+    0.0,
+    0.0,
+    -1.0
+   ],
+   "radius": 2.0
+  },
+  "terminal": false
+ },
+ "z3_x2_n1": {
+  "err": "[string \"<python>\"]:43: surface region normal",
+  "ok": false
+ },
+ "z3_x2_n2": {
+  "err": "[string \"<python>\"]:43: surface region normal",
+  "ok": false
+ }
+}

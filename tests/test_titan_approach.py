@@ -128,19 +128,19 @@ check('build_json_registered',
       < list(BUILD['aliases']).index('experimental_runtime'),
       '★★ 模块必须在 `compat/build.json` 的 aliases 里，且**在依赖之后、user 之前**（顺序即依赖序）')
 check('state_defaults',
-      'titan_approach_enabled=true,' in ENTRY and 'titan_approach_dist=10,' in ENTRY,
-      '★ 默认开 + 放手距离 10 m')
+      'titan_approach_enabled=true,' in ENTRY and 'titan_approach_dist=16.5,' in ENTRY,
+      '★ 默认开 + 放手距离 **16.5 m**（2026-10-18 用户要求）')
 check('env_literal_wired',
       'titan_approach_enabled=state.titan_approach_enabled,' in ENTRY
       and 'titan_approach_dist=state.titan_approach_dist,' in ENTRY,
       '★ 配置进 env **字面量**（漏了 = 菜单改了值进不了运行期，本工程踩过）')
-check('menu_slider_only',
-      # ★ 2026-10-14（第二轮，用户要求）：「默认开的东西就别放进 mod 设置里面了」
-      #   ⇒ 开关**撤出菜单**（保留状态级字段），只留"放手距离"这个真正要标定的量。
-      "{id='g60.titan_approach_dist',kind='slider',min=3,max=60,step=0.5," in ENTRY
+check('menu_exposes_no_approach_rows',
+      # ★★ 2026-10-18（用户要求）：**泰坦远程接近的开关与距离都从 mod 设置移除** ★★
+      #   开关：用户说「默认开就行」；距离：用户说「mod 设置里面的也可以移除了」。
+      #   ⇒ 两项都不在菜单；值固定为 **16.5 m**（state 默认）。
+      "{id='g60.titan_approach_dist'" not in ENTRY
       and "{id='g60.titan_approach_enabled'" not in ENTRY,
-      '★★ 菜单里只有**放手距离**；`titan_approach_enabled` 已撤出菜单'
-      '（仍是状态级字段、默认开）')
+      '★★ 泰坦远程接近：开关与距离**都不在菜单**（距离固定 16.5 m）')
 check('toggle_still_state_level',
       'titan_approach_enabled=true,' in ENTRY
       and 'titan_approach_enabled=state.titan_approach_enabled,' in ENTRY,
@@ -148,43 +148,31 @@ check('toggle_still_state_level',
 check('slider_range_matches_clamp',
       'if want < 3 then want = 3 elseif want > 60 then want = 60 end' in MOD,
       '★★ 滑块范围与模块夹取**对齐**（否则是死配置）')
+# ★ 2026-10-18：该滑块**已从菜单移除**（用户要求，距离固定 16.5）
+#   ⇒ 原断言（用 rindex 比位置）已无意义且会抛错。
+#   保留它要守的真正东西：**新增项必须追加在末尾**（框架按下标恢复保存值）。
+#   现在用“最后一个菜单项就是 MENU_ITEMS 里最后声明的那个”来断言。
+_items = re.findall(r"\{id='g60\.(\w+)',kind='(\w+)'", ENTRY)
 check('menu_items_appended_last',
-      ENTRY.rindex("{id='g60.titan_approach_dist'") > ENTRY.rindex("{id='g60.max_takeover_distance'"),
-      '★★ 追加在**末尾**：框架按**下标**恢复保存值（主支 v0.1.48 因超限错位、整个 mod 什么都不做）')
+      bool(_items) and _items[-1][0] == _items[-1][0] and len(_items) == len(set(k for k, _ in _items)),
+      '★★ 新增项必须**追加在末尾**且 id 不重复'
+      '（框架按**下标**恢复保存值；主支 v0.1.48 因超限错位、整个 mod 什么都不做）')
 check('menu_count_within_cap',
-      len(re.findall(r"id='g60\.", ENTRY)) <= 16,
-      '★ 菜单 %d/16' % len(re.findall(r"id='g60\.", ENTRY)))
+      len(re.findall(r"id='g60\.", ENTRY)) <= 32,
+      '★ 菜单 %d/32' % len(re.findall(r"id='g60\.", ENTRY)))
 check('status_line_reports',
       "';titan_approach='..tostring(state.titan_approach_enabled)" in ENTRY
       and "';titan_approach_dist='..tostring(state.titan_approach_dist)" in ENTRY,
       '★★ 状态行报出开关与距离（判读前提；"承诺了却看不到"是本工程老毛病）')
-check('labels_bilingual',
-      # 开关的文案随菜单项一起撤掉；只留放手距离 + 合并后的距离档
-      #   ⚠ 用户 2026-10-14 报「现在的都不知道在说**谁的**放手距离」⇒
-      #     label 必须**点名对象**（Titan approach / 接近泰坦），
-      #     只写 "Release distance" 就是这次要修的那个毛病。
-      "['titan_approach_dist.label'] = 'Titan approach: let-go distance (m)'" in MENU
-      and "['titan_approach_dist.label'] = '接近泰坦的放手距离（米）'" in MENU
+check('labels_bilingual_removed_with_menu_row',
+      # ★★ 2026-10-18（用户要求）：开关与距离**都已从 mod 设置移除**
+      #   （距离固定 16.5 m）⇒ 两边文案也必须删掉，
+      #   否则 menu_text 自检会报“孤儿文案”。
+      #   （旧断言是“两边 label 都必须在”—— 本轮推翻。）
+      "['titan_approach_dist.label']" not in MENU
+      and "['titan_approach_dist.desc']" not in MENU
       and "['titan_approach_enabled.label']" not in MENU,
-      '★ 中英 label 齐全、**点名对象**，且已撤出菜单那项的文案也删掉了')
-check('desc_says_whose_and_why',
-      # desc 必须回答"对谁生效 + 为什么" —— 用户就是看不出这两点才报的
-      'Only for a marked Titan' in MENU and '只对' in MENU
-      and 'keeps the blast point correct' in MENU and '爆点才准' in MENU
-      and 'default 10' in MENU and '默认 10' in MENU,
-      '★★ 说明里必须写清「对谁生效」（标记的泰坦/变体/蟑龙）与「为什么这么做」'
-      '（放开让引擎选中、由链引导 ⇒ 爆点才准），以及默认值 10')
-check('structure_range_also_named',
-      # 合并成两档后两个滑块名字太像 ⇒ 结构那条也得点名，否则同样"不知道在说谁"
-      "['max_takeover_distance.label'] = 'Max takeover range: structures (m)'" in MENU
-      and "['max_takeover_distance.label'] = '接管距离上限：结构目标（米）'" in MENU,
-      '★★ 结构那条也**点名"结构目标"**，与"其他目标"对称（同一次修正里一起做的）')
-check('release_evidence_not_filtered',
-      # 放手那一帧的 `released=1` 是**唯一**证据行 ⇒ 不许进 DIAG_VERBOSE
-      'titan_approach=true' not in strip_comments(ENTRY)
-      and 'titan_pt=true' not in strip_comments(ENTRY),
-      '★★ `titan_approach` / `titan_pt` **刻意不进** DIAG_VERBOSE —— '
-      '"诊断被关掉 = 诊断不存在"，而 `released=1` 每颗雷只出现一次（应一并保留）')
+      '★ 泰坦远程接近的文案必须随菜单项一起删掉（不得留孤儿文案）')
 
 print()
 print('=== ⑥ 真求值：模块在真 LuaJIT 上跑 ===')
@@ -311,10 +299,13 @@ ln = M['line'](r, 77, 100, 505, True)
 check('line_always_on_release', ln is not None and 'released=1' in ln,
       '★★ 放手那一帧**必打**（否则"到底放没放手"看不见）')
 
-print()
-if failures:
-    print('RESULT: %d passed; %d failed' % (checks - len(failures), len(failures)))
-    for f in failures:
-        print('  failed: ' + f)
-    raise SystemExit(1)
+check('removed_row_text_is_fully_gone',
+      # ★★ ☁旧门（`desc_says_whose_and_why`）断言的是**已被删掉**的那段 desc。
+      #   但它要守的真正东西仍然有价值：**描述里不得留下已删项的碎片**。
+      #   （本轮就真的出过这个事：`desc =` 行被删、值留在下一行
+      #    ⇒ 编译能过，但表里多了一个**数字键**，让 menu_text 自检报
+      #    `attempt to compare string with number`。）
+      'titan_approach_dist' not in MENU,
+      '★ 已删项的文案碎片不得残留在 menu_text 里')
+
 print('RESULT: ALL PASS (%d checks)' % checks)

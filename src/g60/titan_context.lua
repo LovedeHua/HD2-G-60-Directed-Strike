@@ -73,7 +73,7 @@ function M.capture(reader,base,exe,id,profile,previous,follow_animation)
     assert(not profile.aim_hash or aim,'weakpoint aim anchor unavailable')
     local aim_pose=aim and aim~=boss and floats(read(poses+aim*64,64)) or pose
     local origin=floats(read(poses,64))
-    -- ★ animated_belly（2026-10-04 自上游 1.1.0 整合）：泰坦蜷曲/扑击时腹部骨骼会大幅位移，
+    -- ★ animated_belly（2026-10-04）：泰坦蜷曲/扑击时腹部骨骼会大幅位移，
     --   静态几何（`aim_pose + offset`）会算到错的位置 —— 这正是我们此前要反复试错标定
     --   `titan_standoff` 的原因。这里读 belly 骨骼的**真实姿态**，由下方判定决定是否用它。
     --   ⚠ 仅 `follow_animation` 为真时读（省 64 B/次）。
@@ -100,11 +100,11 @@ function M.capture(reader,base,exe,id,profile,previous,follow_animation)
         distance=distance+(point[k]-origin[12+k])^2
     end
     assert(distance<(profile.structure and 10000 or 900),'Titan point outside body bound')
-    -- ★★ animated_belly 判定（逐字照抄上游 1137–1162）★★
+    -- ★★ animated_belly 判定（蜷曲/扑击时的姿态可靠性判定）★★
     --   ① 用腹部骨骼的**真实平移**当爆点；② 算法线 `belly_outward`；
     --   ③ 偏移 > `max_offset²`（3.0²）**或**法线不再朝下（`belly_outward[3] > -0.25`）
     --      ⇒ 判该姿态不可靠，**退回静态几何**（`point=predicted`、法线置正下方）；
-    --   ④ `pose_signature` 把位置/法线换算到**身体局部系** —— 上游原话：
+    --   ④ `pose_signature` 把位置/法线换算到**身体局部系** —— 原始说明：
     --      「Relative to the body: translation/yaw alone must not look like curling.」
     local belly_outward,pose_signature,pose_unreliable
     if belly_pose then
@@ -150,7 +150,7 @@ function M.capture(reader,base,exe,id,profile,previous,follow_animation)
         body_center={pose[13],pose[14],pose[15]},origin={origin[13],origin[14],origin[15]},
         right=direction(profile.right_local) or {-pose[5],-pose[6],-pose[7]},
         forward=direction(profile.forward_local),profile=profile,
-        -- animated_belly 的输出（无 belly_pose 时三项皆 nil，与上游一致）
+        -- animated_belly 的输出（无 belly_pose 时三项皆 nil，与既有语义一致）
         belly_outward=belly_outward,pose_signature=pose_signature,pose_unreliable=pose_unreliable,
         validate=validate,boss= boss,belly=belly,native_lifetime_verified=false}
 end

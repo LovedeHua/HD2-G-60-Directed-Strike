@@ -44,10 +44,16 @@ SHAPE = [
      'local at=tonumber(q.marked_at) or 0' in _CODE
      and 'if not best or at<best_at' in _CODE,
      '挑选不再按 marked_at 时间序'),
+    # ★★ 2026-10-18（用户要求）：**两个上限合并成一个**，多标记自定义已移除；
+    #   能突破它的只有**白名单单位**（按目标资源）。
     ('caps_read_from_env',
-     'and (tonumber(env.multi_mark_grenades_per_target) or 1)' in _CODE
-     and 'or (tonumber(env.max_grenades_per_target) or 1))' in _CODE,
-     '两个上限不再由 env 提供'),
+     'if n>=1 then c=tonumber(env.max_grenades_per_target) or 1 end' in _CODE
+     and 'multi_mark_grenades_per_target' not in _CODE,
+     '上限口径：基础从 env 取、且不再有第二个设置'),
+    ('whitelist_is_wired',
+     'GRENADE_CAP_WHITELIST' in _CODE
+     and 'Reservations.new(tonumber(env.max_grenades_per_target) or 1, GRENADE_CAP_WHITELIST)' in _CODE,
+     '白名单表必须传给预留系统（否则按资源取上限不生效）'),
     ('keep_only_is_called',
      'reservations:keep_only(owner,best.identity)' in _CODE,
      '缺 keep_only ⇒ 一颗雷会囤积预约（主支仿真 S10）'),
@@ -114,6 +120,80 @@ def check(name, ok, detail=''):
     else:
         print(f'  FAIL {name}  [{detail}]')
         failures.append(name)
+
+# ★★★ 2026-10-18（用户要求）：**白名单单位可突破每目标手雷上限** ★★★
+#   用户：「移动工厂2颗，坦克及其变体2颗，噪轰引擎4颗，猎杀器/证真者2颗」，
+#     且「对无标记的情况下也起作用」。
+#   ⚠ 从运行时源码里**抽取真实的白名单表**（不在测试里重写一份）——
+#     否则表改了而测试还绿，就是假的。
+_WL_M = re.search(r"GRENADE_CAP_WHITELIST=\{(.*?)\n    \}", RUNTIME, re.S)
+check('whitelist_table_exists_in_runtime', _WL_M is not None,
+      '★ 运行时里必须有 `GRENADE_CAP_WHITELIST` 表')
+_WL_BODY = re.sub(r'--[^\n]*', '', _WL_M.group(1)) if _WL_M else ''
+#   ⚠ 必须**先剥注释再压平换行** ——
+#     `--` 注释在压平后会把**后面所有条目全吞掉**（实踩）。
+_WL_LUA = 'return {' + _WL_BODY + '}'
+lua.execute("WL = (function() %s end)()" % _WL_LUA.replace('\n', ' '))
+# 把**真实的** target_reservations 装成 Lua 全局 `RES`（行为守门用）
+lua.execute("RES = (function()\n" + RESERVATIONS + "\nend)()")
+lua.execute("""
+function wl_tries(cap, resource)
+    local R = RES.new(cap, WL)
+    local T = 'tgt0123456789abcdefghijk'   -- identity 要求 24 字符
+    local n = 0
+    for i=1,12 do
+        local owner = 'o'..i
+        if R:available(owner, T, resource) then R:claim(owner, T, resource); n=n+1
+        else break end
+    end
+    return n
+end
+""")
+
+def wl_tries(cap, resource):
+    return lua.eval('wl_tries(%d, %r)' % (cap, resource))
+
+check('whitelist_vox_engine_allows_four', wl_tries(1, 'bc242702fb46b7e7') == 4,
+      '★★ 噪轰引擎（bc242702fb46b7e7）应接受 **4** 颗（用户明确要求）')
+check('whitelist_factory_strider_allows_two',
+      wl_tries(1, 'd37e8d120d2836e3') == 2 and wl_tries(1, '30f2dee2333f227a') == 2,
+      '★ 移动工厂与带干扰塔变体 ⇒ **2** 颗')
+check('whitelist_tanks_allow_two',
+      all(wl_tries(1, h) == 2 for h in ('53d8919d7b8abd67','31bae74d2f064d8d',
+                                        'c6449ffd9ea3779c','63df3d07b7424588')),
+      '★ 坦克及其变体（淋灭/MK2/碎裂/铁幕） ⇒ **2** 颗')
+check('whitelist_harvester_and_veracitor_allow_two',
+      all(wl_tries(1, h) == 2 for h in ('965eae5a51acdd4a','d63fcbff0851b7af',
+                                        '20b9c7734daead65')),
+      '★ 猎杀器/猎杀器 MK2/证真者 ⇒ **2** 颗')
+# ★★ 2026-10-18（用户要求）：**泰坦及其变体、蟑龙也纳入白名单**（各 2 颗）★★
+#   哈希来源均在 `compat/`（不是猜的）：
+#     `9e2e17f2ccccafdd` 吐酸泰坦 / `ef04cb84d097a497` 孢子泰坦（变体）
+#     / `960b48a421a3faaa` 蟑龙。
+#   ⚠ 反向：`titan_variants.lua` 里的 3 个 **warrior 变体**不得进表
+#     （它们是武斗虫，不在用户说的“泰坦及其变体”里）。
+check('whitelist_titan_family_allows_two',
+      all(wl_tries(1, h) == 2 for h in ('9e2e17f2ccccafdd', 'ef04cb84d097a497',
+                                        '960b48a421a3faaa')),
+      '★★ 泰坦/泰坦变体/蟑龙 ⇒ **2** 颗')
+check('whitelist_excludes_titan_variant_warriors',
+      all(wl_tries(1, h) == 1 for h in ('7e4c6b45bcc45c3f', '8c31b749759cbd61',
+                                        'b6a181adcf547aeb')),
+      '★ 那 3 个是 **warrior（武斗虫）变体**，不得进白名单')
+check('whitelist_leaves_unlisted_at_base',
+      wl_tries(1, 'eacee39fa017b495') == 1 and wl_tries(1, 'deadbeefdeadbeef') == 1,
+      '★ 不在名单里的单位一律用**基础上限**（不能被白名单误伤）')
+check('whitelist_absent_falls_back_to_base',
+      lua.eval("(function() local R=RES.new(1) local T='tgt0123456789abcdefghijk' "
+               "R:claim('a',T); local ok=R:available('b',T); return ok end)()") == False,
+      '★ 不传白名单时行为与旧版**逐字一致**（cap=1 时第二颗被拒）')
+check('whitelist_claim_assert_matches_available',
+      lua.eval("(function() local R=RES.new(1,WL) local T='tgt0123456789abcdefghijk' "
+               "for i=1,4 do R:claim('o'..i,T,'bc242702fb46b7e7') end "
+               "local ok,err=pcall(function() R:claim('o5',T,'bc242702fb46b7e7') end) "
+               "return ok end)()") == False,
+      '★★ 第 5 颗必须被**断言拒绝**（名额断言是同一目标被两颗雷占的防线）')
+
 
 
 def mark(i, at, ordv, resource='enemy', current=True, age=1.0, duration=8.0):
@@ -285,7 +365,11 @@ check('S11_zero_setting_still_assigns_one', got == 1101, f'got {got}')
 
 print()
 print('=== S12：菜单滑块与 env 接线必须在（改了菜单要能生效） ===')
-for key in ('max_grenades_per_target', 'multi_mark_grenades_per_target'):
+# ★★ 2026-10-18（用户要求）：**多标记每目标手雷数的自定义已去除**，默认固定 1 ★★
+check('S12_multi_mark_slider_removed',
+      "id='g60.multi_mark_grenades_per_target'" not in ENTRY,
+      '★ 多标记手雷数滑块已按用户要求移除（默认固定 1）')
+for key in ('max_grenades_per_target',):
     check(f'S12_menu_slider_{key}', f"id='g60.{key}'" in ENTRY,
           '菜单里没有这个滑块 ⇒ 用户改不了')
     check(f'S12_menu_writes_env_{key}', f'host.env.{key}=v' in ENTRY,

@@ -124,9 +124,55 @@ scout = rank_of(lambda v: v["en"].strip() == "Reinforced Scout Strider")
 rad = rank_of(lambda v: "Radical" in v["en"])
 ok, d = ordered(("惑乱者", agi), ("激进先锋", rad))
 check("agitator_above_radical", ok, "★ 惑乱者必须高于激进先锋：%s" % d)
-check("scout_strider_same_tier_as_agitator", bool(scout) and scout == agi,
-      "★ 强化侦察纵步者与惑乱者**同档**（用户确认：都高于激进先锋）。实际 %s vs %s"
-      % (sorted(scout), sorted(agi)))
+
+# ★★★ 2026-10-18（用户要求）：**草案档位必须逐档等于名册** ★★★
+#   用户原话：「重新修正草案，目前草案的档次分级跟实际代码不符」「**具体优先级以代码为准**」。
+#   实踩：草案原本是 v3 审阅的中间态 —— 终结族只到 7 档（名册 13）、
+#     机器人档位错位（拿巨型者当第 3 档，名册里它是第 4 档）、
+#     光能族章节**顺序乱掉**（3,2,3,4,5,6,6,7,8,8）。现已按名册重生成。
+#   ⚠ 这道门逐档比对：阵营、档号、成员哈希集合。以后改代码不同步 ⇒ 直接变红。
+_DRAFT = (ROOT / "SPREAD_PRIORITY_DRAFT.md").read_text(encoding="utf-8")
+
+
+def _draft_tiers():
+    """从草案里读出 {(阵营,档号): {哈希,…}}。
+    ⚠ 不用正则（本文件未导入 `re`）：按 `|` 切列、取第 4 列当哈希。
+    ⚠ 不要用 `find(name)` 定位 —— 头部说明也提到这些名字，会误命中（实踩）。
+    """
+    out = {}
+    fac = None
+    cur = None
+    for line in _DRAFT.splitlines():
+        if line.startswith("## "):
+            nm = line[3:].strip()
+            fac = nm if nm in FACS else None
+            cur = None
+            continue
+        if fac and line.startswith("### 第 "):
+            cur = int(line.split("第 ")[1].split(" 档")[0])
+            out[(fac, cur)] = set()
+            continue
+        if fac and cur is not None and line.startswith("|"):
+            cols = [c.strip() for c in line.split("|")]
+            if len(cols) >= 4:
+                h = cols[3].strip("`")
+                if len(h) == 16 and all(ch in "0123456789abcdef" for ch in h):
+                    out[(fac, cur)].add(h)
+    return out
+
+# 名册侧直接用本文件已解析好的 `rows`（fac/rank 都在）—— 不重复解析、不会漂移。
+_ROS = {}
+for _h, _v in rows.items():
+    _ROS.setdefault((_v["fac"], _v["rank"]), set()).add(_h)
+_DT = _draft_tiers()
+_missing = sorted("%s 第%d档" % k for k in _ROS if k not in _DT)
+_extra = sorted("%s 第%d档" % k for k in _DT if k not in _ROS)
+_mismatch = sorted("%s 第%d档" % k for k in _ROS
+                   if k in _DT and _DT[k] != _ROS[k])
+check("draft_tiers_match_roster",
+      not _missing and not _extra and not _mismatch,
+      "★★ 草案档位必须逐档等于名册（缺%s / 多%s / 成员不符%s）"
+      % (_missing[:3], _extra[:3], _mismatch[:3]))
 
 # 蹂躏者档细分：重型(含变体)+烈火 > 火箭(含变体) > 其他蹂躏者 > 狂暴者
 dev_heavy = rank_of(lambda v: "Heavy Devastator" in v["en"]
@@ -189,12 +235,50 @@ check("spore_warrior_with_other_warriors",
       "★ 孢子武斗虫与**其他武斗虫同档**（用户确认，不单独升级）")
 
 ov = [v for v in rows.values() if "Elevated Overseer" in v["en"] or "Crescent Overseer" in v["en"]]
-check("overseer_variants_rank3",
-      ov and all(v["rank"] == 3 for v in ov),
-      "★ 崇高/新月监视者只能在第 3 档（曾被 Overseer 关键词重复收进两档）")
+# ★★ 2026-10-18（用户要求）：**崇高监视者 > 新月监视者 / 肉瘤体** ★★
+#   用户原话：「崇高监视者大于新月监视者 / 肉瘤体」。
+#   ⚠ 这**推翻了本门原先的断言**（它本来要求崇高/新月**同档**）。
+#   原因：当初那道门要防的是「Overseer 关键词把同一个单位重复收进两档」，
+#   而不是「两者必须同档」—— 现在用户要求它们**分开**，故改为断言严格大小关系。
+_el = [v for v in rows.values() if v["en"].strip() == "Elevated Overseer"]
+_cr = [v for v in rows.values() if v["en"].strip() == "Crescent Overseer"]
+_fl = [v for v in rows.values() if v["en"].strip() == "Fleshmob"]
+check("elevated_overseer_above_crescent_and_fleshmob",
+      _el and _cr and _fl
+      and all(e["rank"] < c["rank"] for e in _el for c in _cr)
+      and all(e["rank"] < f["rank"] for e in _el for f in _fl),
+      "★★ 崇高监视者必须**严格高于**新月监视者与肉瘤体"
+      "（用户 2026-10-18 要求；推翻了原先的同档断言）")
+# ★★ 2026-10-18（用户要求）：**光能族 御门者 > 证真者** ★★
+#   用户原话：「光能族的御门者大于证真者」。
+#   用户选方案 B：御门者单独一档（**仅低于猎杀器**），
+#   证真者+粉碎者 ⇒ 同档在它下面。
+#   ⚠ rank 必须是**整数**（本文件 `int(v["rank"])`）⇒ 无法用 1.5 表达中间档。
+_gk = [v for v in rows.values() if v["en"].strip() == "Gatekeeper"]
+_zj = [v for v in rows.values() if v["en"].strip() == "Veracitor"]
+_hr = [v for v in rows.values() if v["en"].strip().startswith("Harvester")]
+check("gatekeeper_strictly_above_veracitor",
+      _gk and _zj and all(g["rank"] < z["rank"] for g in _gk for z in _zj),
+      "★★ 御门者必须**严格高于**证真者（rank 更小）—— 用户 2026-10-18 明确要求")
+check("gatekeeper_own_tier_below_harvester",
+      _gk and _hr and all(g["rank"] > h["rank"] for g in _gk for h in _hr)
+      and all(g["rank"] == _gk[0]["rank"] for g in _gk),
+      "★ 御门者单独一档，且**仅低于猎杀器**（用户选方案 B）")
+# ★★ 2026-10-18（用户要求）：**守望者位于粉碎者之后、崇高监视者之前** ★★
+#   用户原话：「新加入守望者，把守望者放在崇高监视者之前，粉碎者之后」。
+_wa = [v for v in rows.values() if v["en"].strip() == "Watcher"]
+_cs = [v for v in rows.values() if v["en"].strip() == "Crusher"]
+check("watcher_between_crusher_and_elevated_overseer",
+      _wa and _cs and _el
+      and all(c["rank"] < w["rank"] for c in _cs for w in _wa)
+      and all(w["rank"] < e["rank"] for w in _wa for e in _el),
+      "★★ 守望者必须严格位于粉碎者之后、崇高监视者之前")
+check("watcher_is_registered_as_enemy",
+      "ac60e78435098c9d" in (ROOT / "src" / "g60" / "enemy_faction.lua").read_text(encoding="utf-8"),
+      "★ 守望者必须在敌人表里，否则永远不会被接管（fail-safe 判据）")
 sm = [v for v in rows.values() if v["en"].strip() == "Overseer"]
-check("plain_overseer_rank4", sm and all(v["rank"] == 4 for v in sm),
-      "★ 普通「监视者/Overseer」只能在第 4 档")
+check("plain_overseer_rank7", sm and all(v["rank"] == 7 for v in sm),
+      "★ 普通「监视者/Overseer」只能在第 7 档（2026-10-18 第二次重编号后）")
 spewer = [v for v in rows.values()
           if any(k in v["en"] for k in ("Bile Spewer", "Nursing Spewer", "Rupture Spewer"))]
 check("spewer_family_one_tier",
@@ -259,7 +343,7 @@ check("spread_computed_before_gate",
       "（这正是 v0.1.25 `spread_pick` 0 条的真根因）")
 check("spread_reuses_priority_drive",
       "my_mark=P.spread_pick_row;my_structure=my_mark" in _RT
-      and "reservations:claim(owner,my_mark.identity)" in _RT
+      and "reservations:claim(owner,my_mark.identity,my_mark.resource)" in _RT
       and "reservations:keep_only(owner,my_mark.identity)" in _RT,
       "★★ 驱动复用既有 priority:step 通道（claim/keep_only + my_structure），不新增写途径")
 check("spread_no_new_outer_locals",

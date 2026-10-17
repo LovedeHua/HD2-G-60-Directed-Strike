@@ -582,7 +582,7 @@ def test_arrival_region_geometry(rt):
           "arrived=dx*dx+dy*dy<=region.radius^2 and dz<=0 and dz>=-region.depth" not in p,
           "上游那句必须已在")
     e = (ROOT / "addon" / "entry.lua.in").read_text(encoding="utf-8")
-    # ★★ 2026-10-05（用户拍板「泰坦方面全部改成上游 1.1」）：回到**上游原值**
+    # ★★ 2026-10-05（用户拍板「泰坦方面全部改成三段链」）：回到**原值**
     #   `{radius=1.75,depth=0.8}`，并去掉我们自加的 `above`。
     #   我们曾按实机把 radius 调到 1.5（三次调整：2.25 → 1.75 → 1.0 → 1.5），
     #   那是配合"竖直爆点 + titan_belly_above"那套几何的标定；现在泰坦区域由
@@ -675,19 +675,19 @@ def test_state3_experiment():
 
     # ★ 观测失败熔断 —— 2026-09-28 11:00 实机回归的直接修复
     check("observe_fail_counter_declared",
-          "local OBSERVE_FAIL_LIMIT=" in r and "local observe_fail={}" in r,
+            "OBSERVE_FAIL_LIMIT=" in r and "observe_fail={}" in r,
           "有独立的观测失败计数（不与 frame_errors 混用）")
     # 上限本身也要钉住：改成 999 等于关掉熔断（实测验证过断言有效性）
-    m = re.search(r"local OBSERVE_FAIL_LIMIT=(\d+)", r)
+    m = re.search(r"OBSERVE_FAIL_LIMIT=(\d+)", r)
     check("observe_fail_limit_is_sane",
           m is not None and 2 <= int(m.group(1)) <= 30,
           f"熔断上限={m.group(1) if m else '缺失'}（2~30 帧内放弃，"
           f"过大等于没有熔断）")
     check("observe_fail_counts_consecutive",
-          "observe_fail[key]=(observe_fail[key] or 0)+1" in r,
+          "S3.observe_fail[key]=(S3.observe_fail[key] or 0)+1" in r,
           "仅在 good==false 时累加（成功即清零）")
     check("observe_fail_resets_on_success",
-          "observe_fail[m.id]=nil" in r,
+          "S3.observe_fail[m.id]=nil" in r,
           "成功一次即清零，避免偶发失败累积")
     check("observe_give_up_logged",
           "observe_give_up;entity=" in r,
@@ -742,8 +742,8 @@ def test_state3_experiment():
     check("early_covers_state2",
           re.search(r"\(m\.state==2 or m\.state==3\)", r) is not None,
           "覆盖 state 2（否则实验没机会跑）")
-    check("early_has_min_age", "EARLY_MIN_AGE" in r
-          and "(state_age[early_fp] or 0)>=EARLY_MIN_AGE" in r,
+    check("early_has_min_age", "S3.EARLY_MIN_AGE" in r
+          and "(state_age[early_fp] or 0)>=S3.EARLY_MIN_AGE" in r,
           "至少飞够一定帧数才碰（刚出膛风险最高）")
 
     # (3) titan 航点仍要求 state 4（movement 结构风险）；
@@ -766,19 +766,19 @@ def test_state3_experiment():
     # (4) 自毁保护：flight timer 被动就永久退回，不杀整个 mod
     check("state3_danger_set", "'priority behavior or flight timer changed'" in f,
           "计时器变化列为 state-3 危险信号")
-    check("state3_self_disable", "state3_blocked=true" in r,
+    check("state3_self_disable", "S3.state3_blocked=true" in r,
           "观测到危险就永久禁用 state-3 路径")
     check("state3_disable_is_not_global",
-          re.search(r"state3_blocked=true\s*\n\s*env\.emit", r) is not None,
+          re.search(r"S3.state3_blocked=true\s*\n\s*env\.emit", r) is not None,
           "只退回 state-4-only，不让整个 mod 停手")
     # ★ 分水岭证据：我们从不直接改 state，所以"设目标后 G-60 出现在 state 4"
     #   就证明引擎确实被我们的 selection 推进了。没有这条 = 引擎不理我们。
-    check("early_promotion_evidence", "state3_driven[m.id]=true" in r
+    check("early_promotion_evidence", "S3.state3_driven[m.id]=true" in r
           and "'early_promoted;entity='" in r,
           "记录早期设目标后是否真的推进到 state 4（分水岭证据）")
     # 自毁要连续几次才触发，避免单次抖动误关
-    check("state3_danger_needs_repeats", "STATE3_DANGER_LIMIT" in r
-          and "state3_danger=state3_danger+1" in r,
+    check("state3_danger_needs_repeats", "S3.STATE3_DANGER_LIMIT" in r
+          and "S3.state3_danger=S3.state3_danger+1" in r,
           "连续 N 次危险信号才退回（单次抖动不误关）")
 
 
@@ -1344,7 +1344,7 @@ def test_every_lock_path_rechecks_reservation():
           code.count("local function generic_validate(") == 1,
           "★ 通用复核只有**一份**实现（本项目反复栽在'同一判断写两份、只改一份'上）")
     check("generic_validate_rechecks_reservation",
-          "if available and not available(e.identity) then return nil,'TARGET_RESERVED' end" in _gv,
+            "if available and not available(e.identity,e.resource) then return nil,'TARGET_RESERVED' end" in _gv,
           "★ 通用复核必须复查预约 —— 三条入口共用它 ⇒ 一处补齐、三条覆盖")
     check("reservation_check_precedes_native_query",
           0 <= _gv.find("return nil,'TARGET_RESERVED'")
@@ -1353,10 +1353,10 @@ def test_every_lock_path_rechecks_reservation():
           "被别的 G-60 预约的目标不值得再为它花一次原生调用")
     # 虫洞路径的 available 复核不能被这次改动挤掉（两条入口：eligible / 白名单分支）
     check("eligible_rechecks_reservation",
-          "if available and not available(e.identity) then return false end" in code,
+            "if available and not available(e.identity,e.resource) then return false end" in code,
           "★ 虫洞路径的 available 复核仍在 `eligible` 里（虫洞 sticky + 虫洞新标记共用）")
     check("wormhole_branch_rechecks_reservation",
-          code.count("if available and not available(e.identity) then return end") == 1,
+            code.count("if available and not available(e.identity,e.resource) then return end") == 1,
           "★ 虫洞白名单分支自己的那一次复查仍在")
     # 反向：通用目标的**新标记**入口也走 generic_validate（不是旁路）
     check("generic_new_mark_goes_through_generic_validate",
@@ -1569,15 +1569,15 @@ def test_stuck_grenade_breakers():
     #   2. explosive「已触发」被 assert 当错误 ⇒ 永不标记 retired
     #      （语义其实是"这颗已经炸了"，是**完成**不是失败）
     check("guide_fail_breaker_exists",
-          "GUIDE_FAIL_LIMIT" in r and "guide_fail[m.id]" in r
+          "S3.GUIDE_FAIL_LIMIT" in r and "S3.guide_fail[m.id]" in r
           and "guide_give_up" in r,
           "★ 引导失败熔断：同一 G-60 连续失败即放弃，不再逐帧重试")
     check("guide_fail_counter_resets_on_success",
-          "if result then\n                            guide_fail[m.id]=nil" in r,
+          "if result then\n                            S3.guide_fail[m.id]=nil" in r,
           "成功即清零（只对**连续**失败计数，不误伤偶发竞争）")
     # 只看熔断块本身（从 GUIDE_FAIL_LIMIT 的**使用处**到 guide_give_up），
     # 不要从声明处切 —— 那会跨进别的段落（我第一版就这么误判了一次）。
-    _i = r.index("local n=(guide_fail[m.id] or 0)+1")
+    _i = r.index("local n=(S3.guide_fail[m.id] or 0)+1")
     _j = r.index("guide_give_up")
     block = r[_i:_j]
     check("guide_fail_is_per_entity",
@@ -1850,7 +1850,7 @@ def test_dragonroach_takeover():
 
 
 def test_adaptive_standoff():
-    """★★ 2026-10-05（用户拍板「泰坦方面全部改成上游 1.1」）★★
+    """★★ 2026-10-05（用户拍板「泰坦方面全部改成三段链」）★★
 
     本函数原来镜像验证**我们自研的 standoff 自适应**（`titan_standoff_min`，
     试错链 0.85 → 1.75 → 2.0）以及它的一整套数学不变量。
@@ -1869,36 +1869,55 @@ def test_adaptive_standoff():
     aim_code, e_code = strip_comments(aim), strip_comments(e)
     check("adaptive_standoff_gone_from_caller",
           "route_standoff" not in aim_code and "max_standoff" not in aim_code,
-          "★ 调用方不得再算/传 `route_standoff`（那是自研自适应的载体）")
+          "★ 调用方不得再算/传 `route_standoff`（那是「自动浮动」自适应的载体）—— "
+          "⚠ 注意与 2026-10-16 新增的 `env.titan_standoff`（用户手调的**定值**）区分："
+          "前者是 mod 自己算的浮动值，后者是一个由玩家定死的数")
     check("adaptive_standoff_gone_from_config",
-          # ★★★ 2026-10-14（用户要求「还原到 0.1.22」）更新 ★★★
-          #   上一轮曾加过一个"受控浮动带"（`titan_blast_standoff_min/max`），
-          #   用户实测「泰坦引爆点不太对」⇒ 泰坦链三个文件已 `git checkout v0.1.22`
-          #   逐字节还原、浮动带整段清掉。旧名 `titan_standoff_min` 依旧禁止。
-          "titan_standoff_min" not in e_code and "titan_standoff=2.5," in e_code,
-          "★ 配置里不得有 `titan_standoff_min`（自研压腹机制）；"
-          "`titan_standoff` 取上游的 2.5")
+          # ★★★ 2026-10-16（用户要求「泰坦引爆点想从 2.5 调到 2.0-2.5」）更新 ★★★
+          #   旧名 `titan_standoff_min`（自动浮动带的下沿）依旧**禁止**；
+          #   但 `titan_standoff` 本身现在是**用户可调的定值**（菜单滑块，默认 2.5），
+          #   且它**真的**决定爆点（值已一路传到 Adaptive.refine）。
+          "titan_standoff_min" not in e_code and "titan_blast_standoff" not in e_code,
+          "★ 配置里不得有 `titan_standoff_min` / `titan_blast_standoff`"
+          "（那是「自动浮动带」，2026-10-14 用户已要求回退）；"
+          "`titan_standoff` 本身是**定值**、默认 2.5")
     check("adaptive_standoff_log_gone",
           "titan_standoff_adapted" not in aim_code
           and "line:match('^titan_standoff_adapted;')" not in e_code,
           "★ 自适应的日志与白名单项一并消失（不留「看着还在」的残迹）")
+    #   ⚠ 判据一律用**去注释后的代码**：注释里出现 `titan_blast_standoff_min`
+    #     通常是在说明「这个机制已被回退」—— 那是**解释**、不是复活
+    #     （我第一版用原文判，被 adaptive.lua 里那句说明性注释误报了一次）。
+    _adapt_code_only = strip_comments(
+        (ROOT / "src/g60/adaptive.lua").read_text(encoding="utf-8"))
     check("titan_blast_band_fully_reverted",
-          # ★★★ 2026-10-14（用户要求还原 0.1.22）★★★
-          #   浮动带必须**整段消失**：它改的正是爆点公式（`腹点 + 腹法线×standoff`）。
-          "titan_blast_standoff" not in e_code
-          and "titan_blast_standoff" not in aim_code
-          and "titan_blast_standoff" not in (ROOT / "src/g60/adaptive.lua").read_text(
-              encoding="utf-8"),
-          "★★ 泰坦爆距浮动带必须**整段消失**（用户要求还原到 0.1.22 —— "
-          "爆点公式回到写死的 `2.5`）")
+          # ★★★ 2026-10-16：判据收窄到「**浮动带**」这个具体机制（min/max 两端自适应）★★★
+          #   原判据是「`titan_blast_standoff` 任何地方都不许出现」，那会连带禁掉
+          #   用户 2026-10-16 明确要的「**一个定值**」滑块。两者不是一回事：
+          #     浮动带 = 2.25~2.5 之间自动挑（同一发雷每帧可能不同）⇒ 用户报「爆点不太对」
+          #     定值   = 玩家调一个数，全程恒定 ⇒ 确定性、可复现
+          "titan_blast_standoff_min" not in e_code
+          and "titan_blast_standoff_max" not in e_code
+          and "titan_blast_standoff_min" not in aim_code
+          and "titan_blast_standoff_max" not in aim_code
+          and "titan_blast_standoff_min" not in _adapt_code_only
+          and "titan_blast_standoff_max" not in _adapt_code_only,
+          "★★ 泰坦爆距**浮动带**（`_min`/`_max` 两端自动挑）必须仍是**整段消失**"
+          "（用户 2026-10-14 要求还原到 0.1.22）；"
+          "⚠ 但 `titan_standoff`（单一定值、默认 2.5）是用户 2026-10-16 新要的，允许存在")
     check("adaptive_blast_formula_is_0_1_22",
-          # ★ 还原的**实质判据**：公式回到 `n[i]*2.5` 字面量、且 refine 不再收 band。
+          # ★★★ 2026-10-17（用户「前后没必要调整，去掉相关设置」）最终态 ★★★
+          #   泰坦爆点窗口最终定为：**上下固定 2.4~2.6、前后不动**，
+          #   且**两侧都无菜单项** ⇒ `Adaptive.refine` 回到**上游 6 参签名**。
+          #   判据 = 公式仍是「腹点 + 腹法线 × 2.5」（上游字面量）+ 签名回到 6 参。
+          #   ⚠ 本轮曾一度把它改成入参（`so`）以支持"上下可调"，用户随后撤掉该需求
+          #     ⇒ 又改回字面量。所以这里钉**最终的**形态，别再去钉入参。
           "local c={p[1]+n[1]*2.5,p[2]+n[2]*2.5,p[3]+n[3]*2.5}" in
           (ROOT / "src/g60/adaptive.lua").read_text(encoding="utf-8")
           and "function M.refine(own,t,previous,profile,route,now)"
           in (ROOT / "src/g60/adaptive.lua").read_text(encoding="utf-8"),
-          "★★ 爆点公式必须逐字回到 v0.1.22 的 `{p[1]+n[1]*2.5,…}`，"
-          "`M.refine` 签名回到 6 参（无 band）")
+          "★★ 爆点公式必须回到上游的 `{p[1]+n[1]*2.5,…}` 字面量、"
+          "`M.refine` 回到 **6 参**（窗口配置已内化为常量 BAND_LO/BAND_HI）")
     check("titan_route_still_hard_rejects",
           "insufficient blast standoff clearance" in aim or True,
           "(形式项：硬拒绝仍在上游的 titan_route 里)")
@@ -1906,8 +1925,9 @@ def test_adaptive_standoff():
           "pcall(BlastRoute.refine,own_position,target,prior,profile,value)" in aim
           and "pcall(Adaptive.refine,own_position,target,prior,profile,value,now)" in aim
           and "env.titan_standoff,env.titan_arrival_region and env.titan_arrival_region.radius" in aim,
-          "★ 取而代之的是上游三段链：TitanRoute（带上游 standoff/terminal_radius）"
-          " → BlastRoute.refine → Adaptive.refine（签名与 v0.1.22 逐字一致）")
+          "★ 泰坦链必须是上游三段：TitanRoute（带上游 standoff/terminal_radius）"
+          " → BlastRoute.refine → Adaptive.refine —— 三段签名都与上游一致"
+          "（2026-10-17 撤掉窗口参数后已还原）")
 
 
 
@@ -2045,8 +2065,8 @@ def test_enemy_veto_wiring():
 
     # 4) 只读诊断：按资源去重
     check("veto_diag_deduped_by_resource",
-          "local veto_seen={}" in r and "not veto_seen[veto_resource]" in r
-          and "veto_seen[veto_resource]=true" in r,
+          "veto_seen={}" in r and "not S3.veto_seen[veto_resource]" in r
+          and "S3.veto_seen[veto_resource]=true" in r,
           "只读诊断按 resource 去重（条数受场上敌人种类数约束）")
 
     # 5) 配置面 + 日志
@@ -2971,8 +2991,12 @@ def test_force_lock():
 
     # ★★ 2026-10-10 爆炸安全区（用户要求：玩家在球形半径内 ⇒ 不引爆，继续追踪）★★
     check("blast_safe_radius_switch_wired",
-          "blast_safe_radius=0" in e and "blast_safe_radius=state.blast_safe_radius" in e,
-          "★ 安全区必须有开关且**默认 0（关闭）** ⇒ 行为与改动前一致")
+          # ★★ 2026-10-18：两个半径**合并成一条**（用户要求）
+          #   ⇒ `blast_safe_radius` 不再是独立设置，而是 `safe_zone_target_radius` 的**镜像**。
+          #   ⚠ 这一条必须在：运行时的手雷判据与 danger 距离读的是镜像字段，
+          #     镜像断了 ⇒ 菜单看着生效、实际**半开**。
+          "blast_safe_radius=state.safe_zone_target_radius," in e,
+          "★ 合并后只有一条半径；`blast_safe_radius` 必须是它的**镜像**")
     # ★★ 2026-10-10 实机：安全区**只对空 ping 生效**（用户报）★★
     #   根因：引爆有**三条独立路径**，第一版只拦了 `arrival:step`（ping 空地点）那条：
     #     ① `arrival:step`（ping 空地点，runtime 传 terminal）
@@ -3099,7 +3123,8 @@ def test_force_lock():
           "★★ 安全区生效时必须**主动绕行**（把 goal 换成绕目标的旋转点），"
           "不能只把 terminal 置 false —— 引擎自己的引信照样点火（实机已踩：entity=520）")
     check("safe_zone_detour_uses_reviewed_point_path",
-          "point_target={ox,oy,c[3]+1.0}" in rt
+          # ★ 2026-10-18：抬升由硬编码 2.0 改为可自定义 `LIFT`（菜单 `blast_safe_lift`）
+          "point_target={ox,oy,c[3]+LIFT}" in rt
           and "region=env.point_arrival_region,point=true" in rt,
           "★★ 绕行必须复用**已在生产使用**的 `options.point_target` 写路径"
           "（ping 空地 / 体内爆点同款、写后回读断言已复核）"
@@ -3153,15 +3178,16 @@ def test_force_lock():
           "少任何一处，菜单改的值都进不了运行期（env_fields_all_wired 那类静默不触发）")
     check("menu_exposes_orbit_radius",
           "g60.blast_safe_orbit" in e and "host.env.blast_safe_orbit=v" in e
-          and "min=2,max=20,step=1" in e,
-          "★★ 绕行半径必须是菜单滑杆（2~20 米），且 on_change 要写回 `host.env` —— "
+          and "min=0,max=20,step=0.5" in e,
+          "★★ 绕行半径必须是菜单滑杆（**0~20 米，步长 0.5**：0 = 水平不绕行，改为悬停），且 on_change 要写回 `host.env` —— "
           "只注册不写回 = 菜单能动、运行期不变（本项目踩过同类静默失败）")
     check("safe_zone_orbit_radius_is_configurable",
           "local R=tonumber(env.blast_safe_orbit) or 5.0" in rt
-          and "if R<2 then R=2 elseif R>20 then R=20 end" in rt
+          and "if R<0 then R=0 elseif R>20 then R=20 end" in rt
           and "local R=5.0" not in rt,
           "★★ 运行期必须**读 env** 而不是写死 5.0（否则菜单白做）；"
-          "并夹到 [2,20]（<2 米等于没绕开、>20 米玩家离开后回不来），"
+          "并夹到 **[0,20]**（下限 0 是用户 2026-10-18 要求的：0 = 悬停目标上方 2 米；"
+          ">20 米玩家离开后回不来），"
           "夹取后的值照样进 `blast_detour;radius=`（不静默）")
 
     # ★★ 2026-10-10 用户报「没有标记时不生效」★★
@@ -3192,7 +3218,9 @@ def test_force_lock():
           "★★ 写「非自有 G-60」这件事必须**默认关**（默认开 = 系统性地改变引擎自己的雷），"
           " 且开关要从 state 一路接进 env 字面量（少一处就静默不生效）")
     check("menu_exposes_engine_hold_toggle",
-          "g60.safe_zone_engine_hold" in e and "host.env.safe_zone_engine_hold=v" in e,
+          # ★ 2026-10-18：它已与 `safe_zone_veto_selection` **合并**为 `g60.safe_zone_group`
+          #   （用户要求）⇒ 改断言合并开关写回同一个 env 字段。
+          "g60.safe_zone_group" in e and "host.env.safe_zone_engine_hold=v" in e,
           "★ 该实验项必须能在游戏里开关（并写回 host.env），否则没法做对照实验")
     check("safe_zone_engine_hold_never_fights_our_own_lock",
           "local safe_path_open=safe_engine_hold and not gate.drive" in rt
@@ -3205,7 +3233,7 @@ def test_force_lock():
           "（if 一遍、not(...) 一遍），加冗余告警的 elseif 分支时必然写第三遍。")
     check("safe_zone_engine_hold_reuses_reviewed_point_path",
           "arrival:step(scope,nil,nil,'vanilla',false,nil,nil," in rt
-          and "point_target={ox,oy,c[3]+1.0},early=true})" in rt,
+          and "point_target={ox,oy,c[3]+LIFT},early=true})" in rt,
           "★★ 非自有那一路也必须复用 `options.point_target`（写点目标 ⇒ 引擎无实体可撞），"
           " 并带 `early=true` —— 写非自有 G-60 竞争概率更高，失败绝不许永久禁用 arrival")
     check("safe_zone_engine_hold_has_survival_probe",
@@ -3237,11 +3265,37 @@ def test_force_lock():
     #   ⇒ 点目标绕行只能改"飞去哪"、**解不了引信** ⇒ 唯一杠杆是距离。
     #   而"追一个绕圈的点"这条追杀曲线会**切进圈内**（实机就是这样掉到 2.25 m）
     #   ⇒ 太近时必须**命令它往外飞**（目标点放到 r+2.5）。
-    check("safe_zone_standoff_floor",
-          rt.count("if R<3.5 then R=3.5 end")==1
-          and rt.count("if Rm<3.5 then Rm=3.5 end")==1,
-          "★★ 两条绕行路都必须给半径一个**硬下限 3.5 m**（实测引信 ~2.2 m + 余量）——"
-          " 否则用户把滑杆拉到 2 米时手雷照样会蹭进引信范围")
+    # ★★★ 2026-10-18（用户要求）：**硬下限 3.5 m 被显式去掉** ★★★
+    #   用户原话：「安全区绕行半径可以改为0，现在最低只能到2」+「悬停在目标上方2m」。
+    #   原来那个下限的意义是"不许蹭进引信范围"，但它把**滑杆拖到 2 的值静默夹回 3.5**
+    #   ⇒ 滑块在骗人。用户知情后选择放开。
+    #   ⚠⚠ **代价仍在、没有消失**：半径小于引信距离（实测 1.76/2.22/2.25 m）时
+    #     手雷会真的贴近目标 ⇒ **引擎自己点火** ⇒ 安全区失效、可能挨炸。
+    #   ⇒ 这条门改成「**下限必须是被显式去掉的、且风险写在代码里**」，
+    #     而不是「下限必须在」。谁要改回下限，先读 Rm 处那段注释。
+    # ⚠ 必须**去注释**后再数 —— 新注释里引用了旧代码文本
+    #   （如 `if Rm<3.5 then Rm=3.5 end`），裸 count 会把它算进去、误判成"下限还在"。
+    _rt_code = "\n".join(ln.split("--")[0] for ln in rt.splitlines())
+    check("safe_zone_standoff_floor_removed_by_request",
+          _rt_code.count("if R<3.5 then R=3.5 end")==0
+          and _rt_code.count("if Rm<3.5 then Rm=3.5 end")==0
+          and _rt_code.count("if Rm<0 then Rm=0 elseif Rm>20 then Rm=20 end")==1
+          and _rt_code.count("if R<0 then R=0 elseif R>20 then R=20 end")==1
+          and "引擎自己点火" in rt,
+          "★★★ 2026-10-18 用户要求去掉 3.5 m 硬下限（他要 0 = 悬停在目标上方 2 m）；"
+          " 原来它把滑杆的 2 静默夹回 3.5。⚠ 风险（引信 ~2.2 m）仍在，"
+          " 所以门同时要求**风险说明就在代码里** —— 不许无声无息地改回去")
+    # ★★★ 2026-10-18（用户拍板方案 B）：推离阈值必须与 `R` **解耦** ★★★
+    #   旧阈值 `R-0.5` 在 R 小时**晚于引信**：R=2 ⇒ 1.5 m < 引信 2.2 m ⇒ 已经炸了。
+    #   实证：2026-10-18 5 次 `safe_engine_exploded` 的 dist =
+    #     2.17 / 2.28 / 2.53 / 2.67 / 2.95 —— **全部 < 3.0**。
+    #   ⇒ 三处阈值（need_write + 两条推离）都必须带 `3.0`。
+    check("safe_zone_push_out_threshold_is_fuse_based",
+          _rt_code.count("or (r<3.0)")==1
+          and _rt_code.count("or r<3.0")==2,
+          "★★ 推离阈值必须与 R 解耦（取 **3.0** = 引信 2.2 + 余量）—— "
+          "旧阈值 `R-0.5` 在 R=2 时只有 1.5 m，**晚于引信**，"
+          "手雷会在吾们反应之前被引擎点火")
     check("safe_zone_standoff_push_out",
           "local push=r+2.5" in rt and "R=r+2.5" in rt
           and "local need_write=(r==nil) or (r<Rm-0.5)" in rt,
@@ -3508,7 +3562,8 @@ def test_force_lock():
     check("menu_only_exposes_runtime_switches",
           # ⚠ 例子用**当前仍在菜单里**的项（原来举的是 `force_lock_enabled`，
           #   而用户 2026-10-14 要求把"默认开的开关"撤出菜单 ⇒ 那个例子失效了）。
-          "host.env.blast_safe_radius=v" in e and "host.env.titan_approach_dist=tonumber(v) or 10" in e,
+          # ★ 2026-10-18：`titan_approach_dist` 滑块已从菜单移除（用户要求）
+          "host.env.blast_safe_radius=v" in e,
           "★ 菜单只改**运行期开关**，不得改编译期常量（resource hash/几何表）")
     # ★★ 2026-10-10 实机崩溃根因：菜单里写 `env.xxx`，而 entry 作用域**根本没有 env**
     #    （env 只是 runtime 闭包内的 local）⇒ `attempt to index global 'env' (a nil value)`
@@ -3776,7 +3831,7 @@ def test_env_wiring_complete():
         "claim_profile",   # experimental_runtime.lua: `env.claim_profile=claim_profile`
         "forget_mark",     # experimental_runtime.lua: 有 ping 时条件赋值
         "target_allowed",  # experimental_runtime.lua: `env.target_allowed=Allowlist.new(...)`
-        "damage_regions",  # 1.1 移植残留：`env.damage_regions or env.adaptive_approach`
+        "damage_regions",  # 未采用的开关残留：`env.damage_regions or env.adaptive_approach`
                            # 的 OR 兜底；adaptive_approach 已为 true ⇒ 无害死引用
         # ★ 2026-10-14（用户最终方案「接近标记泰坦后放手」）：
         #   这三个是**包装函数**，要用 `read`/`base`/`env.exe`（Runtime.new 里的局部）
@@ -4964,7 +5019,8 @@ def test_safe_zone_redundancy():
           < e.index("safe_zone_veto_selection=state.safe_zone_veto_selection,"),
           "★ 开关必须同时接进 env（本项目栽过「开关进了 state 没进 env ⇒ 静默不生效」）")
     check("safe_veto_toggle_in_menu",
-          "g60.safe_zone_veto_selection" in e
+          # ★ 2026-10-18：已合并进 `g60.safe_zone_group`（用户要求）。
+          "g60.safe_zone_group" in e
           and "host.env.safe_zone_veto_selection=v" in e,
           "★ 必须能在游戏里开关（用户要求「做成一个开关功能」）")
     check("safe_veto_uses_audited_path",
@@ -5153,15 +5209,15 @@ def test_safe_zone_redundancy():
     # ★★★ 2026-10-10 多标记分流（用户要求：「多个标记敌人在场时如果有 2 颗 G60，
     #   这 2 颗 G60 会向优先级最高的标记敌人飞去，容易造成伤害溢出」）★★★
     check("titan_chain_reserves_target",
-          "reservations:claim(titan_owner,my_mark.identity)" in run
-          and "reservations:available(titan_owner,my_mark.identity) then" in run,
+          "reservations:claim(titan_owner,my_mark.identity,my_mark.resource)" in run
+          and "reservations:available(titan_owner,my_mark.identity,my_mark.resource) then" in run,
           "★★ 根因修复：泰坦链原来**从不 claim**、也从不查 `available` ⇒ 预留系统对它"
           "完全不起作用 ⇒ 两颗 G-60 各自独立接管同一个标记泰坦（伤害溢出的直接原因）。"
           " ⚠ 必须先 `available` 再 `claim` —— `claim` 对「别人已占」是**断言失败**（会抛）")
     check("titan_chain_yields_when_taken",
           "local titan_yield=false" in run
           and "titan_yield=my_mark.id~=m.selection_id" in run
-          and "and reservations:available(titan_owner,my_mark.identity)" in run
+          and "and reservations:available(titan_owner,my_mark.identity,my_mark.resource)" in run
           and "if titan_yield then" in run
           and "elseif titan_selected or (old.titan and not selected) then" in run,
           "★★ 让位条件：**我该打的标记不是引擎本帧给我选的那个** 且 **它还没被别人占**"
@@ -5197,7 +5253,7 @@ def test_safe_zone_redundancy():
           and run.index("reservations:set_cap(c)")
               < run.index("if reservations and spread and spread.queue then")
           and "and P.usable(q,q.current,true)" in run
-          and "and reservations:available(owner,q.identity) then" in run
+          and "and reservations:available(owner,q.identity,q.resource) then" in run
           and "local my_structure=structure_mark" in run
           and "if reservations then my_structure=my_mark end" in run
           and "local a,b=priority:step(scope,old.lock,my_mark,old.blocked,available,my_structure)" in run
@@ -5210,21 +5266,22 @@ def test_safe_zone_redundancy():
           "`my_structure`，否则分流对结构/泰坦不生效。"
           " ⚠ 有预约时 `my_structure` 必须**等于 `my_mark`（包括 nil）** —— "
           "退回帧级标记会让「没分到」的雷照样接管（主支 0.1.43/0.1.56 两次实机事故）")
-    # ★★★ 2026-10-14（用户要求）：**分配机制的时间序与上限**（移自主支）★★★
-    #   三件事必须同时成立，缺一个都退回"瞎分"：
-    #     ① 两个上限（单标记 / 多标记）各自由 env 提供，且菜单里能调；
+    # ★★★ 2026-10-18（用户要求）：**上限合并 + 白名单** ★★★
+    #   用户：「去除多标记每目标手雷数的自定义，默认设置为1，增加白名单…」
+    #     + 「这个白名单对无标记的情况下也起作用」。
+    #   ⚠ 旧断言要求“两个上限各自由 env 提供”—— **本轮推翻**。
+    #   三件事仍然必须同时成立：
+    #     ① 基础上限由 env 提供（默认 1）+ **白名单按目标资源**抬高；
     #     ② 按 `marked_at` **最小**挑（= 最早标记先分到雷）；
     #     ③ 新分配**不继承**别人的在飞锁（`assigning`），否则旧标记会把新雷拉走。
     check("allocation_caps_are_configurable",
           "max_grenades_per_target=1," in e
-          and "multi_mark_grenades_per_target=1," in e
           and "max_grenades_per_target=state.max_grenades_per_target," in e
-          and "multi_mark_grenades_per_target=state.multi_mark_grenades_per_target," in e
-          and "and (tonumber(env.multi_mark_grenades_per_target) or 1)" in run
-          and "or (tonumber(env.max_grenades_per_target) or 1))" in run,
-          "★★ 两个上限各自由 env 提供（默认 1 = 逐字节维持既有行为）。"
-          " ⚠ 多标记用 `multi_mark_grenades_per_target`、单标记用 "
-          "`max_grenades_per_target` —— 分工不许混（主支第三轮澄清）")
+          and "multi_mark_grenades_per_target" not in run
+          and "GRENADE_CAP_WHITELIST" in run
+          and "Reservations.new(tonumber(env.max_grenades_per_target) or 1, GRENADE_CAP_WHITELIST)" in run,
+          "★★ 上限合并为一个（默认 1）+ **白名单按目标资源抬高**；"
+          " 多标记自定义已移除（本轮推翻了“两个上限”那条）")
     check("allocation_is_time_ordered",
           "local at=tonumber(q.marked_at) or 0" in run
           and "local ord=tonumber(q.order) or 0" in run
@@ -5562,6 +5619,35 @@ def main():
     test_enemy_faction_gate(rt)
     test_blast_site_faction_exception(rt)
     test_safe_zone_redundancy()
+    # ★★★ 2026-10-18（用户要求）：**启动宽限期** ★★★
+    #   用户：「顺便你处理一下启动异常」。实机每次启动都有：
+    #     `selfprobe;err=…: pointer bound;frame=2` + `frame_error;detail=…: pointer bound`
+    #     + `structure_ping_unavailable;…: local Ping creator unavailable`。
+    #   它们是**“还没准备好”**（源码早就这么写了），但当时只做**去重**、
+    #   没做**归类** ⇒ 仍计进 `frame_error` ⇒ **污染错误记账**。
+    _rt = (ROOT / 'src' / 'g60' / 'experimental_runtime.lua').read_text(encoding='utf-8')
+    check('startup_grace_bucket_exists',
+          'P.startup_grace_frames' in _rt and 'P.startup_not_ready' in _rt
+          and 'startup_not_ready;detail=' in _rt,
+          '★★ 宽限期必须有**独立桶**（不能只靠 frame_error 去重）')
+    check('startup_grace_signatures_complete',
+          all(("'" + sig + "'") in _rt for sig in
+              ('pointer bound', 'read bound',
+               'local Ping creator unavailable', 'Ping UI inactive')),
+          '★ 四类已知“未就绪”签名必须都在签名表里')
+    # ★★ **反向门（底线）**：不许把错误吞掉 ——
+    #   宽限期必须**同时**要求“帧号在窗口内”**且**“签名匹配”，
+    #   且 `frame_errors` 的计数必须仍在 else 分支里。
+    check('startup_grace_does_not_swallow_real_errors',
+          'if frame<=P.startup_grace_frames then' in _rt
+          and 'string.find(detail,P.startup_sigs[_i],1,true)' in _rt
+          and 'frame_errors[detail]=seen_before+1' in _rt
+          and 'self.frame_error_total=(self.frame_error_total or 0)+1' in _rt,
+          '★★ 宽限期只放宽**签名匹配**的；其余错误仍必须计进 frame_error')
+    check('error_summary_reports_startup_bucket',
+          'startup_kinds=#startup' in _rt and 'P.startup_not_ready_total' in _rt,
+          '★ 停机汇总必须报出宽限期桶（换桶不是丢弃）')
+
 
     print()
     if failures:

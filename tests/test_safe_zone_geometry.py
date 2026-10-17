@@ -10,7 +10,7 @@
 
   * 主判据 = 玩家离**引爆点**的距离（不是手雷）
   * 手雷半径是**可选**的第二条（默认关）
-  * 顺序 = **先手雷、后目标**（跟上游 `PlayerProximity.hold`）
+  * 顺序 = **先手雷、后目标**（本工程既定口径）
   * fail-safe = "**一个玩家坐标都读不到**"才不引爆（不是"读不到自己"）
   * fail-open 开关关掉 fail-safe 后照常引爆
 
@@ -202,8 +202,10 @@ print()
 print('=== S7：接线（默认值 / env / 菜单 / 状态行）===')
 check('S7_default_target_radius_is_12', 'safe_zone_target_radius=12,' in ENTRY,
       '主判据默认必须是 12（跟用户在主线拍板的值）')
-check('S7_default_grenade_radius_is_0', 'blast_safe_radius=0,' in ENTRY,
-      '手雷半径默认 0 = 关（不叠加）')
+# ★★ 2026-10-18：两个半径**合并成一条**（用户要求）。
+check('S7_grenade_radius_is_a_mirror', 'blast_safe_radius=state.safe_zone_target_radius,' in ENTRY,
+      '合并后 `blast_safe_radius` 必须是 `safe_zone_target_radius` 的**镜像**'
+      '（运行时的手雷判据与 danger 距离读的是它；镜像断了 = 菜单半开）')
 check('S7_failsafe_default_on', 'safe_zone_failsafe=true,' in ENTRY,
       'fail-safe 默认开（跟上游）')
 check('S7_env_wires_target_radius',
@@ -215,11 +217,20 @@ check('S7_menu_slider_target_radius',
       "id='g60.safe_zone_target_radius'" in ENTRY
       and 'host.env.safe_zone_target_radius=v' in ENTRY,
       '主判据必须有菜单滑杆并写回 host.env')
+# ★★★ 2026-10-18（合并半径）：**`set` 必须同时写两个 env 字段** ★★★
+#   运行时的手雷判据与 danger 距离读的是 `blast_safe_radius`。
+#   只写 `safe_zone_target_radius` ⇒ 菜单能动、运行期**半开**
+#   （本项目踩过同类静默失败：只注册不写回）。
+check('S7_menu_set_writes_both_fields',
+      'host.env.safe_zone_target_radius=v' in ENTRY
+      and 'host.env.blast_safe_radius=v' in ENTRY,
+      '★★ 合并后菜单 set 必须**同时**写两个 env 字段 —— '
+      '只写一个 = 菜单看着生效、实际半开')
 check('S7_status_line_shows_both',
       "';safe_zone_target_radius='..tostring(state.safe_zone_target_radius)" in ENTRY
-      and "';blast_safe_radius='..tostring(state.blast_safe_radius)" in ENTRY
+      and "';blast_safe_radius='..tostring(state.safe_zone_target_radius)..'(mirror)'" in ENTRY
       and "';safe_zone_failsafe='..tostring(state.safe_zone_failsafe)" in ENTRY,
-      '状态行必须打出两个半径与 fail-safe 方向（看不到就无法确认生效）')
+      '状态行必须打出半径（及其**镜像**）与 fail-safe 方向（看不到就无法确认生效）')
 check('S7_menu_text_covers_both_languages',
       "['safe_zone_target_radius.label']" in MENU
       and MENU.count("['safe_zone_target_radius.label']") == 2
@@ -237,9 +248,31 @@ print('=== S8：绕行圆心解不出来时**绝不退回实体 aim**（2026-10-
 #   `arrival selected target mismatch` ⇒ 每帧记一次引导失败 ⇒ 30 帧 `guide_give_up`
 #   **把这颗雷报废**（entity=954 到 28/30；整局 36 条 mismatch vs 4 次引爆）。
 _sz = RUNTIME[RUNTIME.index('if held then'):RUNTIME.index('else\n                                -- 离开安全区')]
-check('S8_remembers_the_computed_point',
-      'P.lastpt[m.id]={ox,oy,c[3]+1.0}' in _sz,
-      '★★ 算出绕行点后必须**记住**它（含 +1.0 抬升的整点）')
+# ★★★ 2026-10-18（用户要求）：**悬停高度可自定义** ★★★
+#   原来是硬编码 `c[3]+2.0`。现在走菜单 `blast_safe_lift`。
+#   ⚠⚠ 默认必须是 **2** —— 否则就是一次**静默的行为变化**（用户没要求改默认）。
+#   ⚠ 两个写点都必须用同一个 `LIFT`（否则记住的点与写出的点不一致）。
+check('S9_lift_default_is_2', 'blast_safe_lift=2,' in ENTRY,
+      '★ 默认 2 = 与改动前逐字一致（不得静默改默认）')
+check('S9_lift_env_wired', 'blast_safe_lift=state.blast_safe_lift,' in ENTRY,
+      'env 字面量必须接线（env_fields_all_wired 会查）')
+check('S9_lift_menu_writes_env', "id='g60.blast_safe_lift'" in ENTRY
+      and 'host.env.blast_safe_lift=v' in ENTRY,
+      '菜单必须存在且 set 写回 host.env')
+check('S9_lift_status_line', "';blast_safe_lift='..tostring(state.blast_safe_lift)" in ENTRY,
+      '状态行必须报（看不到 = 无法确认生效）')
+_src = (ROOT / "src" / "g60" / "experimental_runtime.lua").read_text(encoding="utf-8")
+_code = "\n".join(l.split("--")[0] for l in _src.splitlines())
+check('S9_lift_read_from_env_with_clamp',
+      _code.count("local LIFT=tonumber(env.blast_safe_lift) or 2.0") == 2
+      and _code.count("if LIFT<0 then LIFT=0 elseif LIFT>20 then LIFT=20 end") == 2,
+      '★ 两个写点都必须读 env 并**夹取**（防恶意/脏值）')
+check('S9_no_hardcoded_lift_left', "c[3]+2.0" not in _code,
+      '★ 不得再有硬编码的 `c[3]+2.0` 残留（会与 LIFT 不一致）')
+check('S9_remembers_the_computed_point',
+      'P.lastpt[m.id]={ox,oy,c[3]+LIFT}' in _sz,
+      '★★ 算出绕行点后必须**记住**它（含 +LIFT 抬升的整点；'
+      'LIFT 来自菜单 `blast_safe_lift`，默认 2 —— R=0 时就是悬停在目标上方）')
 check('S8_reuse_branch_exists_and_precedes_nopos',
       # 顺序即语义：复用分支必须在"打 nopos 日志"那条之前，
       # 否则圆心解不出来的那些帧会直接落空 ⇒ 退实体 aim ⇒ mismatch 风暴。

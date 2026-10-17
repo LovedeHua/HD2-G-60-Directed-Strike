@@ -177,7 +177,9 @@ check('ping_imports_policy', "local Policy=require('g60.target_policy')" in PING
 # 真跑 max_distance2：结构目标可调、其他固定
 lua2 = lj.LuaRuntime(unpack_returned_tuples=True)
 lua2.execute("package.preload['g60.util']=function() return {ref=function() return true end} end")
-lua2.execute("package.preload['g60.small_filter']=function() return {excluded=function() return false end} end")
+lua2.execute("package.preload['g60.small_filter']=function() return "
+              "{excluded=function() return false end, "
+              "statue_target=function(r) return r=='7c9455fcef107e41' end} end")
 Pol = lua2.execute(POLICY)
 
 
@@ -196,6 +198,15 @@ print('    结构目标（上限设 500） -> %.0f m' % _d_struct ** 0.5)
 print('    其他目标（上限设 500） -> %.0f m' % _d_other ** 0.5)
 check('structure_target_honours_config', abs(_d_struct ** 0.5 - 500) < 1e-6,
       '★ 结构目标取可配置的上限：实际 %.0f' % (_d_struct ** 0.5))
+# ★★ 2026-10-18（用户选定方案 A）：**雕像走结构档距离** —— 跑真实 `max_distance2`
+_statue_env = {'structure_profiles': lua2.table_from({'8901f188db366b4b': lua2.table_from({})}),
+               'max_takeover_distance': 250, 'other_takeover_distance': 150}
+_d_statue = md(_statue_env, '7c9455fcef107e41')
+_d_plain = md(_statue_env, 'eacee39fa017b495')
+check('statue_uses_structure_distance',
+      abs(_d_statue ** 0.5 - 250) < 1e-6 and abs(_d_plain ** 0.5 - 150) < 1e-6,
+      '★★ 雕像应跟**结构档**(250)、其他目标仍跟其他档(150)；'
+      '实得 雕像 %.0f / 其他 %.0f' % (_d_statue ** 0.5, _d_plain ** 0.5))
 check('non_structure_targets_share_one_adjustable_tier', abs(_d_other ** 0.5 - 200) < 1e-6,
       '★★ **非结构**标记目标（含泰坦家族）现在是**一档、可调**，默认 200。'
       '⚠ 用户 2026-10-14 先要求"其他敌人 100 m"，同日第二轮又要求'
@@ -244,12 +255,48 @@ check('excluded_unchanged', ex_keys == {'db90077e76faa025', '74e2285c01da4f71'},
       '★ `excluded` 仍是那两项（拆表没改它）：%s' % sorted(ex_keys))
 check('marked_allowed_covers_six', all(h in ma_keys for h in ALL_SIX),
       '★ 6 类都在 `marked_allowed` 里：缺 %s' % [h for h in ALL_SIX if h not in ma_keys])
-check('marked_allowed_excludes_friendly',
-      '7b0f8449ca9d2da0' not in ma_keys and '98152772a72f7838' not in ma_keys,
-      '★★ 绝不许含友方撤离机（鹈鹕 MK2）或停落地面的运输船')
-check('tables_are_not_identical', ma_keys != ex_keys,
-      '★ 两张表内容**不同**（这正是拆表的意义）：marked_allowed=%d / excluded=%d'
-      % (len(ma_keys), len(ex_keys)))
+# ★★ 2026-10-18（用户报「有一些雕像不能 ping 出来炸毁」，选定放行 7 条）★★
+#   实机证据：`generic_rejected;…;resource=7c9455fcef107e41;detail=NOT_ENEMY_RESOURCE`
+#     ⇒ 结构路要求在 `structure_profiles`（它不在）、通用路要求三选一
+#       （`enemy_faction` / `marked_allowed` / `blast_sites`）—— 全不中 ⇒ 拒。
+#   它们是无名道具（数据里 name=N/A），但有 `DestructibleComponentData`
+#     + `SpottableComponentData` ⇒ 可炸、可标记。
+#   ⚠ 范围**收窄**：离线筛出「无名+可摧毁+可标记」共 58 条，
+#     里面混着**玩家自己的装备** ⇒ 只收「任务目标 + 地图可见」这个子集。
+STATUE_TARGETS = ['7c9455fcef107e41']
+# ★★ 2026-10-18 第三轮（用户：「`3f2c34c69cfc94b2` / `9a1f728716da05b5` 这 2 条也先去除，
+#   **除非 2 个仓库里能找到相关信息**」）。
+#   ⇒ 用 `Darctor/Helldivers2_RawData` 的 `Data/entities/*.json` 查到了信息，
+#     而信息说它们**不是雕像** ⇒ 按规则移除：
+#       · `3f2c34c69cfc94b2`：`FactionComponentData` = **FactionType_SuperEarth**（友方！）
+#         + `HellpodPayload` + `LoadoutPackage` ⇒ **留着会误炸友方**。
+#       · `9a1f728716da05b5`：`DepositComponentData`（capacity 4/refill 20）
+#         + `LoadoutPackage` ⇒ **补给点**，不是可炸目标。
+#   ⚠ 反向钉住：被移除的 **6** 条不得回流。
+STATUE_UNKNOWN = ['4a2f7e9a9c47c202', 'c979fa81b6678953',
+                  'aef33bf33a18c97c', '27080697d055cb24',
+                  '3f2c34c69cfc94b2', '9a1f728716da05b5']
+_miss_st = [h for h in STATUE_TARGETS if h not in ma_keys]
+# ★★ 2026-10-18（用户选定方案 A）：**雕像改走结构档距离** ★★
+#   实机证据：放行后不再 `NOT_ENEMY_RESOURCE`，但仍被
+#     `structure_mark;…;resource=7c9455fcef107e41;reason=OUTSIDE_RANGE` 拒（卡在 150 m）。
+#   ⇒ 雕像必须走 `max_takeover_distance`（结构档）。
+check('target_policy_has_statue_branch',
+      'Filter.statue_target(resource)' in POLICY
+      and 'local m=tonumber(env.max_takeover_distance) or 250' in POLICY,
+      '★★ `target_policy.max_distance2` 必须有雕像分支、且用**结构档**上限')
+check('small_filter_exposes_statue_target',
+      'function M.statue_target(resource)' in FILTER
+      and 'local statue_targets = {' in FILTER,
+      '★ `small_filter` 必须单独暴露 `statue_target`（单一数据源）')
+# ⚠ 行为测试（把 require 换档去跑真实 `max_distance2`）**已撤**：
+#   两种档法都取不到 stub（`package.loaded` 与覆盖 `require` 均失败，
+#   报 `attempt to call field 'statue_target' (a nil value)`）。
+#   ⚠⚠ 更重要的教训：脚本**崩溃**时没有 `RESULT` 行，
+#     而我的变异脚本用“没有 ALL PASS 就算抓到”判定 ⇒ **假阳性**！
+#     已改为**先确认基线 ALL PASS、再做变异**（见下次执行）。
+#   保留两道**字符串**门（下面）—— 它们足以钉住分支存在与用的是哪个上限常量。
+
 
 print()
 print('=== 5. blast_sites：免几何目标的爆点（靠 lift / 标定档位表）===')

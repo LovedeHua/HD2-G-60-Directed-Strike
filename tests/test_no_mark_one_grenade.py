@@ -40,10 +40,15 @@ check('no_mark_forces_one',
       and "local n=0" in RT
       and "if q and P.usable(q,q.current,true) then n=n+1 end" in RT,
       '★★ 无标记（n=0）⇒ c 保持初值 **1**（硬性一颗），不读用户的单/多标记设置。★ 且 n **只数可用标记**（`P.usable(q,q.current,true)`）—— 队列是 ping 记忆的**历史**，已取消/过期的仍在里面 ⇒ 数历史长度会让「无标记」这条规则从未生效（用户 2026-10-16 实机铁证：`marks=0` 从未出现）')
-check('mark_branches_kept',
-      "c=tonumber(env.multi_mark_grenades_per_target) or 1" in RT
-      and "c=tonumber(env.max_grenades_per_target) or 1" in RT,
-      '★ 单标记/多标记两档仍按用户设置（行为不变）')
+# ★★ 2026-10-18（用户要求）：**多标记的自定义已去除** ★★
+#   用户原话：「去除多标记每目标手雷数的自定义，默认设置为1」。
+#   ⇒ 单/多标记**共用一个设置** `max_grenades_per_target`；
+#     能突破它的只有**白名单单位**（`GRENADE_CAP_WHITELIST`，按目标资源）。
+check('mark_branches_share_one_setting',
+      "c=tonumber(env.max_grenades_per_target) or 1" in RT
+      and "if n>=1 then" in RT
+      and "multi_mark_grenades_per_target" not in RT,
+      '★ 单/多标记共用 `max_grenades_per_target`；多标记自定义已移除')
 check('cap_visible',
       "env.emit('alloc_cap;marks='" in RT and "src='..(n==0 and 'NO_MARK_ONE_PER_ENEMY' or 'MARK_SETTING')" in RT,
       '★★ 诊断必须可见（看不到 = 无法确认）：`alloc_cap;marks=0;cap=1;src=NO_MARK_ONE_PER_ENEMY`')
@@ -121,26 +126,52 @@ check('stale_queue_counts_as_no_mark', probe(3, 2, 2, stale=1) == 1
       '（用户 2026-10-16 实机：`marks=3/2/1` 全走了标记档、`marks=0` 从未出现 ⇒ 规则空转）')
 check('one_mark_uses_single_setting', probe(1, 3, 1) == 3 and probe(1, 1, 9) == 1,
       '★ 单个标记 ⇒ 用 `max_grenades_per_target`（值随设置走）')
-check('many_marks_uses_multi_setting', probe(2, 3, 2) == 2 and probe(5, 1, 4) == 4,
-      '★ 2+ 标记 ⇒ 用 `multi_mark_grenades_per_target`')
+check('many_marks_uses_single_setting', probe(2, 3, 2) == 3 and probe(5, 1, 4) == 1,
+      '★ 2+ 标记 ⇒ **也用 `max_grenades_per_target`**（多标记自定义已移除）')
 check('zero_setting_clamped_to_one', probe(1, 0, 0) == 1 and probe(3, 0, 0) == 1,
       '★ 0/负数 ⇒ 夹到 1（否则"可预约"恒假 ⇒ 一颗都不派）')
 check('logs_no_mark_source', probe(0) == 1 and 'marks=0' in lua.eval('lastlog()')
       and 'cap=1' in lua.eval('lastlog()'),
       '★ 无标记那条日志带 `marks=0;cap=1` ⇒ 上机可核对')
-check('logs_mark_source', probe(2, 1, 2) == 2 and 'marks=2' in lua.eval('lastlog()'),
-      '★ 有标记那条带 `marks=2;cap=2`')
+check('logs_mark_source', probe(2, 1, 2) == 1 and 'marks=2' in lua.eval('lastlog()')
+      and 'cap=1' in lua.eval('lastlog()'),
+      '★ 有标记那条带 `marks=2;cap=1`（基础上限取自 max_grenades_per_target）')
 check('log_deduped', (lambda: (lua.eval('clearlogs()'), probe(0) == 1, probe(0) == 1,
                                lua.eval('__logs') and len(list(lua.eval('__logs').values())) == 1)[-1])(),
       '★ 连续同值只打一条（变化才打）')
 
+# ★★ 2026-10-18（用户要求）：**白名单对无标记也要起作用** ★★
+#   用户原话：「这个白名单对无标记的情况下也起作用」。
+#   ⚠ 白名单在 `available`/`claim` 里生效，而两条路共用**同一套** reservations；
+#     但光靠"共用"**不够** —— 还必须把**资源哈希**传进去，
+#     否则 `limit(nil)` 回退到基础上限 ⇒ 白名单静默失效。
+#   ⇒ 这道门盯的就是**改派那一路（= 无标记路）确实传了 `ent.resource`**。
+check('no_mark_path_passes_resource',
+      'reservations:available(owner,ent.identity,ent.resource)' in RT,
+      '★★ 无标记改派那一路必须传资源哈希 —— 否则白名单对无标记**静默失效**')
+check('all_reservation_calls_pass_resource',
+      all(('reservations:available(%s' % a) in RT for a in
+          ('owner,ent.identity,ent.resource','owner,q.identity,q.resource',
+           'titan_owner,my_mark.identity,my_mark.resource')),
+      '★ 所有 `reservations:available` 调用点都带上了资源'),
+
 print()
 print('=== ③ 无标记那条路确实会走预留门（不然 cap 改了也没用）===')
 NP = (ROOT / 'src/g60' / 'native_priority.lua').read_text(encoding='utf-8')
+
+# ★★ 2026-10-18：`native_priority.lua` 里那 3 处 `available(...)` 也必须传资源 ★★
+#   实踩：我只改了 runtime 的调用点，**漏了 native_priority 的 3 处**
+#     ⇒ 那几条路的白名单静默不生效。这道门就是为了抓它。
+check('native_priority_calls_pass_resource',
+        NP.count('available(e.identity)') == 0
+        and NP.count('available(e.identity,e.resource)') >= 3,
+      '★★ native_priority 的 `available` 调用也必须传资源（实得 %d 处）'
+      % NP.count('available(e.identity,e.resource)'))
+
 check('generic_path_checks_available',
-      NP.count('if available and not available(e.identity) then') >= 2,
+        NP.count('if available and not available(e.identity,e.resource) then') >= 2,
       '★★ `native_priority` 的通用/sticky 路径都查 `available()`（实测 %d 处）'
-      % NP.count('if available and not available(e.identity) then'))
+        % NP.count('if available and not available(e.identity,e.resource) then'))
 check('reserved_reason_visible',
       "'TARGET_RESERVED'" in NP,
       '★ 被预约而跳过有明确原因串（可归因，不静默）')
